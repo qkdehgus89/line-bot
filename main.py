@@ -89,6 +89,10 @@ def parse_date(text: str):
 # DB
 # =========================
 def db():
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -169,15 +173,26 @@ def init_db():
     )
     """)
 
-    # 기존 DB 마이그레이션
+    # 기존 DB 마이그레이션: 예전 버전 DB를 새 코드에 맞게 자동 보정
+    cur.execute("PRAGMA table_info(users)")
+    user_cols = {row["name"] for row in cur.fetchall()}
+
+    for col, col_type, default_value in [
+        ("gender", "TEXT", "'unknown'"),
+        ("is_nomicl", "INTEGER", "0"),
+    ]:
+        if col not in user_cols:
+            cur.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type} DEFAULT {default_value}")
+
     cur.execute("PRAGMA table_info(purchases)")
-    cols = {row["name"] for row in cur.fetchall()}
+    purchase_cols = {row["name"] for row in cur.fetchall()}
+
     for col, col_type in [
         ("used_at", "TEXT"),
         ("used_by", "TEXT"),
         ("use_note", "TEXT"),
     ]:
-        if col not in cols:
+        if col not in purchase_cols:
             cur.execute(f"ALTER TABLE purchases ADD COLUMN {col} {col_type}")
 
     conn.commit()
@@ -959,8 +974,6 @@ def handle(event):
     # 누구나 사용 가능한 명령어
     # =========================
     if text == "/방정보":
-        if not is_staff(user_id):
-            return
         reply(
             event.reply_token,
             f"방정보\n\n"
