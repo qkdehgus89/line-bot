@@ -40,7 +40,7 @@ PORT = int(os.getenv("PORT", "5000"))
 
 MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
-CURRENCY_NAME = os.getenv("CURRENCY_NAME", "토큰").strip()
+CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
 
 if not TOKEN or not SECRET:
     raise ValueError("LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET 값을 설정해야 합니다.")
@@ -105,6 +105,52 @@ def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def seed_default_shop_items(cur):
+    default_items = [
+        (
+            "단벙주최권",
+            6,
+            "참가인원 전체 코인 차감없이 벙 / 주최권 단벙은 인원제한 12명"
+        ),
+        (
+            "봇등록권",
+            10,
+            "꽃봇이 봇에 자기소개 등록가능 / 두개 사면 두 칸 등록 가능"
+        ),
+        (
+            "미션클리어권",
+            20,
+            "노미클자🔰 > 미클 🔹가능"
+        ),
+        (
+            "닉변권",
+            20,
+            "닉네임 변경 가능 / 유사닉·혐오닉 등 제한 있음 / 재변경 시 다시 구입"
+        ),
+        (
+            "임티권",
+            50,
+            "닉네임 앞이나 나이를 지우고 임티 달 수 있음 / 임티 제한 있음 / 고유임티 / 재변경 시 다시 구입"
+        ),
+        (
+            "칭호권",
+            50,
+            "닉네임 뒤 [ ] 사이에 호칭 넣기 가능 / 띄어쓰기 가능 5글자 제한 / 워딩 제한 있음 / 재변경 시 다시 구입"
+        ),
+    ]
+
+    for name, price, description in default_items:
+        cur.execute("""
+        INSERT INTO shop_items (name, price, description, is_active, created_at)
+        VALUES (?, ?, ?, 1, ?)
+        ON CONFLICT(name)
+        DO UPDATE SET
+            price = excluded.price,
+            description = excluded.description,
+            is_active = 1
+        """, (name, price, description, now_str()))
 
 
 def init_db():
@@ -782,6 +828,8 @@ def cancel_purchase(purchase_id, staff_user_name):
     WHERE id = ?
     """, (now_str(), staff_user_name, purchase_id))
 
+    refund_amount = purchase["price"] // 2
+
     cur.execute("""
     INSERT INTO currency (user_id, balance, updated_at)
     VALUES (?, ?, ?)
@@ -789,7 +837,7 @@ def cancel_purchase(purchase_id, staff_user_name):
     DO UPDATE SET
         balance = balance + excluded.balance,
         updated_at = excluded.updated_at
-    """, (purchase["user_id"], purchase["price"], now_str()))
+    """, (purchase["user_id"], refund_amount, now_str()))
 
     cur.execute("""
     INSERT INTO currency_logs (
@@ -800,15 +848,15 @@ def cancel_purchase(purchase_id, staff_user_name):
     """, (
         purchase["user_id"],
         purchase["user_name"],
-        purchase["price"],
-        f"구매 취소 환불: {purchase['item_name']}",
+        refund_amount,
+        f"구매 취소 50% 환불: {purchase['item_name']}",
         staff_user_name,
         now_str()
     ))
 
     conn.commit()
     conn.close()
-    return True, "구매 취소 및 환불 처리했습니다."
+    return True, f"구매 취소 및 50% 환불 처리했습니다.\n환불: {refund_amount}{CURRENCY_NAME}"
 
 
 def status_text(status):
@@ -1019,13 +1067,23 @@ def handle(event):
             reply(event.reply_token, "상점에 등록된 상품이 없습니다.")
             return
 
-        lines = ["🛒 상점 목록", ""]
-        for i, row in enumerate(rows, 1):
-            desc = f"\n   {row['description']}" if row["description"] else ""
-            lines.append(f"{i}. {row['name']} - {row['price']}{CURRENCY_NAME}{desc}")
+        lines = [
+            "✦ ⎯⎯🛒 코인 마켓 🛒⎯⎯ ✦",
+            "-코인으로 아이템 구입가능 (양도불가)",
+            "-이벤트 상품, 구입 아이템 환불 시 ➡️ 50% 환불",
+            "----------------------------",
+        ]
 
-        lines.append("")
+        for row in rows:
+            lines.append(f"💠{row['name']} : 💰{row['price']}개")
+            if row["description"]:
+                for desc in str(row["description"]).split(" / "):
+                    lines.append(f"-{desc}")
+            lines.append("")
+
         lines.append("구매 방법: /구매 상품명")
+        lines.append("보유 확인: /내보유")
+
         reply(event.reply_token, "\n".join(lines))
         return
 
@@ -1102,13 +1160,13 @@ def handle(event):
             "노미클 설정\n"
             "/노미클 닉네임\n"
             "/노미클해제 닉네임\n\n"
-            "화폐\n"
+            "코인\n"
             "/지급 닉네임 금액 사유\n"
             "/차감 닉네임 금액 사유\n"
             "/잔액\n"
             "/잔액 닉네임\n"
-            "/화폐순위\n"
-            "/화폐내역 닉네임\n\n"
+            "/코인순위 또는 /화폐순위\n"
+            "/코인내역 닉네임 또는 /화폐내역 닉네임\n\n"
             "상점\n"
             "/상품등록 상품명 가격 설명\n"
             "/상품삭제 상품명\n"
@@ -1321,7 +1379,7 @@ def handle(event):
         reply(event.reply_token, f"💰 {target['user_name']}님의 보유 {CURRENCY_NAME}\n\n{balance}{CURRENCY_NAME}")
         return
 
-    if text == "/화폐순위":
+    if text in ["/화폐순위", "/코인순위"]:
         rows = currency_ranking()
         if not rows:
             reply(event.reply_token, f"{CURRENCY_NAME} 보유 데이터가 없습니다.")
@@ -1334,7 +1392,7 @@ def handle(event):
         reply(event.reply_token, "\n".join(lines))
         return
 
-    if text.startswith("/화폐내역"):
+    if text.startswith("/화폐내역") or text.startswith("/코인내역"):
         parts = text.split(maxsplit=1)
 
         if len(parts) == 1:
