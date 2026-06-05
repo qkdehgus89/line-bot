@@ -63,6 +63,15 @@ def is_staff(user_id):
     return user_id in ADMIN_USER_IDS or user_id in OPERATOR_USER_IDS
 
 
+def count_source_ids():
+    ids = set()
+    if COUNT_SOURCE_ID:
+        ids.add(COUNT_SOURCE_ID)
+    if ADMIN_SOURCE_ID:
+        ids.add(ADMIN_SOURCE_ID)
+    return ids
+
+
 # =========================
 # 시간
 # =========================
@@ -336,8 +345,14 @@ def set_nomicl(user_name_keyword, value):
 def ranking(date_str, source_id, limit=None):
     conn = db()
     cur = conn.cursor()
+
+    # 중요:
+    # 기존 코드는 users.last_seen_source_id = source_id 인 사람만 보여줘서
+    # 메인방에서 말한 뒤 운영진방에서 /방정보 등을 치면 last_seen_source_id가 운영진방으로 바뀌어
+    # 메인방 순위에서 사라질 수 있었습니다.
+    # 아래 쿼리는 "해당 방에서 카운트가 있거나, 현재 그 방에 마지막으로 보인 사람"을 모두 표시합니다.
     sql = """
-    SELECT 
+    SELECT
         u.user_id,
         u.user_name,
         u.gender,
@@ -349,12 +364,16 @@ def ranking(date_str, source_id, limit=None):
      AND c.date = ?
      AND c.source_id = ?
     WHERE u.last_seen_source_id = ?
+       OR c.user_id IS NOT NULL
     ORDER BY count DESC, u.user_name ASC
     """
+
     params = [date_str, source_id, source_id]
+
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
+
     cur.execute(sql, params)
     rows = cur.fetchall()
     conn.close()
@@ -364,8 +383,9 @@ def ranking(date_str, source_id, limit=None):
 def total_ranking(source_id, limit=None):
     conn = db()
     cur = conn.cursor()
+
     sql = """
-    SELECT 
+    SELECT
         u.user_id,
         u.user_name,
         u.gender,
@@ -376,13 +396,17 @@ def total_ranking(source_id, limit=None):
       ON u.user_id = c.user_id
      AND c.source_id = ?
     WHERE u.last_seen_source_id = ?
+       OR c.user_id IS NOT NULL
     GROUP BY u.user_id
     ORDER BY count DESC, u.user_name ASC
     """
+
     params = [source_id, source_id]
+
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
+
     cur.execute(sql, params)
     rows = cur.fetchall()
     conn.close()
@@ -962,8 +986,9 @@ def handle(event):
     if user_id:
         upsert_user(user_id, user_name, source_id)
 
-    if source_id == COUNT_SOURCE_ID and user_id:
-        add_count(date_str, COUNT_SOURCE_ID, user_id, user_name)
+    # 메인방 + 운영진방 둘 다 마디수 카운트
+    if source_id in count_source_ids() and user_id:
+        add_count(date_str, source_id, user_id, user_name)
 
     if not isinstance(event.message, TextMessageContent):
         return
@@ -1065,6 +1090,10 @@ def handle(event):
             "/전체순위\n"
             "/경고\n"
             "/경고 YYYY-MM-DD\n"
+            "/관리진마디수\n"
+            "/관리진마디수 YYYY-MM-DD\n"
+            "/관리진순위\n"
+            "/관리진순위 YYYY-MM-DD\n"
             "/방정보\n\n"
             "성별 설정\n"
             "/남자 닉네임\n"
