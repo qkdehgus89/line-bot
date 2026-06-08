@@ -54,6 +54,7 @@ PORT = int(os.getenv("PORT", "5000"))
 MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
+BOT_VERSION = "active-id-v3"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -1473,10 +1474,15 @@ def handle(event):
         )
         return
 
+    if text == "/버전":
+        reply(event.reply_token, f"봇 버전\n\n{BOT_VERSION}")
+        return
+
     if text == "/상태확인":
         reply(
             event.reply_token,
             f"봇 상태 확인\n\n"
+            f"버전:\n{BOT_VERSION}\n\n"
             f"현재 SOURCE_ID:\n{source_id}\n\n"
             f"등록된 관리자방 수:\n{len(ADMIN_SOURCE_IDS)}\n"
             f"현재 방 관리자방 여부:\n{source_id in ADMIN_SOURCE_IDS}\n\n"
