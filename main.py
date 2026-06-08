@@ -445,7 +445,7 @@ def find_users(keyword, limit=10):
     cur = conn.cursor()
 
     cur.execute("""
-    SELECT user_id, user_name, updated_at
+    SELECT user_id, user_name, updated_at, COALESCE(is_active, 1) AS is_active
     FROM users
     WHERE user_name LIKE ?
     ORDER BY updated_at DESC
@@ -461,7 +461,7 @@ def find_users(keyword, limit=10):
     # 이모지/기호 제거 후 재검색
     clean = clean_keyword(keyword)
     cur.execute("""
-    SELECT user_id, user_name, updated_at
+    SELECT user_id, user_name, updated_at, COALESCE(is_active, 1) AS is_active
     FROM users
     ORDER BY updated_at DESC
     """)
@@ -531,6 +531,27 @@ def set_user_active_by_id(user_id, value):
     conn.commit()
     conn.close()
     return changed
+
+
+def get_user_by_id(user_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT user_id, user_name, COALESCE(is_active, 1) AS is_active
+    FROM users
+    WHERE user_id = ?
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def set_user_active_by_id_with_name(user_id, value):
+    user = get_user_by_id(user_id)
+    if not user:
+        return 0, None
+    changed = set_user_active_by_id(user_id, value)
+    return changed, user["user_name"]
 
 
 def set_user_active_by_name(keyword, value):
@@ -1512,8 +1533,8 @@ def handle(event):
             "/관리진마디수\n"
             "/관리진순위\n"
             "/유저검색 닉네임\n"
-            "/퇴장처리 닉네임\n"
-            "/복구처리 닉네임\n"
+            "/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n"
+            "/복구처리 닉네임\n/복구처리ID USER_ID\n"
             "/지급 닉네임 금액 사유\n"
             "/차감 닉네임 금액 사유\n"
             "/코인순위\n"
@@ -1687,8 +1708,8 @@ def handle(event):
             "/코인순위 또는 /화폐순위\n"
             "/코인내역 닉네임 또는 /화폐내역 닉네임\n"
             "/유저검색 닉네임\n"
-            "/퇴장처리 닉네임\n"
-            "/복구처리 닉네임\n"
+            "/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n"
+            "/복구처리 닉네임\n/복구처리ID USER_ID\n"
             "/주간랭킹\n"
             "/주간정산\n\n"
             "상점\n"
@@ -1785,9 +1806,32 @@ def handle(event):
 
         lines = [f"🔎 유저검색 결과: {keyword}", ""]
         for i, row in enumerate(rows, 1):
-            lines.append(f"{i}. {row['user_name']}\n   USER_ID: {row['user_id']}")
+            active_label = "활성" if row["is_active"] else "퇴장처리됨"
+            lines.append(f"{i}. {row['user_name']} / {active_label}\n   USER_ID: {row['user_id']}")
 
         reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text.startswith("/복구처리ID "):
+        target_user_id = text.replace("/복구처리ID", "", 1).strip()
+
+        if not target_user_id:
+            reply(event.reply_token, "사용법\n\n/복구처리ID USER_ID")
+            return
+
+        changed, target_name = set_user_active_by_id_with_name(target_user_id, 1)
+
+        if changed == 0:
+            reply(event.reply_token, f"복구할 유저를 찾지 못했습니다.\nUSER_ID: {target_user_id}")
+            return
+
+        reply(
+            event.reply_token,
+            "✅ 복구 처리 완료\n\n"
+            f"닉네임: {target_name}\n"
+            f"USER_ID: {target_user_id}\n\n"
+            "이제 마디수/순위/경고 조회에 다시 포함됩니다."
+        )
         return
 
     if text == "/주간랭킹":
