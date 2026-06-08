@@ -1128,9 +1128,9 @@ def status_text(status):
 # 출석 / 미션 / 주간정산
 # =========================
 MISSION_REWARDS = [
-    ("daily_20", 20, 5),     # 20마디 = 0.5코인
-    ("daily_50", 50, 10),    # 50마디 = 1코인
-    ("daily_100", 100, 20),  # 100마디 = 2코인
+    ("daily_20", 100, 1),     # 100마디 = 0.1코인
+    ("daily_50", 200, 1),    # 200마디 = 0.1코인
+    ("daily_100", 300, 1),  # 300마디 = 0.1코인
 ]
 
 
@@ -1300,13 +1300,13 @@ def weekly_ranking_rows(source_id, week_start, week_end, limit=10):
 
 def weekly_reward_amount(rank):
     if rank == 1:
-        return 100  # 10코인
+        return 20  # 2코인
     if rank == 2:
-        return 70   # 7코인
+        return 10   # 1코인
     if rank == 3:
-        return 50   # 5코인
+        return 5   # 0.5코인
     if 4 <= rank <= 10:
-        return 20   # 2코인
+        return 2   # 0.2코인
     return 0
 
 
