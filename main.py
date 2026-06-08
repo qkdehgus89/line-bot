@@ -533,27 +533,6 @@ def set_user_active_by_id(user_id, value):
     return changed
 
 
-def get_user_by_id(user_id):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT user_id, user_name, COALESCE(is_active, 1) AS is_active
-    FROM users
-    WHERE user_id = ?
-    """, (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-
-def set_user_active_by_id_with_name(user_id, value):
-    user = get_user_by_id(user_id)
-    if not user:
-        return 0, None
-    changed = set_user_active_by_id(user_id, value)
-    return changed, user["user_name"]
-
-
 def set_user_active_by_name(keyword, value):
     rows = find_users(keyword, limit=20)
 
@@ -1489,7 +1468,8 @@ def handle(event):
             f"USER_ID:\n{user_id}\n\n"
             f"닉네임:\n{user_name}\n\n"
             f"관리자방 여부:\n{source_id in ADMIN_SOURCE_IDS}\n\n"
-            f"관리자 권한 여부:\n{is_staff(user_id)}"
+            f"관리자 권한 여부:\n{is_staff(user_id)}\n\n"
+            f"버전:\nactive-id-v2"
         )
         return
 
@@ -1532,9 +1512,9 @@ def handle(event):
             "/전체순위\n"
             "/관리진마디수\n"
             "/관리진순위\n"
-            "/유저검색 닉네임\n"
-            "/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n"
-            "/복구처리 닉네임\n/복구처리ID USER_ID\n"
+            "/유저검색 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
+            "/퇴장처리 닉네임\n"
+            "/복구처리 닉네임\n"
             "/지급 닉네임 금액 사유\n"
             "/차감 닉네임 금액 사유\n"
             "/코인순위\n"
@@ -1707,9 +1687,9 @@ def handle(event):
             "/미션수령\n"
             "/코인순위 또는 /화폐순위\n"
             "/코인내역 닉네임 또는 /화폐내역 닉네임\n"
-            "/유저검색 닉네임\n"
-            "/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n"
-            "/복구처리 닉네임\n/복구처리ID USER_ID\n"
+            "/유저검색 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
+            "/퇴장처리 닉네임\n"
+            "/복구처리 닉네임\n"
             "/주간랭킹\n"
             "/주간정산\n\n"
             "상점\n"
@@ -1806,32 +1786,9 @@ def handle(event):
 
         lines = [f"🔎 유저검색 결과: {keyword}", ""]
         for i, row in enumerate(rows, 1):
-            active_label = "활성" if row["is_active"] else "퇴장처리됨"
-            lines.append(f"{i}. {row['user_name']} / {active_label}\n   USER_ID: {row['user_id']}")
+            lines.append(f"{i}. {row['user_name']}\n   USER_ID: {row['user_id']}")
 
         reply(event.reply_token, "\n".join(lines))
-        return
-
-    if text.startswith("/복구처리ID "):
-        target_user_id = text.replace("/복구처리ID", "", 1).strip()
-
-        if not target_user_id:
-            reply(event.reply_token, "사용법\n\n/복구처리ID USER_ID")
-            return
-
-        changed, target_name = set_user_active_by_id_with_name(target_user_id, 1)
-
-        if changed == 0:
-            reply(event.reply_token, f"복구할 유저를 찾지 못했습니다.\nUSER_ID: {target_user_id}")
-            return
-
-        reply(
-            event.reply_token,
-            "✅ 복구 처리 완료\n\n"
-            f"닉네임: {target_name}\n"
-            f"USER_ID: {target_user_id}\n\n"
-            "이제 마디수/순위/경고 조회에 다시 포함됩니다."
-        )
         return
 
     if text == "/주간랭킹":
@@ -1882,6 +1839,116 @@ def handle(event):
             )
 
         reply(event.reply_token, "\n".join(lines))
+        return
+
+
+    if text.startswith("/유저검색"):
+        keyword = text.replace("/유저검색", "", 1).strip()
+
+        if not keyword:
+            reply(event.reply_token, "사용법\n\n/유저검색 닉네임")
+            return
+
+        rows = find_users(keyword, limit=10)
+
+        if not rows:
+            reply(event.reply_token, f"검색 결과가 없습니다.\n검색어: {keyword}")
+            return
+
+        lines = [f"🔎 유저검색 결과: {keyword}", ""]
+        for i, row in enumerate(rows, 1):
+            active_label = "활성" if row["is_active"] else "퇴장처리됨"
+            lines.append(f"{i}. {row['user_name']} / {active_label}\n   USER_ID: {row['user_id']}")
+
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text.startswith("/퇴장처리ID "):
+        target_user_id = text.replace("/퇴장처리ID", "", 1).strip()
+
+        if not target_user_id:
+            reply(event.reply_token, "사용법\n\n/퇴장처리ID USER_ID")
+            return
+
+        changed, target_name = set_user_active_by_id_with_name(target_user_id, 0)
+
+        if changed == 0:
+            reply(event.reply_token, f"처리할 유저를 찾지 못했습니다.\nUSER_ID: {target_user_id}")
+            return
+
+        reply(
+            event.reply_token,
+            "🚪 퇴장 처리 완료\n\n"
+            f"닉네임: {target_name}\n"
+            f"USER_ID: {target_user_id}\n\n"
+            "이제 마디수/순위/경고 조회에서 제외됩니다."
+        )
+        return
+
+    if text.startswith("/복구처리ID "):
+        target_user_id = text.replace("/복구처리ID", "", 1).strip()
+
+        if not target_user_id:
+            reply(event.reply_token, "사용법\n\n/복구처리ID USER_ID")
+            return
+
+        changed, target_name = set_user_active_by_id_with_name(target_user_id, 1)
+
+        if changed == 0:
+            reply(event.reply_token, f"복구할 유저를 찾지 못했습니다.\nUSER_ID: {target_user_id}")
+            return
+
+        reply(
+            event.reply_token,
+            "✅ 복구 처리 완료\n\n"
+            f"닉네임: {target_name}\n"
+            f"USER_ID: {target_user_id}\n\n"
+            "이제 마디수/순위/경고 조회에 다시 포함됩니다."
+        )
+        return
+
+    if text.startswith("/퇴장처리 "):
+        keyword = text.replace("/퇴장처리", "", 1).strip()
+
+        if not keyword:
+            reply(event.reply_token, "사용법\n\n/퇴장처리 닉네임")
+            return
+
+        changed, names = set_user_active_by_name(keyword, 0)
+
+        if changed == 0:
+            reply(event.reply_token, f"처리할 유저를 찾지 못했습니다.\n검색어: {keyword}")
+            return
+
+        reply(
+            event.reply_token,
+            "🚪 퇴장 처리 완료\n\n"
+            f"처리 인원: {changed}명\n"
+            + "\n".join([f"- {name}" for name in names])
+            + "\n\n이제 마디수/순위/경고 조회에서 제외됩니다."
+        )
+        return
+
+    if text.startswith("/복구처리 "):
+        keyword = text.replace("/복구처리", "", 1).strip()
+
+        if not keyword:
+            reply(event.reply_token, "사용법\n\n/복구처리 닉네임")
+            return
+
+        changed, names = set_user_active_by_name(keyword, 1)
+
+        if changed == 0:
+            reply(event.reply_token, f"복구할 유저를 찾지 못했습니다.\n검색어: {keyword}")
+            return
+
+        reply(
+            event.reply_token,
+            "✅ 복구 처리 완료\n\n"
+            f"처리 인원: {changed}명\n"
+            + "\n".join([f"- {name}" for name in names])
+            + "\n\n이제 마디수/순위/경고 조회에 다시 포함됩니다."
+        )
         return
 
 
