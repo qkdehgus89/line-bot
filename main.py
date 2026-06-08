@@ -1,5 +1,7 @@
 import os
+import re
 import sqlite3
+import unicodedata
 from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
@@ -419,19 +421,89 @@ def upsert_user(user_id, user_name, source_id):
     conn.close()
 
 
+def normalize_nick(text_value):
+    if not text_value:
+        return ""
+
+    value = unicodedata.normalize("NFKC", str(text_value))
+    value = value.replace("\ufe0f", "").replace("\u200d", "")
+    value = re.sub(r"\s+", "", value)
+
+    # 한글/영문/숫자만 남겨서 이모지, 기호, 장식문자 영향을 줄임
+    return "".join(
+        ch for ch in value
+        if ("가" <= ch <= "힣") or ch.isalnum()
+    ).lower()
+
+
 def find_user(keyword):
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return None
+
     conn = db()
     cur = conn.cursor()
+
+    # 1차: 원문 LIKE 검색
     cur.execute("""
-    SELECT user_id, user_name
+    SELECT user_id, user_name, updated_at
     FROM users
     WHERE user_name LIKE ?
     ORDER BY updated_at DESC
     LIMIT 1
     """, (f"%{keyword}%",))
     row = cur.fetchone()
+
+    if row:
+        conn.close()
+        return row
+
+    # 2차: 이모지/기호 제거 후 검색
+    key_clean = normalize_nick(keyword)
+    if not key_clean:
+        conn.close()
+        return None
+
+    cur.execute("""
+    SELECT user_id, user_name, updated_at
+    FROM users
+    ORDER BY updated_at DESC
+    """)
+    rows = cur.fetchall()
     conn.close()
-    return row
+
+    for candidate in rows:
+        name_clean = normalize_nick(candidate["user_name"])
+        if key_clean == name_clean or key_clean in name_clean or name_clean in key_clean:
+            return candidate
+
+    return None
+
+
+def search_users(keyword, limit=10):
+    keyword = (keyword or "").strip()
+    key_clean = normalize_nick(keyword)
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT user_id, user_name, updated_at
+    FROM users
+    ORDER BY updated_at DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    result = []
+    for row in rows:
+        name = row["user_name"]
+        name_clean = normalize_nick(name)
+        if keyword in name or (key_clean and (key_clean in name_clean or name_clean in key_clean)):
+            result.append(row)
+            if len(result) >= limit:
+                break
+
+    return result
 
 
 def add_count(date_str, source_id, user_id, user_name):
@@ -1541,6 +1613,7 @@ def handle(event):
             "/노미클 닉네임\n"
             "/노미클해제 닉네임\n\n"
             "코인\n"
+            "/유저검색 닉네임\n"
             "/지급 닉네임 금액 사유\n"
             "/차감 닉네임 금액 사유\n"
             "/잔액\n"
@@ -1667,6 +1740,20 @@ def handle(event):
     # =========================
     # 화폐
     # =========================
+    if text.startswith("/유저검색 "):
+        keyword = text.replace("/유저검색", "", 1).strip()
+        rows = search_users(keyword)
+        if not rows:
+            reply(event.reply_token, f"검색 결과가 없습니다.\n검색어: {keyword}")
+            return
+
+        lines = [f"🔎 유저 검색 결과: {keyword}", ""]
+        for i, row in enumerate(rows, 1):
+            lines.append(f"{i}. {row['user_name']}\n   USER_ID: {row['user_id']}")
+
+        reply(event.reply_token, "\n".join(lines))
+        return
+
     if text.startswith("/지급 "):
         parts = text.split(maxsplit=3)
         if len(parts) < 3:
@@ -1688,7 +1775,7 @@ def handle(event):
         target = find_user(keyword)
 
         if not target:
-            reply(event.reply_token, f"대상을 찾을 수 없습니다.\n검색어: {keyword}")
+            reply(event.reply_token, f"대상을 찾을 수 없습니다.\n검색어: {keyword}\n\n먼저 해당 유저가 방에서 아무 말이나 입력했는지 확인하거나 /유저검색 밍구 로 찾아보세요.")
             return
 
         balance = change_money(
@@ -1731,7 +1818,7 @@ def handle(event):
         target = find_user(keyword)
 
         if not target:
-            reply(event.reply_token, f"대상을 찾을 수 없습니다.\n검색어: {keyword}")
+            reply(event.reply_token, f"대상을 찾을 수 없습니다.\n검색어: {keyword}\n\n먼저 해당 유저가 방에서 아무 말이나 입력했는지 확인하거나 /유저검색 밍구 로 찾아보세요.")
             return
 
         balance = change_money(
