@@ -16,6 +16,12 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
+try:
+    from linebot.v3.webhooks import MemberJoinedEvent, MemberLeftEvent
+except Exception:
+    MemberJoinedEvent = None
+    MemberLeftEvent = None
+
 load_dotenv()
 
 # =========================
@@ -26,6 +32,13 @@ SECRET = os.getenv("LINE_CHANNEL_SECRET", "").strip()
 
 COUNT_SOURCE_ID = os.getenv("COUNT_SOURCE_ID", "").strip()
 ADMIN_SOURCE_ID = os.getenv("ADMIN_SOURCE_ID", "").strip()
+
+# 운영진방 여러 개 지원
+# Railway Variables 예:
+# ADMIN_SOURCE_ID=C방ID1,C방ID2
+ADMIN_SOURCE_IDS = {
+    x.strip() for x in ADMIN_SOURCE_ID.split(",") if x.strip()
+}
 
 ADMIN_USER_IDS = {
     x.strip() for x in os.getenv("ADMIN_USER_IDS", "").split(",") if x.strip()
@@ -89,8 +102,11 @@ def count_source_ids():
     ids = set()
     if COUNT_SOURCE_ID:
         ids.add(COUNT_SOURCE_ID)
-    if ADMIN_SOURCE_ID:
-        ids.add(ADMIN_SOURCE_ID)
+
+    # 운영진방 여러 개 카운트 지원
+    for admin_source_id in ADMIN_SOURCE_IDS:
+        ids.add(admin_source_id)
+
     return ids
 
 
@@ -185,6 +201,7 @@ def init_db():
         user_name TEXT NOT NULL,
         gender TEXT DEFAULT 'unknown',
         is_nomicl INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
         last_seen_source_id TEXT,
         updated_at TEXT NOT NULL
     )
@@ -302,6 +319,7 @@ def init_db():
     for col, col_type, default_value in [
         ("gender", "TEXT", "'unknown'"),
         ("is_nomicl", "INTEGER", "0"),
+        ("is_active", "INTEGER", "1"),
     ]:
         if col not in user_cols:
             cur.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type} DEFAULT {default_value}")
@@ -400,12 +418,13 @@ def upsert_user(user_id, user_name, source_id):
 
     cur.execute("""
     INSERT INTO users (
-        user_id, user_name, gender, is_nomicl, last_seen_source_id, updated_at
+        user_id, user_name, gender, is_nomicl, is_active, last_seen_source_id, updated_at
     )
-    VALUES (?, ?, 'unknown', 0, ?, ?)
+    VALUES (?, ?, 'unknown', 0, 1, ?, ?)
     ON CONFLICT(user_id)
     DO UPDATE SET
         user_name = excluded.user_name,
+        is_active = 1,
         last_seen_source_id = excluded.last_seen_source_id,
         updated_at = excluded.updated_at
     """, (user_id, user_name, source_id, now_str()))
@@ -499,6 +518,51 @@ def set_nomicl(user_name_keyword, value):
     return changed
 
 
+def set_user_active_by_id(user_id, value):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    UPDATE users
+    SET is_active = ?,
+        updated_at = ?
+    WHERE user_id = ?
+    """, (value, now_str(), user_id))
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def set_user_active_by_name(keyword, value):
+    rows = find_users(keyword, limit=20)
+
+    if not rows:
+        return 0, []
+
+    conn = db()
+    cur = conn.cursor()
+
+    changed = 0
+    names = []
+
+    for row in rows:
+        cur.execute("""
+        UPDATE users
+        SET is_active = ?,
+            updated_at = ?
+        WHERE user_id = ?
+        """, (value, now_str(), row["user_id"]))
+
+        changed += cur.rowcount
+        names.append(row["user_name"])
+
+    conn.commit()
+    conn.close()
+
+    return changed, names
+
+
+
 # =========================
 # 마디수 조회
 # =========================
@@ -523,8 +587,9 @@ def ranking(date_str, source_id, limit=None):
       ON u.user_id = c.user_id
      AND c.date = ?
      AND c.source_id = ?
-    WHERE u.last_seen_source_id = ?
-       OR c.user_id IS NOT NULL
+    WHERE (u.last_seen_source_id = ?
+       OR c.user_id IS NOT NULL)
+      AND COALESCE(u.is_active, 1) = 1
     ORDER BY count DESC, u.user_name ASC
     """
 
@@ -555,8 +620,9 @@ def total_ranking(source_id, limit=None):
     LEFT JOIN counts c
       ON u.user_id = c.user_id
      AND c.source_id = ?
-    WHERE u.last_seen_source_id = ?
-       OR c.user_id IS NOT NULL
+    WHERE (u.last_seen_source_id = ?
+       OR c.user_id IS NOT NULL)
+      AND COALESCE(u.is_active, 1) = 1
     GROUP BY u.user_id
     ORDER BY count DESC, u.user_name ASC
     """
@@ -638,6 +704,7 @@ def currency_ranking(limit=20):
     FROM users u
     LEFT JOIN currency c ON u.user_id = c.user_id
     WHERE COALESCE(c.balance, 0) != 0
+      AND COALESCE(u.is_active, 1) = 1
     ORDER BY balance DESC, u.user_name ASC
     LIMIT ?
     """, (limit,))
@@ -1151,6 +1218,7 @@ def weekly_ranking_rows(source_id, week_start, week_end, limit=10):
       ON u.user_id = c.user_id
     WHERE c.source_id = ?
       AND c.date BETWEEN ? AND ?
+      AND COALESCE(u.is_active, 1) = 1
     GROUP BY c.user_id
     HAVING total_count > 0
     ORDER BY total_count DESC, u.user_name ASC
@@ -1398,7 +1466,22 @@ def handle(event):
             f"방정보\n\n"
             f"SOURCE_ID:\n{source_id}\n\n"
             f"USER_ID:\n{user_id}\n\n"
-            f"닉네임:\n{user_name}"
+            f"닉네임:\n{user_name}\n\n"
+            f"관리자방 여부:\n{source_id in ADMIN_SOURCE_IDS}\n\n"
+            f"관리자 권한 여부:\n{is_staff(user_id)}"
+        )
+        return
+
+    if text == "/상태확인":
+        reply(
+            event.reply_token,
+            f"봇 상태 확인\n\n"
+            f"현재 SOURCE_ID:\n{source_id}\n\n"
+            f"등록된 관리자방 수:\n{len(ADMIN_SOURCE_IDS)}\n"
+            f"현재 방 관리자방 여부:\n{source_id in ADMIN_SOURCE_IDS}\n\n"
+            f"현재 USER_ID:\n{user_id}\n"
+            f"관리자/운영자 권한 여부:\n{is_staff(user_id)}\n\n"
+            f"메인방 여부:\n{source_id == COUNT_SOURCE_ID}"
         )
         return
 
@@ -1412,7 +1495,7 @@ def handle(event):
             event.reply_token,
             "📌 사용 가능 명령어\n\n"
             "기본\n"
-            "/방정보\n"
+            "/방정보\n/상태확인\n"
             "/잔액\n"
             "/출석\n"
             "/미션\n"
@@ -1429,6 +1512,8 @@ def handle(event):
             "/관리진마디수\n"
             "/관리진순위\n"
             "/유저검색 닉네임\n"
+            "/퇴장처리 닉네임\n"
+            "/복구처리 닉네임\n"
             "/지급 닉네임 금액 사유\n"
             "/차감 닉네임 금액 사유\n"
             "/코인순위\n"
@@ -1564,7 +1649,7 @@ def handle(event):
         return
 
     # 운영진방 아니면 관리자 명령어 무시
-    if source_id != ADMIN_SOURCE_ID:
+    if source_id not in ADMIN_SOURCE_IDS:
         return
 
     # 관리자/운영자 아니면 무시
@@ -1602,6 +1687,8 @@ def handle(event):
             "/코인순위 또는 /화폐순위\n"
             "/코인내역 닉네임 또는 /화폐내역 닉네임\n"
             "/유저검색 닉네임\n"
+            "/퇴장처리 닉네임\n"
+            "/복구처리 닉네임\n"
             "/주간랭킹\n"
             "/주간정산\n\n"
             "상점\n"
@@ -2135,6 +2222,45 @@ def handle(event):
             f"삭제된 닉네임:\n{names_text}"
         )
         return
+
+
+
+# =========================
+# 입장 / 퇴장 이벤트
+# =========================
+if MemberLeftEvent is not None:
+    @handler.add(MemberLeftEvent)
+    def handle_member_left(event):
+        try:
+            source_id = get_source_id(event)
+
+            for member in event.left.members:
+                left_user_id = getattr(member, "user_id", None)
+
+                if left_user_id:
+                    set_user_active_by_id(left_user_id, 0)
+                    print("MEMBER LEFT:", source_id, left_user_id)
+
+        except Exception as e:
+            print("MEMBER LEFT ERROR:", e)
+
+
+if MemberJoinedEvent is not None:
+    @handler.add(MemberJoinedEvent)
+    def handle_member_joined(event):
+        try:
+            source_id = get_source_id(event)
+
+            for member in event.joined.members:
+                joined_user_id = getattr(member, "user_id", None)
+
+                if joined_user_id:
+                    # 닉네임은 첫 메시지 때 최신화되지만, 일단 재활성화
+                    set_user_active_by_id(joined_user_id, 1)
+                    print("MEMBER JOINED:", source_id, joined_user_id)
+
+        except Exception as e:
+            print("MEMBER JOINED ERROR:", e)
 
 
 if __name__ == "__main__":
