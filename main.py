@@ -54,7 +54,7 @@ PORT = int(os.getenv("PORT", "5000"))
 MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v3"
+BOT_VERSION = "active-id-v4"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -562,6 +562,74 @@ def set_user_active_by_name(keyword, value):
 
     return changed, names
 
+
+
+
+def get_user_by_id(user_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT user_id, user_name, COALESCE(is_active, 1) AS is_active
+    FROM users
+    WHERE user_id = ?
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def set_user_active_by_id(user_id, value):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    UPDATE users
+    SET is_active = ?,
+        updated_at = ?
+    WHERE user_id = ?
+    """, (value, now_str(), user_id))
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def set_user_active_by_id_with_name(user_id, value):
+    user = get_user_by_id(user_id)
+
+    if not user:
+        return 0, None
+
+    changed = set_user_active_by_id(user_id, value)
+    return changed, user["user_name"]
+
+
+def set_user_active_by_name(keyword, value):
+    rows = find_users(keyword, limit=20)
+
+    if not rows:
+        return 0, []
+
+    conn = db()
+    cur = conn.cursor()
+
+    changed = 0
+    names = []
+
+    for row in rows:
+        cur.execute("""
+        UPDATE users
+        SET is_active = ?,
+            updated_at = ?
+        WHERE user_id = ?
+        """, (value, now_str(), row["user_id"]))
+
+        changed += cur.rowcount
+        names.append(row["user_name"])
+
+    conn.commit()
+    conn.close()
+
+    return changed, names
 
 
 # =========================
