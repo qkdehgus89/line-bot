@@ -42,6 +42,30 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
 
+# 코인 소수점 지원
+# DB에는 1코인 = 10포인트로 저장합니다.
+# 예: 0.2코인 = 2포인트, 6코인 = 60포인트
+COIN_SCALE = 10
+
+
+def coin_to_points(value):
+    try:
+        raw = str(value).replace(CURRENCY_NAME, "").replace("코인", "").strip()
+        return int(round(float(raw) * COIN_SCALE))
+    except Exception:
+        raise ValueError("코인 금액은 숫자로 입력해주세요. 예: 1, 0.2, 10")
+
+
+def points_to_coin(points):
+    points = int(points or 0)
+    if points % COIN_SCALE == 0:
+        return str(points // COIN_SCALE)
+    return f"{points / COIN_SCALE:.1f}".rstrip("0").rstrip(".")
+
+
+def coin_text(points):
+    return f"{points_to_coin(points)}{CURRENCY_NAME}"
+
 if not TOKEN or not SECRET:
     raise ValueError("LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET 값을 설정해야 합니다.")
 
@@ -111,32 +135,32 @@ def seed_default_shop_items(cur):
     default_items = [
         (
             "단벙주최권",
-            6,
+            60,
             "참가인원 전체 코인 차감없이 벙 / 주최권 단벙은 인원제한 12명"
         ),
         (
             "봇등록권",
-            10,
+            100,
             "꽃봇이 봇에 자기소개 등록가능 / 두개 사면 두 칸 등록 가능"
         ),
         (
             "미션클리어권",
-            20,
+            200,
             "노미클자🔰 > 미클 🔹가능"
         ),
         (
             "닉변권",
-            20,
+            200,
             "닉네임 변경 가능 / 유사닉·혐오닉 등 제한 있음 / 재변경 시 다시 구입"
         ),
         (
             "임티권",
-            50,
+            500,
             "닉네임 앞이나 나이를 지우고 임티 달 수 있음 / 임티 제한 있음 / 고유임티 / 재변경 시 다시 구입"
         ),
         (
             "칭호권",
-            50,
+            500,
             "닉네임 뒤 [ ] 사이에 호칭 넣기 가능 / 띄어쓰기 가능 5글자 제한 / 워딩 제한 있음 / 재변경 시 다시 구입"
         ),
     ]
@@ -228,6 +252,50 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS attendance (
+        date TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        reward INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (date, user_id)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS mission_claims (
+        date TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        mission_key TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        reward INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (date, user_id, mission_key)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS weekly_rewards (
+        week_start TEXT NOT NULL,
+        week_end TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        rank INTEGER NOT NULL,
+        count INTEGER NOT NULL,
+        reward INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (week_start, week_end, user_id)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS app_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """)
+
     # 기존 DB 마이그레이션: 예전 버전 DB를 새 코드에 맞게 자동 보정
     cur.execute("PRAGMA table_info(users)")
     user_cols = {row["name"] for row in cur.fetchall()}
@@ -249,6 +317,22 @@ def init_db():
     ]:
         if col not in purchase_cols:
             cur.execute(f"ALTER TABLE purchases ADD COLUMN {col} {col_type}")
+
+    # 상점 기본 상품 자동 등록
+    seed_default_shop_items(cur)
+
+    # 기존 정수 코인 DB를 10배 포인트 단위로 1회 자동 변환
+    cur.execute("SELECT value FROM app_meta WHERE key = 'currency_scale'")
+    scale_row = cur.fetchone()
+    if not scale_row:
+        cur.execute("UPDATE currency SET balance = balance * ?", (COIN_SCALE,))
+        cur.execute("UPDATE currency_logs SET amount = amount * ?", (COIN_SCALE,))
+        cur.execute("UPDATE purchases SET price = price * ?", (COIN_SCALE,))
+        cur.execute("UPDATE shop_items SET price = price * ?", (COIN_SCALE,))
+        cur.execute(
+            "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('currency_scale', ?)",
+            (str(COIN_SCALE),)
+        )
 
     conn.commit()
     conn.close()
@@ -625,8 +709,8 @@ def buy_item(user_id, user_name, item_name):
     if balance < item["price"]:
         return False, (
             f"{CURRENCY_NAME}이 부족합니다.\n\n"
-            f"보유: {balance}{CURRENCY_NAME}\n"
-            f"필요: {item['price']}{CURRENCY_NAME}"
+            f"보유: {coin_text(balance)}\n"
+            f"필요: {coin_text(item['price'])}"
         )
 
     conn = db()
@@ -666,8 +750,8 @@ def buy_item(user_id, user_name, item_name):
         f"🛒 구매 완료\n\n"
         f"구매번호: {purchase_id}\n"
         f"상품: {item['name']}\n"
-        f"차감: {item['price']}{CURRENCY_NAME}\n"
-        f"잔액: {new_balance}{CURRENCY_NAME}\n\n"
+        f"차감: {coin_text(item['price'])}\n"
+        f"잔액: {coin_text(new_balance)}\n\n"
         f"보유 확인: /내보유\n"
         f"사용 신청: /사용 {purchase_id}"
     )
@@ -874,6 +958,241 @@ def status_text(status):
 
 
 # =========================
+# 출석 / 미션 / 주간정산
+# =========================
+MISSION_REWARDS = [
+    ("daily_20", 20, 5),     # 20마디 = 0.5코인
+    ("daily_50", 50, 10),    # 50마디 = 1코인
+    ("daily_100", 100, 20),  # 100마디 = 2코인
+]
+
+
+def get_user_count(date_str, source_id, user_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT count
+    FROM counts
+    WHERE date = ?
+      AND source_id = ?
+      AND user_id = ?
+    """, (date_str, source_id, user_id))
+    row = cur.fetchone()
+    conn.close()
+    return row["count"] if row else 0
+
+
+def attendance_check(date_str, user_id, user_name):
+    reward = 2  # 0.2코인
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT reward
+    FROM attendance
+    WHERE date = ?
+      AND user_id = ?
+    """, (date_str, user_id))
+
+    if cur.fetchone():
+        conn.close()
+        return False, get_balance(user_id)
+
+    cur.execute("""
+    INSERT INTO attendance (date, user_id, user_name, reward, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    """, (date_str, user_id, user_name, reward, now_str()))
+
+    conn.commit()
+    conn.close()
+
+    balance = change_money(
+        user_id,
+        user_name,
+        reward,
+        f"출석체크 {date_str}",
+        None,
+        "출석시스템"
+    )
+    return True, balance
+
+
+def claimed_missions(date_str, user_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT mission_key
+    FROM mission_claims
+    WHERE date = ?
+      AND user_id = ?
+    """, (date_str, user_id))
+    rows = cur.fetchall()
+    conn.close()
+    return {row["mission_key"] for row in rows}
+
+
+def mission_status(date_str, source_id, user_id):
+    count = get_user_count(date_str, source_id, user_id)
+    claimed = claimed_missions(date_str, user_id)
+
+    result = []
+    for key, required, reward in MISSION_REWARDS:
+        result.append({
+            "key": key,
+            "required": required,
+            "reward": reward,
+            "done": count >= required,
+            "received": key in claimed,
+        })
+
+    return count, result
+
+
+def claim_missions(date_str, source_id, user_id, user_name):
+    count, missions = mission_status(date_str, source_id, user_id)
+    claimable = [m for m in missions if m["done"] and not m["received"]]
+
+    if not claimable:
+        return 0, count, []
+
+    conn = db()
+    cur = conn.cursor()
+
+    total_reward = 0
+    claimed_names = []
+
+    for mission in claimable:
+        cur.execute("""
+        INSERT OR IGNORE INTO mission_claims (
+            date, user_id, mission_key, user_name, reward, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            date_str,
+            user_id,
+            mission["key"],
+            user_name,
+            mission["reward"],
+            now_str()
+        ))
+
+        if cur.rowcount > 0:
+            total_reward += mission["reward"]
+            claimed_names.append(f"{mission['required']}마디")
+
+    conn.commit()
+    conn.close()
+
+    if total_reward > 0:
+        change_money(
+            user_id,
+            user_name,
+            total_reward,
+            f"일일미션 보상: {', '.join(claimed_names)}",
+            None,
+            "미션시스템"
+        )
+
+    return total_reward, count, claimed_names
+
+
+def week_range_for_today():
+    now = datetime.now(KST).date()
+    start = now - timedelta(days=now.weekday())
+    end = start + timedelta(days=6)
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
+def weekly_ranking_rows(source_id, week_start, week_end, limit=10):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT
+        u.user_id,
+        u.user_name,
+        COALESCE(SUM(c.count), 0) AS total_count
+    FROM counts c
+    JOIN users u
+      ON u.user_id = c.user_id
+    WHERE c.source_id = ?
+      AND c.date BETWEEN ? AND ?
+    GROUP BY c.user_id
+    HAVING total_count > 0
+    ORDER BY total_count DESC, u.user_name ASC
+    LIMIT ?
+    """, (source_id, week_start, week_end, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def weekly_reward_amount(rank):
+    if rank == 1:
+        return 100  # 10코인
+    if rank == 2:
+        return 70   # 7코인
+    if rank == 3:
+        return 50   # 5코인
+    if 4 <= rank <= 10:
+        return 20   # 2코인
+    return 0
+
+
+def settle_weekly_rewards(source_id, week_start, week_end):
+    rows = weekly_ranking_rows(source_id, week_start, week_end, limit=10)
+    paid = []
+
+    conn = db()
+    cur = conn.cursor()
+
+    for idx, row in enumerate(rows, 1):
+        reward = weekly_reward_amount(idx)
+        if reward <= 0:
+            continue
+
+        cur.execute("""
+        INSERT OR IGNORE INTO weekly_rewards (
+            week_start, week_end, user_id, user_name,
+            rank, count, reward, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            week_start,
+            week_end,
+            row["user_id"],
+            row["user_name"],
+            idx,
+            row["total_count"],
+            reward,
+            now_str()
+        ))
+
+        if cur.rowcount > 0:
+            paid.append({
+                "rank": idx,
+                "user_id": row["user_id"],
+                "user_name": row["user_name"],
+                "count": row["total_count"],
+                "reward": reward,
+            })
+
+    conn.commit()
+    conn.close()
+
+    for item in paid:
+        change_money(
+            item["user_id"],
+            item["user_name"],
+            item["reward"],
+            f"주간 마디수 랭킹 보상 {week_start}~{week_end} {item['rank']}위",
+            None,
+            "주간정산"
+        )
+
+    return paid
+
+
+# =========================
 # 초기화 / 삭제
 # =========================
 def reset_date(date_str, source_id):
@@ -1058,8 +1377,69 @@ def handle(event):
 
     if text == "/잔액":
         balance = get_balance(user_id)
-        reply(event.reply_token, f"💰 {user_name}님의 보유 {CURRENCY_NAME}\n\n{balance}{CURRENCY_NAME}")
+        reply(event.reply_token, f"💰 {user_name}님의 보유 {CURRENCY_NAME}\n\n{coin_text(balance)}")
         return
+
+    if text == "/출석":
+        ok, balance = attendance_check(date_str, user_id, user_name)
+        if not ok:
+            reply(event.reply_token, f"이미 오늘 출석했습니다.\n현재 잔액: {coin_text(balance)}")
+            return
+
+        reply(
+            event.reply_token,
+            f"✅ 출석 완료\n\n"
+            f"+0.2{CURRENCY_NAME} 지급\n"
+            f"현재 잔액: {coin_text(balance)}"
+        )
+        return
+
+    if text == "/미션":
+        count, missions = mission_status(date_str, COUNT_SOURCE_ID, user_id)
+        lines = [
+            "🎯 오늘의 미션",
+            f"오늘 마디수: {count}",
+            "",
+        ]
+
+        total_waiting = 0
+        for mission in missions:
+            mark = "✅" if mission["done"] else "❌"
+            received = " / 수령완료" if mission["received"] else ""
+            if mission["done"] and not mission["received"]:
+                total_waiting += mission["reward"]
+
+            lines.append(
+                f"{mark} {mission['required']}마디 달성 "
+                f"+{coin_text(mission['reward'])}{received}"
+            )
+
+        lines.append("")
+        lines.append(f"수령 가능: {coin_text(total_waiting)}")
+        lines.append("수령 방법: /미션수령")
+
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text == "/미션수령":
+        reward, count, claimed_names = claim_missions(date_str, COUNT_SOURCE_ID, user_id, user_name)
+        if reward <= 0:
+            reply(
+                event.reply_token,
+                f"수령 가능한 미션 보상이 없습니다.\n오늘 마디수: {count}\n확인: /미션"
+            )
+            return
+
+        balance = get_balance(user_id)
+        reply(
+            event.reply_token,
+            f"🎁 미션 보상 수령 완료\n\n"
+            f"달성: {', '.join(claimed_names)}\n"
+            f"지급: {coin_text(reward)}\n"
+            f"잔액: {coin_text(balance)}"
+        )
+        return
+
 
     if text == "/상점":
         rows = list_shop_items()
@@ -1075,7 +1455,7 @@ def handle(event):
         ]
 
         for row in rows:
-            lines.append(f"💠{row['name']} : 💰{row['price']}개")
+            lines.append(f"💠{row['name']} : 💰{points_to_coin(row['price'])}개")
             if row["description"]:
                 for desc in str(row["description"]).split(" / "):
                     lines.append(f"-{desc}")
@@ -1105,7 +1485,7 @@ def handle(event):
             if row["status"] == "used":
                 used_info = f"\n   사용일: {row['used_at']}"
             lines.append(
-                f"#{row['id']} {row['item_name']} / {row['price']}{CURRENCY_NAME}\n"
+                f"#{row['id']} {row['item_name']} / {coin_text(row['price'])}\n"
                 f"   상태: {status_text(row['status'])}{used_info}"
             )
 
@@ -1165,8 +1545,13 @@ def handle(event):
             "/차감 닉네임 금액 사유\n"
             "/잔액\n"
             "/잔액 닉네임\n"
+            "/출석\n"
+            "/미션\n"
+            "/미션수령\n"
             "/코인순위 또는 /화폐순위\n"
-            "/코인내역 닉네임 또는 /화폐내역 닉네임\n\n"
+            "/코인내역 닉네임 또는 /화폐내역 닉네임\n"
+            "/주간랭킹\n"
+            "/주간정산\n\n"
             "상점\n"
             "/상품등록 상품명 가격 설명\n"
             "/상품삭제 상품명\n"
@@ -1290,13 +1675,13 @@ def handle(event):
 
         keyword = parts[1]
         try:
-            amount = int(parts[2])
-        except ValueError:
-            reply(event.reply_token, "금액은 숫자로 입력해주세요.")
+            amount = coin_to_points(parts[2])
+        except ValueError as e:
+            reply(event.reply_token, str(e))
             return
 
         if amount <= 0:
-            reply(event.reply_token, "지급 금액은 1 이상이어야 합니다.")
+            reply(event.reply_token, "지급 금액은 0보다 커야 합니다.")
             return
 
         reason = parts[3] if len(parts) >= 4 else "운영진 지급"
@@ -1319,8 +1704,8 @@ def handle(event):
             event.reply_token,
             f"💰 {CURRENCY_NAME} 지급 완료\n\n"
             f"대상: {target['user_name']}\n"
-            f"지급: {amount}{CURRENCY_NAME}\n"
-            f"잔액: {balance}{CURRENCY_NAME}\n"
+            f"지급: {coin_text(amount)}\n"
+            f"잔액: {coin_text(balance)}\n"
             f"사유: {reason}"
         )
         return
@@ -1333,13 +1718,13 @@ def handle(event):
 
         keyword = parts[1]
         try:
-            amount = int(parts[2])
-        except ValueError:
-            reply(event.reply_token, "금액은 숫자로 입력해주세요.")
+            amount = coin_to_points(parts[2])
+        except ValueError as e:
+            reply(event.reply_token, str(e))
             return
 
         if amount <= 0:
-            reply(event.reply_token, "차감 금액은 1 이상이어야 합니다.")
+            reply(event.reply_token, "차감 금액은 0보다 커야 합니다.")
             return
 
         reason = parts[3] if len(parts) >= 4 else "운영진 차감"
@@ -1362,8 +1747,8 @@ def handle(event):
             event.reply_token,
             f"💸 {CURRENCY_NAME} 차감 완료\n\n"
             f"대상: {target['user_name']}\n"
-            f"차감: {amount}{CURRENCY_NAME}\n"
-            f"잔액: {balance}{CURRENCY_NAME}\n"
+            f"차감: {coin_text(amount)}\n"
+            f"잔액: {coin_text(balance)}\n"
             f"사유: {reason}"
         )
         return
@@ -1376,7 +1761,7 @@ def handle(event):
             return
 
         balance = get_balance(target["user_id"])
-        reply(event.reply_token, f"💰 {target['user_name']}님의 보유 {CURRENCY_NAME}\n\n{balance}{CURRENCY_NAME}")
+        reply(event.reply_token, f"💰 {target['user_name']}님의 보유 {CURRENCY_NAME}\n\n{coin_text(balance)}")
         return
 
     if text in ["/화폐순위", "/코인순위"]:
@@ -1387,7 +1772,7 @@ def handle(event):
 
         lines = [f"🏆 {CURRENCY_NAME} 보유 순위", ""]
         for i, row in enumerate(rows, 1):
-            lines.append(f"{i}. {row['user_name']} - {row['balance']}{CURRENCY_NAME}")
+            lines.append(f"{i}. {row['user_name']} - {coin_text(row['balance'])}")
 
         reply(event.reply_token, "\n".join(lines))
         return
@@ -1415,7 +1800,7 @@ def handle(event):
         for row in rows:
             sign = "+" if row["amount"] > 0 else ""
             staff = f" / 처리: {row['staff_user_name']}" if row["staff_user_name"] else ""
-            lines.append(f"{row['created_at']} {sign}{row['amount']} / {row['reason']}{staff}")
+            lines.append(f"{row['created_at']} {sign}{coin_text(row['amount'])} / {row['reason']}{staff}")
 
         reply(event.reply_token, "\n".join(lines))
         return
@@ -1431,9 +1816,9 @@ def handle(event):
 
         name = parts[1]
         try:
-            price = int(parts[2])
-        except ValueError:
-            reply(event.reply_token, "가격은 숫자로 입력해주세요.")
+            price = coin_to_points(parts[2])
+        except ValueError as e:
+            reply(event.reply_token, str(e))
             return
 
         if price < 0:
@@ -1447,7 +1832,7 @@ def handle(event):
             event.reply_token,
             f"🛒 상품 등록 완료\n\n"
             f"상품명: {name}\n"
-            f"가격: {price}{CURRENCY_NAME}\n"
+            f"가격: {coin_text(price)}\n"
             f"설명: {description}"
         )
         return
@@ -1469,7 +1854,7 @@ def handle(event):
             used_info = f"\n   사용일: {row['used_at']}" if row["used_at"] else ""
             lines.append(
                 f"#{row['id']} {row['user_name']} / {row['item_name']} / "
-                f"{row['price']}{CURRENCY_NAME}\n"
+                f"{coin_text(row['price'])}\n"
                 f"   상태: {status_text(row['status'])}{used_info}"
             )
 
@@ -1524,7 +1909,7 @@ def handle(event):
 
             lines.append(
                 f"#{row['id']} {prefix}{row['item_name']} / "
-                f"{row['price']}{CURRENCY_NAME}\n"
+                f"{coin_text(row['price'])}\n"
                 f"   상태: {status_text(row['status'])}{used_info}"
             )
 
@@ -1551,6 +1936,57 @@ def handle(event):
         success, msg = cancel_purchase(int(parts[1]), user_name)
         reply(event.reply_token, msg)
         return
+
+    if text == "/주간랭킹":
+        week_start, week_end = week_range_for_today()
+        rows = weekly_ranking_rows(COUNT_SOURCE_ID, week_start, week_end, limit=10)
+
+        if not rows:
+            reply(event.reply_token, "이번 주 랭킹 데이터가 없습니다.")
+            return
+
+        lines = [
+            "🏆 이번 주 마디수 랭킹",
+            f"기간: {week_start} ~ {week_end}",
+            "",
+        ]
+
+        for i, row in enumerate(rows, 1):
+            reward = weekly_reward_amount(i)
+            lines.append(
+                f"{i}. {row['user_name']} - {row['total_count']}마디 "
+                f"/ 보상 {coin_text(reward)}"
+            )
+
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text == "/주간정산":
+        week_start, week_end = week_range_for_today()
+        paid = settle_weekly_rewards(COUNT_SOURCE_ID, week_start, week_end)
+
+        if not paid:
+            reply(
+                event.reply_token,
+                f"이미 정산했거나 정산할 데이터가 없습니다.\n기간: {week_start} ~ {week_end}"
+            )
+            return
+
+        lines = [
+            "💰 주간 랭킹 코인 지급 완료",
+            f"기간: {week_start} ~ {week_end}",
+            "",
+        ]
+
+        for item in paid:
+            lines.append(
+                f"{item['rank']}위 {item['user_name']} "
+                f"- {item['count']}마디 / +{coin_text(item['reward'])}"
+            )
+
+        reply(event.reply_token, "\n".join(lines))
+        return
+
 
     # =========================
     # 초기화
