@@ -1,7 +1,5 @@
 import os
-import re
 import sqlite3
-import unicodedata
 from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
@@ -44,25 +42,23 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
 
-# 코인 소수점 지원
-# DB에는 1코인 = 10포인트로 저장합니다.
-# 예: 0.2코인 = 2포인트, 6코인 = 60포인트
+# 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
 
 
 def coin_to_points(value):
     try:
-        raw = str(value).replace(CURRENCY_NAME, "").replace("코인", "").strip()
-        return int(round(float(raw) * COIN_SCALE))
+        return int(round(float(str(value).replace("코인", "").strip()) * COIN_SCALE))
     except Exception:
-        raise ValueError("코인 금액은 숫자로 입력해주세요. 예: 1, 0.2, 10")
+        raise ValueError("코인 금액은 숫자로 입력해주세요.")
 
 
 def points_to_coin(points):
-    points = int(points or 0)
+    points = int(points)
     if points % COIN_SCALE == 0:
         return str(points // COIN_SCALE)
-    return f"{points / COIN_SCALE:.1f}".rstrip("0").rstrip(".")
+    value = points / COIN_SCALE
+    return f"{value:.1f}".rstrip("0").rstrip(".")
 
 
 def coin_text(points):
@@ -254,6 +250,14 @@ def init_db():
     )
     """)
 
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS system_flags (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """)
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS attendance (
         date TEXT NOT NULL,
@@ -291,13 +295,6 @@ def init_db():
     )
     """)
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS app_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-    )
-    """)
-
     # 기존 DB 마이그레이션: 예전 버전 DB를 새 코드에 맞게 자동 보정
     cur.execute("PRAGMA table_info(users)")
     user_cols = {row["name"] for row in cur.fetchall()}
@@ -320,20 +317,18 @@ def init_db():
         if col not in purchase_cols:
             cur.execute(f"ALTER TABLE purchases ADD COLUMN {col} {col_type}")
 
-    # 상점 기본 상품 자동 등록
-    seed_default_shop_items(cur)
 
-    # 기존 정수 코인 DB를 10배 포인트 단위로 1회 자동 변환
-    cur.execute("SELECT value FROM app_meta WHERE key = 'currency_scale'")
-    scale_row = cur.fetchone()
-    if not scale_row:
-        cur.execute("UPDATE currency SET balance = balance * ?", (COIN_SCALE,))
-        cur.execute("UPDATE currency_logs SET amount = amount * ?", (COIN_SCALE,))
-        cur.execute("UPDATE purchases SET price = price * ?", (COIN_SCALE,))
-        cur.execute("UPDATE shop_items SET price = price * ?", (COIN_SCALE,))
+    # 기존 정수 코인 DB를 0.1 단위 포인트 시스템으로 1회 변환
+    cur.execute("SELECT value FROM system_flags WHERE key = 'currency_scaled_v1'")
+    scaled = cur.fetchone()
+
+    if not scaled:
+        cur.execute("UPDATE currency SET balance = balance * 10")
+        cur.execute("UPDATE currency_logs SET amount = amount * 10")
+        cur.execute("UPDATE shop_items SET price = price * 10")
+        cur.execute("UPDATE purchases SET price = price * 10")
         cur.execute(
-            "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('currency_scale', ?)",
-            (str(COIN_SCALE),)
+            "INSERT INTO system_flags (key, value) VALUES ('currency_scaled_v1', 'done')"
         )
 
     conn.commit()
@@ -421,89 +416,52 @@ def upsert_user(user_id, user_name, source_id):
     conn.close()
 
 
-def normalize_nick(text_value):
-    if not text_value:
-        return ""
 
-    value = unicodedata.normalize("NFKC", str(text_value))
-    value = value.replace("\ufe0f", "").replace("\u200d", "")
-    value = re.sub(r"\s+", "", value)
-
-    # 한글/영문/숫자만 남겨서 이모지, 기호, 장식문자 영향을 줄임
-    return "".join(
-        ch for ch in value
-        if ("가" <= ch <= "힣") or ch.isalnum()
-    ).lower()
+def clean_keyword(text_value):
+    return "".join(ch for ch in str(text_value) if ch.isalnum() or ('가' <= ch <= '힣')).lower()
 
 
-def find_user(keyword):
-    keyword = (keyword or "").strip()
-    if not keyword:
-        return None
-
+def find_users(keyword, limit=10):
     conn = db()
     cur = conn.cursor()
 
-    # 1차: 원문 LIKE 검색
     cur.execute("""
     SELECT user_id, user_name, updated_at
     FROM users
     WHERE user_name LIKE ?
     ORDER BY updated_at DESC
-    LIMIT 1
-    """, (f"%{keyword}%",))
-    row = cur.fetchone()
+    LIMIT ?
+    """, (f"%{keyword}%", limit))
 
-    if row:
-        conn.close()
-        return row
+    rows = cur.fetchall()
 
-    # 2차: 이모지/기호 제거 후 검색
-    key_clean = normalize_nick(keyword)
-    if not key_clean:
+    if rows:
         conn.close()
+        return rows
+
+    # 이모지/기호 제거 후 재검색
+    clean = clean_keyword(keyword)
+    cur.execute("""
+    SELECT user_id, user_name, updated_at
+    FROM users
+    ORDER BY updated_at DESC
+    """)
+
+    all_rows = cur.fetchall()
+    matched = [
+        row for row in all_rows
+        if clean and clean in clean_keyword(row["user_name"])
+    ][:limit]
+
+    conn.close()
+    return matched
+
+
+def find_user(keyword):
+    rows = find_users(keyword, limit=2)
+    if not rows:
         return None
-
-    cur.execute("""
-    SELECT user_id, user_name, updated_at
-    FROM users
-    ORDER BY updated_at DESC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-
-    for candidate in rows:
-        name_clean = normalize_nick(candidate["user_name"])
-        if key_clean == name_clean or key_clean in name_clean or name_clean in key_clean:
-            return candidate
-
-    return None
-
-
-def search_users(keyword, limit=10):
-    keyword = (keyword or "").strip()
-    key_clean = normalize_nick(keyword)
-
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT user_id, user_name, updated_at
-    FROM users
-    ORDER BY updated_at DESC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-
-    result = []
-    for row in rows:
-        name = row["user_name"]
-        name_clean = normalize_nick(name)
-        if keyword in name or (key_clean and (key_clean in name_clean or name_clean in key_clean)):
-            result.append(row)
-            if len(result) >= limit:
-                break
-
-    return result
+    return rows[0]
 
 
 def add_count(date_str, source_id, user_id, user_name):
@@ -1012,7 +970,7 @@ def cancel_purchase(purchase_id, staff_user_name):
 
     conn.commit()
     conn.close()
-    return True, f"구매 취소 및 50% 환불 처리했습니다.\n환불: {refund_amount}{CURRENCY_NAME}"
+    return True, f"구매 취소 및 50% 환불 처리했습니다.\n환불: {coin_text(refund_amount)}"
 
 
 def status_text(status):
@@ -1027,6 +985,7 @@ def status_text(status):
     if status == "done":
         return "완료"
     return status
+
 
 
 # =========================
@@ -1059,6 +1018,7 @@ def attendance_check(date_str, user_id, user_name):
 
     conn = db()
     cur = conn.cursor()
+
     cur.execute("""
     SELECT reward
     FROM attendance
@@ -1086,6 +1046,7 @@ def attendance_check(date_str, user_id, user_name):
         None,
         "출석시스템"
     )
+
     return True, balance
 
 
@@ -1109,12 +1070,14 @@ def mission_status(date_str, source_id, user_id):
 
     result = []
     for key, required, reward in MISSION_REWARDS:
+        done = count >= required
+        received = key in claimed
         result.append({
             "key": key,
             "required": required,
             "reward": reward,
-            "done": count >= required,
-            "received": key in claimed,
+            "done": done,
+            "received": received,
         })
 
     return count, result
@@ -1342,15 +1305,11 @@ def delete_user_by_name(keyword):
 # 출력 포맷
 # =========================
 def gender_icon(gender):
-    if gender == "male":
-        return "💙"
-    if gender == "female":
-        return "❤️"
-    return "🤍"
+    return ""
 
 
 def nomicl_text(is_nomicl):
-    return " / 노미클" if is_nomicl else ""
+    return ""
 
 
 def format_rows(title, date_str, rows):
@@ -1361,9 +1320,7 @@ def format_rows(title, date_str, rows):
 
     for i, row in enumerate(rows, 1):
         lines.append(
-            f"{i}. {gender_icon(row['gender'])} "
-            f"{row['user_name']} - {row['count']}"
-            f"{nomicl_text(row['is_nomicl'])}"
+            f"{i}. {row['user_name']} - {row['count']}"
         )
     return "\n".join(lines)
 
@@ -1376,9 +1333,7 @@ def format_total_rows(title, rows):
 
     for i, row in enumerate(rows, 1):
         lines.append(
-            f"{i}. {gender_icon(row['gender'])} "
-            f"{row['user_name']} - {row['count']}"
-            f"{nomicl_text(row['is_nomicl'])}"
+            f"{i}. {row['user_name']} - {row['count']}"
         )
     return "\n".join(lines)
 
@@ -1450,6 +1405,37 @@ def handle(event):
     if text == "/잔액":
         balance = get_balance(user_id)
         reply(event.reply_token, f"💰 {user_name}님의 보유 {CURRENCY_NAME}\n\n{coin_text(balance)}")
+        return
+
+    if text in ["/명령어", "/도움말"]:
+        reply(
+            event.reply_token,
+            "📌 사용 가능 명령어\n\n"
+            "기본\n"
+            "/방정보\n"
+            "/잔액\n"
+            "/출석\n"
+            "/미션\n"
+            "/미션수령\n\n"
+            "상점\n"
+            "/상점\n"
+            "/구매 상품명\n"
+            "/내보유\n"
+            "/사용 구매번호\n\n"
+            "운영진방 전용\n"
+            "/마디수\n"
+            "/순위\n"
+            "/전체순위\n"
+            "/관리진마디수\n"
+            "/관리진순위\n"
+            "/유저검색 닉네임\n"
+            "/지급 닉네임 금액 사유\n"
+            "/차감 닉네임 금액 사유\n"
+            "/코인순위\n"
+            "/코인내역 닉네임\n"
+            "/주간랭킹\n"
+            "/주간정산"
+        )
         return
 
     if text == "/출석":
@@ -1605,15 +1591,7 @@ def handle(event):
             "/관리진순위\n"
             "/관리진순위 YYYY-MM-DD\n"
             "/방정보\n\n"
-            "성별 설정\n"
-            "/남자 닉네임\n"
-            "/여자 닉네임\n"
-            "/성별해제 닉네임\n\n"
-            "노미클 설정\n"
-            "/노미클 닉네임\n"
-            "/노미클해제 닉네임\n\n"
             "코인\n"
-            "/유저검색 닉네임\n"
             "/지급 닉네임 금액 사유\n"
             "/차감 닉네임 금액 사유\n"
             "/잔액\n"
@@ -1623,6 +1601,7 @@ def handle(event):
             "/미션수령\n"
             "/코인순위 또는 /화폐순위\n"
             "/코인내역 닉네임 또는 /화폐내역 닉네임\n"
+            "/유저검색 닉네임\n"
             "/주간랭킹\n"
             "/주간정산\n\n"
             "상점\n"
@@ -1704,56 +1683,80 @@ def handle(event):
         reply(event.reply_token, "\n".join(lines))
         return
 
-    # =========================
-    # 성별 / 노미클
-    # =========================
-    if text.startswith("/남자 "):
-        name = text.replace("/남자", "", 1).strip()
-        changed = set_gender(name, "male")
-        reply(event.reply_token, f"💙 남자 설정 완료: {changed}명")
-        return
-
-    if text.startswith("/여자 "):
-        name = text.replace("/여자", "", 1).strip()
-        changed = set_gender(name, "female")
-        reply(event.reply_token, f"❤️ 여자 설정 완료: {changed}명")
-        return
-
-    if text.startswith("/성별해제 "):
-        name = text.replace("/성별해제", "", 1).strip()
-        changed = set_gender(name, "unknown")
-        reply(event.reply_token, f"🤍 성별 해제 완료: {changed}명")
-        return
-
-    if text.startswith("/노미클 "):
-        name = text.replace("/노미클", "", 1).strip()
-        changed = set_nomicl(name, 1)
-        reply(event.reply_token, f"🌱 노미클 설정 완료: {changed}명")
-        return
-
-    if text.startswith("/노미클해제 "):
-        name = text.replace("/노미클해제", "", 1).strip()
-        changed = set_nomicl(name, 0)
-        reply(event.reply_token, f"노미클 해제 완료: {changed}명")
-        return
-
-    # =========================
-    # 화폐
-    # =========================
-    if text.startswith("/유저검색 "):
+    if text.startswith("/유저검색"):
         keyword = text.replace("/유저검색", "", 1).strip()
-        rows = search_users(keyword)
+
+        if not keyword:
+            reply(event.reply_token, "사용법\n\n/유저검색 닉네임")
+            return
+
+        rows = find_users(keyword, limit=10)
+
         if not rows:
             reply(event.reply_token, f"검색 결과가 없습니다.\n검색어: {keyword}")
             return
 
-        lines = [f"🔎 유저 검색 결과: {keyword}", ""]
+        lines = [f"🔎 유저검색 결과: {keyword}", ""]
         for i, row in enumerate(rows, 1):
             lines.append(f"{i}. {row['user_name']}\n   USER_ID: {row['user_id']}")
 
         reply(event.reply_token, "\n".join(lines))
         return
 
+    if text == "/주간랭킹":
+        week_start, week_end = week_range_for_today()
+        rows = weekly_ranking_rows(COUNT_SOURCE_ID, week_start, week_end, limit=10)
+
+        if not rows:
+            reply(event.reply_token, "이번 주 랭킹 데이터가 없습니다.")
+            return
+
+        lines = [
+            "🏆 이번 주 마디수 랭킹",
+            f"기간: {week_start} ~ {week_end}",
+            "",
+        ]
+
+        for i, row in enumerate(rows, 1):
+            reward = weekly_reward_amount(i)
+            lines.append(
+                f"{i}. {row['user_name']} - {row['total_count']}마디 "
+                f"/ 보상 {coin_text(reward)}"
+            )
+
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text == "/주간정산":
+        week_start, week_end = week_range_for_today()
+        paid = settle_weekly_rewards(COUNT_SOURCE_ID, week_start, week_end)
+
+        if not paid:
+            reply(
+                event.reply_token,
+                f"이미 정산했거나 정산할 데이터가 없습니다.\n기간: {week_start} ~ {week_end}"
+            )
+            return
+
+        lines = [
+            "💰 주간 랭킹 코인 지급 완료",
+            f"기간: {week_start} ~ {week_end}",
+            "",
+        ]
+
+        for item in paid:
+            lines.append(
+                f"{item['rank']}위 {item['user_name']} "
+                f"- {item['count']}마디 / +{coin_text(item['reward'])}"
+            )
+
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+
+    # =========================
+    # 화폐
+    # =========================
     if text.startswith("/지급 "):
         parts = text.split(maxsplit=3)
         if len(parts) < 3:
@@ -1772,11 +1775,22 @@ def handle(event):
             return
 
         reason = parts[3] if len(parts) >= 4 else "운영진 지급"
-        target = find_user(keyword)
+        matches = find_users(keyword, limit=5)
 
-        if not target:
-            reply(event.reply_token, f"대상을 찾을 수 없습니다.\n검색어: {keyword}\n\n먼저 해당 유저가 방에서 아무 말이나 입력했는지 확인하거나 /유저검색 밍구 로 찾아보세요.")
+        if not matches:
+            reply(event.reply_token, f"대상을 찾을 수 없습니다.\n검색어: {keyword}\n\n먼저 메인방에서 대상자가 아무 말이나 1번 입력해야 DB에 등록됩니다.")
             return
+
+        if len(matches) > 1:
+            lines = [f"검색 결과가 여러 명입니다: {keyword}", ""]
+            for i, row in enumerate(matches, 1):
+                lines.append(f"{i}. {row['user_name']}")
+            lines.append("")
+            lines.append("더 정확한 닉네임으로 다시 입력해주세요.")
+            reply(event.reply_token, "\n".join(lines))
+            return
+
+        target = matches[0]
 
         balance = change_money(
             target["user_id"],
@@ -1815,11 +1829,22 @@ def handle(event):
             return
 
         reason = parts[3] if len(parts) >= 4 else "운영진 차감"
-        target = find_user(keyword)
+        matches = find_users(keyword, limit=5)
 
-        if not target:
-            reply(event.reply_token, f"대상을 찾을 수 없습니다.\n검색어: {keyword}\n\n먼저 해당 유저가 방에서 아무 말이나 입력했는지 확인하거나 /유저검색 밍구 로 찾아보세요.")
+        if not matches:
+            reply(event.reply_token, f"대상을 찾을 수 없습니다.\n검색어: {keyword}")
             return
+
+        if len(matches) > 1:
+            lines = [f"검색 결과가 여러 명입니다: {keyword}", ""]
+            for i, row in enumerate(matches, 1):
+                lines.append(f"{i}. {row['user_name']}")
+            lines.append("")
+            lines.append("더 정확한 닉네임으로 다시 입력해주세요.")
+            reply(event.reply_token, "\n".join(lines))
+            return
+
+        target = matches[0]
 
         balance = change_money(
             target["user_id"],
@@ -2023,57 +2048,6 @@ def handle(event):
         success, msg = cancel_purchase(int(parts[1]), user_name)
         reply(event.reply_token, msg)
         return
-
-    if text == "/주간랭킹":
-        week_start, week_end = week_range_for_today()
-        rows = weekly_ranking_rows(COUNT_SOURCE_ID, week_start, week_end, limit=10)
-
-        if not rows:
-            reply(event.reply_token, "이번 주 랭킹 데이터가 없습니다.")
-            return
-
-        lines = [
-            "🏆 이번 주 마디수 랭킹",
-            f"기간: {week_start} ~ {week_end}",
-            "",
-        ]
-
-        for i, row in enumerate(rows, 1):
-            reward = weekly_reward_amount(i)
-            lines.append(
-                f"{i}. {row['user_name']} - {row['total_count']}마디 "
-                f"/ 보상 {coin_text(reward)}"
-            )
-
-        reply(event.reply_token, "\n".join(lines))
-        return
-
-    if text == "/주간정산":
-        week_start, week_end = week_range_for_today()
-        paid = settle_weekly_rewards(COUNT_SOURCE_ID, week_start, week_end)
-
-        if not paid:
-            reply(
-                event.reply_token,
-                f"이미 정산했거나 정산할 데이터가 없습니다.\n기간: {week_start} ~ {week_end}"
-            )
-            return
-
-        lines = [
-            "💰 주간 랭킹 코인 지급 완료",
-            f"기간: {week_start} ~ {week_end}",
-            "",
-        ]
-
-        for item in paid:
-            lines.append(
-                f"{item['rank']}위 {item['user_name']} "
-                f"- {item['count']}마디 / +{coin_text(item['reward'])}"
-            )
-
-        reply(event.reply_token, "\n".join(lines))
-        return
-
 
     # =========================
     # 초기화
