@@ -54,7 +54,7 @@ PORT = int(os.getenv("PORT", "5000"))
 MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v6-debug-log"
+BOT_VERSION = "active-id-v7-command-split"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -593,16 +593,85 @@ def collection_status(source_id, date_str):
     count_row = cur.fetchone()
 
     cur.execute("""
-    SELECT user_name, count
+    SELECT user_id, user_name, count
     FROM counts
     WHERE source_id=? AND date=?
     ORDER BY count DESC, user_name ASC
-    LIMIT 10
     """, (source_id, date_str))
-    top_rows = cur.fetchall()
+    all_rows = cur.fetchall()
 
     conn.close()
-    return log_row, count_row, top_rows
+    return log_row, count_row, all_rows
+
+
+
+def collection_missing(source_id, date_str):
+    conn = db()
+    cur = conn.cursor()
+
+    # users에는 있는데 오늘 counts가 없는 활성 유저
+    cur.execute("""
+    SELECT u.user_id, u.user_name
+    FROM users u
+    LEFT JOIN counts c
+      ON u.user_id = c.user_id
+     AND c.source_id = ?
+     AND c.date = ?
+    WHERE COALESCE(u.is_active, 1) = 1
+      AND c.user_id IS NULL
+    ORDER BY u.user_name ASC
+    """, (source_id, date_str))
+    users_no_count = cur.fetchall()
+
+    # chat_logs에는 있는데 counts가 없는 유저
+    cur.execute("""
+    SELECT l.user_id, MAX(l.user_name) AS user_name, COUNT(*) AS logs
+    FROM chat_logs l
+    LEFT JOIN counts c
+      ON l.user_id = c.user_id
+     AND l.source_id = c.source_id
+     AND l.date = c.date
+    WHERE l.source_id = ?
+      AND l.date = ?
+      AND l.user_id IS NOT NULL
+      AND c.user_id IS NULL
+    GROUP BY l.user_id
+    ORDER BY user_name ASC
+    """, (source_id, date_str))
+    logs_no_count = cur.fetchall()
+
+    # counts에는 있는데 users가 없는 유저
+    cur.execute("""
+    SELECT c.user_id, c.user_name, c.count
+    FROM counts c
+    LEFT JOIN users u
+      ON c.user_id = u.user_id
+    WHERE c.source_id = ?
+      AND c.date = ?
+      AND u.user_id IS NULL
+    ORDER BY c.count DESC, c.user_name ASC
+    """, (source_id, date_str))
+    counts_no_user = cur.fetchall()
+
+    conn.close()
+    return users_no_count, logs_no_count, counts_no_user
+
+
+def format_long_lines(title, lines, max_chars=4500):
+    msg = title + "\\n\\n"
+    used = len(msg)
+    output = [title, ""]
+
+    for line in lines:
+        extra = len(line) + 1
+        if used + extra > max_chars:
+            output.append("...")
+            output.append("내용이 길어서 일부만 표시됐습니다.")
+            break
+        output.append(line)
+        used += extra
+
+    return "\\n".join(output)
 
 
 def recent_chat_logs(source_id, limit=20):
@@ -1762,36 +1831,40 @@ def handle(event):
         reply(event.reply_token, f"💰 {user_name}님의 보유 {CURRENCY_NAME}\n\n{coin_text(balance)}")
         return
 
-    if text in ["/명령어", "/도움말"]:
+    if text == "/도움말":
+        reply(event.reply_token, "일반 명령어: /명령어\n운영 명령어: /운영명령어")
+        return
+
+    if text == "/명령어":
         reply(
             event.reply_token,
-            "📌 사용 가능 명령어\n\n"
-            "기본\n"
-            "/방정보\n/상태확인\n"
-            "/잔액\n"
-            "/출석\n"
-            "/미션\n"
-            "/미션수령\n\n"
-            "상점\n"
-            "/상점\n"
-            "/구매 상품명\n"
-            "/내보유\n"
-            "/사용 구매번호\n\n"
-            "운영진방 전용\n"
-            "/마디수\n"
-            "/순위\n"
-            "/전체순위\n"
-            "/관리진마디수\n"
-            "/관리진순위\n"
-            "/유저검색 닉네임\n/유저상세 닉네임\n/수집상태\n/오늘수집\n/최근로그\n/유저검색ID USER_ID\n/유저동기화\n/유저상세 닉네임\n/수집상태\n/오늘수집\n/최근로그\n/미션확인 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
-            "/퇴장처리 닉네임\n"
-            "/복구처리 닉네임\n"
-            "/지급 닉네임 금액 사유\n"
-            "/차감 닉네임 금액 사유\n"
-            "/코인순위\n"
-            "/코인내역 닉네임\n"
-            "/주간랭킹\n"
-            "/주간정산"
+            "📌 일반 명령어
+
+"
+            "기본
+"
+            "/방정보
+"
+            "/버전
+"
+            "/잔액
+"
+            "/출석
+"
+            "/미션
+"
+            "/미션수령
+
+"
+            "상점
+"
+            "/상점
+"
+            "/구매 상품명
+"
+            "/내보유
+"
+            "/사용 구매번호"
         )
         return
 
@@ -1931,61 +2004,113 @@ def handle(event):
     # =========================
     # 도움말
     # =========================
-    if text.startswith("/도움말"):
+    if text == "/운영명령어":
         reply(
             event.reply_token,
-            "📌 마디수 봇 명령어\n\n"
-            "조회\n"
-            "/마디수\n"
-            "/마디수 YYYY-MM-DD\n"
-            "/순위\n"
-            "/순위 YYYY-MM-DD\n"
-            "/전체순위\n"
-            "/경고\n"
-            "/경고 YYYY-MM-DD\n"
-            "/관리진마디수\n"
-            "/관리진마디수 YYYY-MM-DD\n"
-            "/관리진순위\n"
-            "/관리진순위 YYYY-MM-DD\n"
-            "/방정보\n\n"
-            "코인\n"
-            "/지급 닉네임 금액 사유\n"
-            "/차감 닉네임 금액 사유\n"
-            "/잔액\n"
-            "/잔액 닉네임\n"
-            "/출석\n"
-            "/미션\n"
-            "/미션수령\n"
-            "/코인순위 또는 /화폐순위\n"
-            "/코인내역 닉네임 또는 /화폐내역 닉네임\n"
-            "/유저검색 닉네임\n/유저검색ID USER_ID\n/유저동기화\n/유저상세 닉네임\n/수집상태\n/오늘수집\n/최근로그\n/미션확인 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
-            "/퇴장처리 닉네임\n"
-            "/복구처리 닉네임\n"
-            "/주간랭킹\n"
-            "/주간정산\n\n"
-            "상점\n"
-            "/상품등록 상품명 가격 설명\n"
-            "/상품삭제 상품명\n"
-            "/상점\n"
-            "/구매 상품명\n"
-            "/내보유\n"
-            "/보유목록\n"
-            "/보유목록 닉네임\n"
-            "/사용 구매번호\n"
-            "/사용처리 구매번호 메모\n"
-            "/구매목록\n"
-            "/사용목록\n"
-            "/구매취소 구매번호\n\n"
-            "초기화\n"
-            "/초기화 YYYY-MM-DD\n"
-            "/전체초기화 확인\n"
-            "/멤버초기화 확인\n"
-            "/화폐초기화 확인\n"
-            "/완전초기화 확인\n"
-            "/닉삭제 닉네임\n\n"
-            f"기준\n"
-            f"남자 {MALE_LIMIT}마디 미만 경고\n"
-            f"여자 {FEMALE_LIMIT}마디 미만 경고"
+            "🛠 운영 명령어
+
+"
+            "마디수
+"
+            "/마디수
+"
+            "/마디수 YYYY-MM-DD
+"
+            "/순위
+"
+            "/순위 YYYY-MM-DD
+"
+            "/전체순위
+"
+            "/경고
+"
+            "/경고 YYYY-MM-DD
+"
+            "/관리진마디수
+"
+            "/관리진순위
+
+"
+            "유저/수집
+"
+            "/유저검색 닉네임
+"
+            "/유저검색ID USER_ID
+"
+            "/유저동기화
+"
+            "/유저상세 닉네임
+"
+            "/수집상태
+"
+            "/수집누락
+"
+            "/오늘수집
+"
+            "/최근로그
+"
+            "/퇴장처리 닉네임
+"
+            "/퇴장처리ID USER_ID
+"
+            "/복구처리 닉네임
+"
+            "/복구처리ID USER_ID
+
+"
+            "코인
+"
+            "/지급 닉네임 금액 사유
+"
+            "/차감 닉네임 금액 사유
+"
+            "/잔액 닉네임
+"
+            "/코인순위
+"
+            "/코인내역 닉네임
+"
+            "/주간랭킹
+"
+            "/주간정산
+"
+            "/주간초기화
+"
+            "/주간초기화 전체
+
+"
+            "상점
+"
+            "/상품등록 상품명 가격 설명
+"
+            "/상품삭제 상품명
+"
+            "/구매목록
+"
+            "/보유목록
+"
+            "/보유목록 닉네임
+"
+            "/사용처리 구매번호 메모
+"
+            "/사용목록
+"
+            "/구매취소 구매번호
+
+"
+            "초기화
+"
+            "/초기화 YYYY-MM-DD
+"
+            "/전체초기화 확인
+"
+            "/멤버초기화 확인
+"
+            "/화폐초기화 확인
+"
+            "/완전초기화 확인
+"
+            "/닉삭제 닉네임"
         )
         return
 
@@ -2143,6 +2268,40 @@ def handle(event):
         reply(event.reply_token, "\n".join(lines))
         return
 
+    if text == "/주간초기화":
+        week_start, week_end = week_range_for_today()
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        DELETE FROM weekly_rewards
+        WHERE week_start = ?
+          AND week_end = ?
+        """, (week_start, week_end))
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+
+        reply(
+            event.reply_token,
+            f"🔄 이번 주 정산 초기화 완료\n\n삭제: {deleted}건\n기간: {week_start} ~ {week_end}"
+        )
+        return
+
+    if text == "/주간초기화 전체":
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM weekly_rewards")
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+
+        reply(
+            event.reply_token,
+            f"⚠️ 전체 주간보상 이력 삭제 완료\n\n삭제: {deleted}건"
+        )
+        return
+
     if text == "/주간정산":
         week_start, week_end = week_range_for_today()
         paid = settle_weekly_rewards(COUNT_SOURCE_ID, week_start, week_end)
@@ -2281,7 +2440,8 @@ def handle(event):
 
 
     if text == "/수집상태":
-        log_row, count_row, top_rows = collection_status(COUNT_SOURCE_ID, date_str)
+        log_row, count_row, all_rows = collection_status(COUNT_SOURCE_ID, date_str)
+
         lines = [
             "📡 메인방 수집 상태",
             f"날짜: {date_str}",
@@ -2292,13 +2452,43 @@ def handle(event):
             f"counts 전체 마디수: {count_row['total_madi']}",
             f"counts 집계 유저 수: {count_row['counted_users']}",
             "",
-            "TOP 10",
+            f"전체 수집 인원: {len(all_rows)}명",
+            "",
         ]
-        for i, row in enumerate(top_rows, 1):
-            lines.append(f"{i}. {row['user_name']} - {row['count']}")
-        if not top_rows:
+
+        if not all_rows:
             lines.append("데이터 없음")
-        reply(event.reply_token, "\n".join(lines))
+        else:
+            for i, row in enumerate(all_rows, 1):
+                lines.append(f"{i}. {row['user_name']} - {row['count']}")
+
+        reply(event.reply_token, format_long_lines("", lines).strip())
+        return
+
+    if text == "/수집누락":
+        users_no_count, logs_no_count, counts_no_user = collection_missing(COUNT_SOURCE_ID, date_str)
+
+        lines = [
+            "🧩 메인방 수집 누락 점검",
+            f"날짜: {date_str}",
+            "",
+            f"1) 활성 users 중 오늘 마디수 없음: {len(users_no_count)}명",
+        ]
+
+        for row in users_no_count:
+            lines.append(f"- {row['user_name']} / {row['user_id']}")
+
+        lines.append("")
+        lines.append(f"2) chat_logs에는 있는데 counts 없음: {len(logs_no_count)}명")
+        for row in logs_no_count:
+            lines.append(f"- {row['user_name']} / 로그 {row['logs']}개 / {row['user_id']}")
+
+        lines.append("")
+        lines.append(f"3) counts에는 있는데 users 없음: {len(counts_no_user)}명")
+        for row in counts_no_user:
+            lines.append(f"- {row['user_name']} / {row['count']}마디 / {row['user_id']}")
+
+        reply(event.reply_token, format_long_lines("", lines).strip())
         return
 
     if text == "/오늘수집":
