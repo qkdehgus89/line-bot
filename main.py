@@ -54,7 +54,7 @@ PORT = int(os.getenv("PORT", "5000"))
 MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v7.3-syntaxfix"
+BOT_VERSION = "active-id-v8-reward-update"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -1394,9 +1394,9 @@ def status_text(status):
 # 출석 / 미션 / 주간정산
 # =========================
 MISSION_REWARDS = [
-    ("daily_20", 20, 5),     # 20마디 = 0.5코인
-    ("daily_50", 50, 10),    # 50마디 = 1코인
-    ("daily_100", 100, 20),  # 100마디 = 2코인
+    ("daily_100", 100, 1),   # 100마디 = 0.1코인
+    ("daily_200", 200, 1),   # 200마디 = 0.1코인
+    ("daily_300", 300, 1),   # 300마디 = 0.1코인
 ]
 
 
@@ -1416,7 +1416,7 @@ def get_user_count(date_str, source_id, user_id):
 
 
 def attendance_check(date_str, user_id, user_name):
-    reward = 2  # 0.2코인
+    reward = 5  # 0.5코인
 
     conn = db()
     cur = conn.cursor()
@@ -1566,13 +1566,13 @@ def weekly_ranking_rows(source_id, week_start, week_end, limit=10):
 
 def weekly_reward_amount(rank):
     if rank == 1:
-        return 100  # 10코인
-    if rank == 2:
-        return 70   # 7코인
-    if rank == 3:
-        return 50   # 5코인
-    if 4 <= rank <= 10:
         return 20   # 2코인
+    if rank == 2:
+        return 10   # 1코인
+    if rank == 3:
+        return 5    # 0.5코인
+    if 4 <= rank <= 10:
+        return 2    # 0.2코인
     return 0
 
 
@@ -1863,7 +1863,7 @@ def handle(event):
         reply(
             event.reply_token,
             f"✅ 출석 완료\n\n"
-            f"+0.2{CURRENCY_NAME} 지급\n"
+            f"+0.5{CURRENCY_NAME} 지급\n"
             f"현재 잔액: {coin_text(balance)}"
         )
         return
@@ -1873,6 +1873,9 @@ def handle(event):
         lines = [
             "🎯 오늘의 미션",
             f"오늘 마디수: {count}",
+            "",
+            "100마디 / 200마디 / 300마디",
+            "각 단계마다 +0.1코인",
             "",
         ]
 
