@@ -54,7 +54,7 @@ PORT = int(os.getenv("PORT", "5000"))
 MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v8-reward-update"
+BOT_VERSION = "active-id-v8.2-tracefix"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -658,7 +658,7 @@ def collection_missing(source_id, date_str):
 
 
 def format_long_lines(title, lines, max_chars=4500):
-    msg = title + "\\n\\n"
+    msg = title + "\n\n"
     used = len(msg)
     output = [title, ""]
 
@@ -671,7 +671,7 @@ def format_long_lines(title, lines, max_chars=4500):
         output.append(line)
         used += extra
 
-    return "\\n".join(output)
+    return "\n".join(output)
 
 
 def recent_chat_logs(source_id, limit=20):
@@ -688,6 +688,86 @@ def recent_chat_logs(source_id, limit=20):
     conn.close()
     return rows
 
+
+
+def recent_all_chat_logs(limit=50):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT created_at, source_id, user_name, user_id, text
+    FROM chat_logs
+    ORDER BY id DESC
+    LIMIT ?
+    """, (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def trace_chat_keyword(keyword, limit=50):
+    clean = clean_keyword(keyword)
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT created_at, source_id, user_name, user_id, text
+    FROM chat_logs
+    WHERE text LIKE ?
+       OR user_name LIKE ?
+       OR user_id LIKE ?
+    ORDER BY id DESC
+    LIMIT ?
+    """, (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%", limit))
+    rows = cur.fetchall()
+
+    if not rows and clean:
+        cur.execute("""
+        SELECT created_at, source_id, user_name, user_id, text
+        FROM chat_logs
+        ORDER BY id DESC
+        LIMIT 300
+        """)
+        candidates = cur.fetchall()
+        rows = [
+            row for row in candidates
+            if clean in clean_keyword(row["user_name"])
+            or clean in clean_keyword(row["text"])
+            or clean in clean_keyword(row["user_id"])
+        ][:limit]
+
+    conn.close()
+    return rows
+
+
+def collection_status_by_user(user_id):
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT COUNT(*) AS log_count, MAX(created_at) AS last_log
+    FROM chat_logs
+    WHERE user_id = ?
+    """, (user_id,))
+    log_row = cur.fetchone()
+
+    cur.execute("""
+    SELECT COALESCE(SUM(count), 0) AS total_count,
+           COUNT(DISTINCT date) AS active_days,
+           MAX(date) AS last_count_date
+    FROM counts
+    WHERE user_id = ?
+    """, (user_id,))
+    count_row = cur.fetchone()
+
+    cur.execute("""
+    SELECT user_id, user_name, COALESCE(is_active, 1) AS is_active, last_seen_source_id, updated_at
+    FROM users
+    WHERE user_id = ?
+    """, (user_id,))
+    user_row = cur.fetchone()
+
+    conn.close()
+    return user_row, log_row, count_row
 
 def user_debug(keyword):
     users = find_users(keyword, limit=10)
@@ -1772,25 +1852,45 @@ def callback():
 @handler.add(MessageEvent)
 def handle(event):
     source_id = get_source_id(event)
-    user_id = getattr(event.source, "user_id", None)
-    user_name = get_user_name(event)
+    raw_user_id = getattr(event.source, "user_id", None)
+    user_id = raw_user_id or "NO_USER_ID"
     date_str = today()
 
+    if isinstance(event.message, TextMessageContent):
+        text = (event.message.text or "").strip()
+        message_type = "text"
+    else:
+        text = f"[NON_TEXT:{type(event.message).__name__}]"
+        message_type = "non_text"
+
+    try:
+        user_name = get_user_name(event) if raw_user_id else "NO_USER_ID"
+    except Exception as e:
+        print("GET_USER_NAME_ERROR:", e)
+        user_name = "PROFILE_ERROR"
+
     print("SOURCE_ID:", source_id)
+    print("RAW_USER_ID:", raw_user_id)
     print("USER_ID:", user_id)
     print("USER_NAME:", user_name)
+    print("MESSAGE_TEXT:", text)
 
-    if user_id:
-        upsert_user(user_id, user_name, source_id)
+    # 채팅 원본 로그 저장: user_id가 없어도 NO_USER_ID로 남겨서 추적 가능하게 함
+    try:
+        save_chat_log(date_str, source_id, user_id, user_name, message_type, text)
+    except Exception as e:
+        print("CHAT_LOG_SAVE_ERROR:", e)
+
+    if raw_user_id:
+        upsert_user(raw_user_id, user_name, source_id)
 
     # 메인방 + 운영진방 둘 다 마디수 카운트
-    if source_id in count_source_ids() and user_id:
-        add_count(date_str, source_id, user_id, user_name)
+    # 단, user_id가 없는 이벤트는 누가 쳤는지 식별 불가라 마디수에는 포함하지 않음
+    if source_id in count_source_ids() and raw_user_id:
+        add_count(date_str, source_id, raw_user_id, user_name)
 
     if not isinstance(event.message, TextMessageContent):
         return
-
-    text = (event.message.text or "").strip()
 
     # =========================
     # 누구나 사용 가능한 명령어
@@ -2012,10 +2112,10 @@ def handle(event):
             "/유저검색ID USER_ID\n"
             "/유저동기화\n"
             "/유저상세 닉네임\n"
-            "/수집상태\n"
+            "/수집상태\n/DB상태\n"
             "/수집누락\n"
             "/오늘수집\n"
-            "/최근로그\n"
+            "/최근로그\n/최근로그전체\n/유저추적 닉네임\n/수집상태ID USER_ID\n"
             "/퇴장처리 닉네임\n"
             "/퇴장처리ID USER_ID\n"
             "/복구처리 닉네임\n"
@@ -2371,6 +2471,153 @@ def handle(event):
             + "\n".join([f"- {name}" for name in names])
             + "\n\n이제 마디수/순위/경고 조회에 다시 포함됩니다."
         )
+        return
+
+
+    if text == "/DB상태":
+        conn = db()
+        cur = conn.cursor()
+
+        tables = [
+            "users",
+            "counts",
+            "chat_logs",
+            "currency",
+            "currency_logs",
+            "attendance",
+            "mission_claims",
+            "weekly_rewards",
+            "purchases",
+        ]
+
+        lines = [
+            "🧪 DB 상태 점검",
+            f"DB_PATH: {DB_PATH}",
+            "",
+        ]
+
+        for table in tables:
+            try:
+                cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
+                cnt = cur.fetchone()["cnt"]
+                lines.append(f"{table}: {cnt}건")
+            except Exception as e:
+                lines.append(f"{table}: ERROR {e}")
+
+        try:
+            cur.execute("""
+            SELECT created_at, user_name, text
+            FROM chat_logs
+            ORDER BY id DESC
+            LIMIT 1
+            """)
+            row = cur.fetchone()
+            if row:
+                lines.append("")
+                lines.append("최근 chat_log:")
+                lines.append(f"{row['created_at']} / {row['user_name']}")
+                lines.append(str(row['text'])[:80])
+        except Exception as e:
+            lines.append(f"최근 chat_log 조회 ERROR: {e}")
+
+        conn.close()
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+
+    if text.startswith("/최근로그전체"):
+        parts = text.split(maxsplit=1)
+        limit = 50
+        if len(parts) == 2 and parts[1].isdigit():
+            limit = min(max(int(parts[1]), 1), 100)
+
+        rows = recent_all_chat_logs(limit)
+
+        if not rows:
+            reply(event.reply_token, "최근 전체 로그가 없습니다.")
+            return
+
+        lines = [f"🧾 전체 최근 로그 {limit}개", ""]
+        for row in rows:
+            msg = row["text"] or ""
+            if len(msg) > 40:
+                msg = msg[:40] + "..."
+            lines.append(
+                f"{row['created_at']} / {row['user_name']}\n"
+                f"{msg}\n"
+                f"USER_ID: {row['user_id']}\n"
+                f"SOURCE_ID: {row['source_id']}"
+            )
+
+        reply(event.reply_token, format_long_lines("", lines).strip())
+        return
+
+    if text.startswith("/유저추적 "):
+        keyword = text.replace("/유저추적", "", 1).strip()
+
+        if not keyword:
+            reply(event.reply_token, "사용법\n\n/유저추적 닉네임 또는 USER_ID 또는 메시지내용")
+            return
+
+        rows = trace_chat_keyword(keyword, limit=50)
+
+        if not rows:
+            reply(event.reply_token, f"추적 로그가 없습니다.\n검색어: {keyword}")
+            return
+
+        lines = [f"🕵️ 유저/메시지 추적: {keyword}", ""]
+        for row in rows:
+            msg = row["text"] or ""
+            if len(msg) > 50:
+                msg = msg[:50] + "..."
+            lines.append(
+                f"{row['created_at']} / {row['user_name']}\n"
+                f"{msg}\n"
+                f"USER_ID: {row['user_id']}\n"
+                f"SOURCE_ID: {row['source_id']}"
+            )
+
+        reply(event.reply_token, format_long_lines("", lines).strip())
+        return
+
+    if text.startswith("/수집상태ID "):
+        target_user_id = text.replace("/수집상태ID", "", 1).strip()
+
+        if not target_user_id:
+            reply(event.reply_token, "사용법\n\n/수집상태ID USER_ID")
+            return
+
+        user_row, log_row, count_row = collection_status_by_user(target_user_id)
+
+        lines = [
+            "🔎 USER_ID 수집 상태",
+            f"USER_ID: {target_user_id}",
+            "",
+        ]
+
+        if user_row:
+            active_label = "활성" if user_row["is_active"] else "퇴장처리됨"
+            lines.extend([
+                f"users 닉네임: {user_row['user_name']}",
+                f"상태: {active_label}",
+                f"last_seen_source_id: {user_row['last_seen_source_id']}",
+                f"updated_at: {user_row['updated_at']}",
+                "",
+            ])
+        else:
+            lines.append("users: 없음")
+            lines.append("")
+
+        lines.extend([
+            f"chat_logs 수: {log_row['log_count'] if log_row else 0}",
+            f"최근 chat_log: {log_row['last_log'] if log_row else None}",
+            "",
+            f"counts 누적 마디수: {count_row['total_count'] if count_row else 0}",
+            f"counts 활동일수: {count_row['active_days'] if count_row else 0}",
+            f"최근 count 날짜: {count_row['last_count_date'] if count_row else None}",
+        ])
+
+        reply(event.reply_token, "\n".join(lines))
         return
 
 
