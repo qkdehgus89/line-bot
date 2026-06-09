@@ -54,7 +54,7 @@ PORT = int(os.getenv("PORT", "5000"))
 MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v5-user-sync"
+BOT_VERSION = "active-id-v6-debug-log"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -205,6 +205,20 @@ def init_db():
         is_active INTEGER DEFAULT 1,
         last_seen_source_id TEXT,
         updated_at TEXT NOT NULL
+    )
+    """)
+
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS chat_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        user_id TEXT,
+        user_name TEXT,
+        message_type TEXT,
+        text TEXT,
+        created_at TEXT NOT NULL
     )
     """)
 
@@ -547,6 +561,92 @@ def add_count(date_str, source_id, user_id, user_name):
     """, (date_str, source_id, user_id, user_name))
     conn.commit()
     conn.close()
+
+
+def save_chat_log(date_str, source_id, user_id, user_name, message_type, text_value):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO chat_logs (date, source_id, user_id, user_name, message_type, text, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (date_str, source_id, user_id, user_name, message_type, text_value, now_str()))
+    conn.commit()
+    conn.close()
+
+
+def collection_status(source_id, date_str):
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT COUNT(*) AS total_logs, COUNT(DISTINCT user_id) AS active_users
+    FROM chat_logs
+    WHERE source_id=? AND date=?
+    """, (source_id, date_str))
+    log_row = cur.fetchone()
+
+    cur.execute("""
+    SELECT COUNT(*) AS rows_count, COALESCE(SUM(count),0) AS total_madi, COUNT(DISTINCT user_id) AS counted_users
+    FROM counts
+    WHERE source_id=? AND date=?
+    """, (source_id, date_str))
+    count_row = cur.fetchone()
+
+    cur.execute("""
+    SELECT user_name, count
+    FROM counts
+    WHERE source_id=? AND date=?
+    ORDER BY count DESC, user_name ASC
+    LIMIT 10
+    """, (source_id, date_str))
+    top_rows = cur.fetchall()
+
+    conn.close()
+    return log_row, count_row, top_rows
+
+
+def recent_chat_logs(source_id, limit=20):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT created_at, user_name, user_id, text
+    FROM chat_logs
+    WHERE source_id=?
+    ORDER BY id DESC
+    LIMIT ?
+    """, (source_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def user_debug(keyword):
+    users = find_users(keyword, limit=10)
+    conn = db()
+    cur = conn.cursor()
+    result = []
+
+    for user in users:
+        cur.execute("SELECT COALESCE(SUM(count),0) AS total_count, COUNT(DISTINCT date) AS active_days FROM counts WHERE user_id=?", (user["user_id"],))
+        c = cur.fetchone()
+        cur.execute("SELECT COUNT(*) AS log_count, MAX(created_at) AS last_log FROM chat_logs WHERE user_id=?", (user["user_id"],))
+        l = cur.fetchone()
+        cur.execute("SELECT balance FROM currency WHERE user_id=?", (user["user_id"],))
+        b = cur.fetchone()
+
+        result.append({
+            "user_id": user["user_id"],
+            "user_name": user["user_name"],
+            "is_active": user["is_active"],
+            "total_count": c["total_count"] if c else 0,
+            "active_days": c["active_days"] if c else 0,
+            "log_count": l["log_count"] if l else 0,
+            "last_log": l["last_log"] if l else None,
+            "balance": b["balance"] if b else 0,
+        })
+
+    conn.close()
+    return result
 
 
 def set_gender(user_name_keyword, gender):
@@ -1683,7 +1783,7 @@ def handle(event):
             "/전체순위\n"
             "/관리진마디수\n"
             "/관리진순위\n"
-            "/유저검색 닉네임\n/유저검색ID USER_ID\n/유저동기화\n/미션확인 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
+            "/유저검색 닉네임\n/유저상세 닉네임\n/수집상태\n/오늘수집\n/최근로그\n/유저검색ID USER_ID\n/유저동기화\n/유저상세 닉네임\n/수집상태\n/오늘수집\n/최근로그\n/미션확인 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
             "/퇴장처리 닉네임\n"
             "/복구처리 닉네임\n"
             "/지급 닉네임 금액 사유\n"
@@ -1858,7 +1958,7 @@ def handle(event):
             "/미션수령\n"
             "/코인순위 또는 /화폐순위\n"
             "/코인내역 닉네임 또는 /화폐내역 닉네임\n"
-            "/유저검색 닉네임\n/유저검색ID USER_ID\n/유저동기화\n/미션확인 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
+            "/유저검색 닉네임\n/유저검색ID USER_ID\n/유저동기화\n/유저상세 닉네임\n/수집상태\n/오늘수집\n/최근로그\n/미션확인 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
             "/퇴장처리 닉네임\n"
             "/복구처리 닉네임\n"
             "/주간랭킹\n"
@@ -2177,6 +2277,81 @@ def handle(event):
             + "\n".join([f"- {name}" for name in names])
             + "\n\n이제 마디수/순위/경고 조회에 다시 포함됩니다."
         )
+        return
+
+
+    if text == "/수집상태":
+        log_row, count_row, top_rows = collection_status(COUNT_SOURCE_ID, date_str)
+        lines = [
+            "📡 메인방 수집 상태",
+            f"날짜: {date_str}",
+            "",
+            f"chat_logs 메시지 수: {log_row['total_logs']}",
+            f"chat_logs 발화 유저 수: {log_row['active_users']}",
+            "",
+            f"counts 전체 마디수: {count_row['total_madi']}",
+            f"counts 집계 유저 수: {count_row['counted_users']}",
+            "",
+            "TOP 10",
+        ]
+        for i, row in enumerate(top_rows, 1):
+            lines.append(f"{i}. {row['user_name']} - {row['count']}")
+        if not top_rows:
+            lines.append("데이터 없음")
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text == "/오늘수집":
+        log_row, count_row, top_rows = collection_status(source_id, date_str)
+        reply(
+            event.reply_token,
+            f"📡 현재 방 수집 상태\n\n"
+            f"날짜: {date_str}\n"
+            f"SOURCE_ID: {source_id}\n\n"
+            f"chat_logs 메시지 수: {log_row['total_logs']}\n"
+            f"chat_logs 발화 유저 수: {log_row['active_users']}\n\n"
+            f"counts 전체 마디수: {count_row['total_madi']}\n"
+            f"counts 집계 유저 수: {count_row['counted_users']}"
+        )
+        return
+
+    if text.startswith("/최근로그"):
+        parts = text.split(maxsplit=1)
+        limit = 20
+        if len(parts) == 2 and parts[1].isdigit():
+            limit = min(max(int(parts[1]), 1), 50)
+        rows = recent_chat_logs(COUNT_SOURCE_ID, limit)
+        if not rows:
+            reply(event.reply_token, "최근 로그가 없습니다.")
+            return
+        lines = [f"📝 메인방 최근 로그 {limit}개", ""]
+        for row in rows:
+            msg = row["text"] or ""
+            if len(msg) > 30:
+                msg = msg[:30] + "..."
+            lines.append(f"{row['created_at']} / {row['user_name']}\n{msg}\nUSER_ID: {row['user_id']}")
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text.startswith("/유저상세 "):
+        keyword = text.replace("/유저상세", "", 1).strip()
+        rows = user_debug(keyword)
+        if not rows:
+            reply(event.reply_token, f"검색 결과가 없습니다.\n검색어: {keyword}")
+            return
+        lines = [f"🔬 유저 상세: {keyword}", ""]
+        for i, row in enumerate(rows, 1):
+            active_label = "활성" if row["is_active"] else "퇴장처리됨"
+            lines.append(
+                f"{i}. {row['user_name']} / {active_label}\n"
+                f"USER_ID: {row['user_id']}\n"
+                f"누적 마디수: {row['total_count']}\n"
+                f"활동일수: {row['active_days']}\n"
+                f"로그 수: {row['log_count']}\n"
+                f"마지막 로그: {row['last_log']}\n"
+                f"잔액: {coin_text(row['balance'])}"
+            )
+        reply(event.reply_token, "\n\n".join(lines))
         return
 
 
