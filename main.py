@@ -54,7 +54,7 @@ PORT = int(os.getenv("PORT", "5000"))
 MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v4"
+BOT_VERSION = "active-id-v5-user-sync"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -438,50 +438,100 @@ def upsert_user(user_id, user_name, source_id):
 
 
 def clean_keyword(text_value):
-    return "".join(ch for ch in str(text_value) if ch.isalnum() or ('가' <= ch <= '힣')).lower()
+    return "".join(ch for ch in str(text_value) if ch.isalnum() or ("가" <= ch <= "힣")).lower()
 
 
 def find_users(keyword, limit=10):
+    clean = clean_keyword(keyword)
+    results = {}
     conn = db()
     cur = conn.cursor()
 
-    cur.execute("""
-    SELECT user_id, user_name, updated_at, COALESCE(is_active, 1) AS is_active
-    FROM users
-    WHERE user_name LIKE ?
-    ORDER BY updated_at DESC
-    LIMIT ?
-    """, (f"%{keyword}%", limit))
+    search_sqls = [
+        ("""
+        SELECT user_id, user_name, updated_at, COALESCE(is_active, 1) AS is_active
+        FROM users
+        WHERE user_name LIKE ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """, (f"%{keyword}%", limit)),
+        ("""
+        SELECT user_id, user_name, MAX(date) AS updated_at, 1 AS is_active
+        FROM counts
+        WHERE user_name LIKE ?
+        GROUP BY user_id
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """, (f"%{keyword}%", limit)),
+        ("""
+        SELECT user_id, user_name, MAX(created_at) AS updated_at, 1 AS is_active
+        FROM currency_logs
+        WHERE user_name LIKE ?
+        GROUP BY user_id
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """, (f"%{keyword}%", limit)),
+        ("""
+        SELECT user_id, user_name, MAX(created_at) AS updated_at, 1 AS is_active
+        FROM purchases
+        WHERE user_name LIKE ?
+        GROUP BY user_id
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """, (f"%{keyword}%", limit)),
+    ]
 
-    rows = cur.fetchall()
+    for sql, params in search_sqls:
+        if len(results) >= limit:
+            break
+        try:
+            cur.execute(sql, params)
+            for row in cur.fetchall():
+                if row["user_id"] not in results:
+                    results[row["user_id"]] = dict(row)
+        except Exception as e:
+            print("FIND USERS SQL ERROR:", e)
 
-    if rows:
-        conn.close()
-        return rows
+    # 이모지/기호 제거 검색
+    if len(results) < limit and clean:
+        for table, time_col in [
+            ("users", "updated_at"),
+            ("counts", "date"),
+            ("currency_logs", "created_at"),
+            ("purchases", "created_at"),
+        ]:
+            if len(results) >= limit:
+                break
+            try:
+                if table == "users":
+                    cur.execute("""
+                    SELECT user_id, user_name, updated_at, COALESCE(is_active, 1) AS is_active
+                    FROM users
+                    ORDER BY updated_at DESC
+                    """)
+                else:
+                    cur.execute(f"""
+                    SELECT user_id, user_name, MAX({time_col}) AS updated_at, 1 AS is_active
+                    FROM {table}
+                    GROUP BY user_id
+                    ORDER BY updated_at DESC
+                    """)
 
-    # 이모지/기호 제거 후 재검색
-    clean = clean_keyword(keyword)
-    cur.execute("""
-    SELECT user_id, user_name, updated_at, COALESCE(is_active, 1) AS is_active
-    FROM users
-    ORDER BY updated_at DESC
-    """)
-
-    all_rows = cur.fetchall()
-    matched = [
-        row for row in all_rows
-        if clean and clean in clean_keyword(row["user_name"])
-    ][:limit]
+                for row in cur.fetchall():
+                    if row["user_id"] not in results and clean in clean_keyword(row["user_name"]):
+                        results[row["user_id"]] = dict(row)
+                        if len(results) >= limit:
+                            break
+            except Exception as e:
+                print("FIND USERS CLEAN ERROR:", e)
 
     conn.close()
-    return matched
+    return list(results.values())[:limit]
 
 
 def find_user(keyword):
-    rows = find_users(keyword, limit=2)
-    if not rows:
-        return None
-    return rows[0]
+    rows = find_users(keyword, limit=1)
+    return rows[0] if rows else None
 
 
 def add_count(date_str, source_id, user_id, user_name):
@@ -630,6 +680,53 @@ def set_user_active_by_name(keyword, value):
     conn.close()
 
     return changed, names
+
+
+
+def sync_users_from_history():
+    conn = db()
+    cur = conn.cursor()
+    inserted = 0
+    updated = 0
+
+    for table, time_col in [("counts", "date"), ("currency_logs", "created_at"), ("purchases", "created_at")]:
+        try:
+            cur.execute(f"""
+            SELECT user_id, user_name, MAX({time_col}) AS last_time
+            FROM {table}
+            WHERE user_id IS NOT NULL AND user_id != ''
+            GROUP BY user_id
+            """)
+            rows = cur.fetchall()
+        except Exception as e:
+            print("SYNC ERROR:", e)
+            continue
+
+        for row in rows:
+            cur.execute("SELECT user_id FROM users WHERE user_id = ?", (row["user_id"],))
+            if cur.fetchone():
+                cur.execute("""
+                UPDATE users
+                SET user_name = ?,
+                    is_active = COALESCE(is_active, 1),
+                    updated_at = ?
+                WHERE user_id = ?
+                """, (row["user_name"], now_str(), row["user_id"]))
+                updated += cur.rowcount
+            else:
+                cur.execute("""
+                INSERT INTO users (
+                    user_id, user_name, gender, is_nomicl, is_active,
+                    last_seen_source_id, updated_at
+                )
+                VALUES (?, ?, 'unknown', 0, 1, ?, ?)
+                """, (row["user_id"], row["user_name"], COUNT_SOURCE_ID, now_str()))
+                inserted += 1
+
+    conn.commit()
+    conn.close()
+    return inserted, updated
+
 
 
 # =========================
@@ -1128,9 +1225,9 @@ def status_text(status):
 # 출석 / 미션 / 주간정산
 # =========================
 MISSION_REWARDS = [
-    ("daily_20", 100, 1),     # 100마디 = 0.1코인
-    ("daily_50", 200, 1),    # 200마디 = 0.1코인
-    ("daily_100", 300, 1),  # 300마디 = 0.1코인
+    ("daily_20", 20, 5),     # 20마디 = 0.5코인
+    ("daily_50", 50, 10),    # 50마디 = 1코인
+    ("daily_100", 100, 20),  # 100마디 = 2코인
 ]
 
 
@@ -1300,13 +1397,13 @@ def weekly_ranking_rows(source_id, week_start, week_end, limit=10):
 
 def weekly_reward_amount(rank):
     if rank == 1:
-        return 20  # 2코인
+        return 100  # 10코인
     if rank == 2:
-        return 10   # 1코인
+        return 70   # 7코인
     if rank == 3:
-        return 5   # 0.5코인
+        return 50   # 5코인
     if 4 <= rank <= 10:
-        return 2   # 0.2코인
+        return 20   # 2코인
     return 0
 
 
@@ -1586,7 +1683,7 @@ def handle(event):
             "/전체순위\n"
             "/관리진마디수\n"
             "/관리진순위\n"
-            "/유저검색 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
+            "/유저검색 닉네임\n/유저검색ID USER_ID\n/유저동기화\n/미션확인 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
             "/퇴장처리 닉네임\n"
             "/복구처리 닉네임\n"
             "/지급 닉네임 금액 사유\n"
@@ -1761,7 +1858,7 @@ def handle(event):
             "/미션수령\n"
             "/코인순위 또는 /화폐순위\n"
             "/코인내역 닉네임 또는 /화폐내역 닉네임\n"
-            "/유저검색 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
+            "/유저검색 닉네임\n/유저검색ID USER_ID\n/유저동기화\n/미션확인 닉네임\n/퇴장처리 닉네임\n/퇴장처리ID USER_ID\n/복구처리 닉네임\n/복구처리ID USER_ID\n"
             "/퇴장처리 닉네임\n"
             "/복구처리 닉네임\n"
             "/주간랭킹\n"
@@ -1844,6 +1941,63 @@ def handle(event):
 
         reply(event.reply_token, "\n".join(lines))
         return
+
+    if text == "/유저동기화":
+        inserted, updated = sync_users_from_history()
+        reply(
+            event.reply_token,
+            f"🔄 유저 동기화 완료\n\n추가: {inserted}명\n갱신: {updated}건"
+        )
+        return
+
+    if text.startswith("/유저검색ID "):
+        target_user_id = text.replace("/유저검색ID", "", 1).strip()
+        user = get_user_by_id(target_user_id)
+
+        if not user:
+            reply(event.reply_token, f"USER_ID를 찾지 못했습니다.\n{target_user_id}")
+            return
+
+        active_label = "활성" if user["is_active"] else "퇴장처리됨"
+        reply(
+            event.reply_token,
+            f"🔎 유저검색ID 결과\n\n닉네임: {user['user_name']}\n상태: {active_label}\nUSER_ID:\n{user['user_id']}"
+        )
+        return
+
+    if text.startswith("/미션확인 "):
+        keyword = text.replace("/미션확인", "", 1).strip()
+        matches = find_users(keyword, limit=5)
+
+        if not matches:
+            reply(event.reply_token, f"대상을 찾을 수 없습니다.\n검색어: {keyword}\n\n/유저동기화 후 다시 시도해보세요.")
+            return
+
+        if len(matches) > 1:
+            lines = [f"검색 결과가 여러 명입니다: {keyword}", ""]
+            for i, row in enumerate(matches, 1):
+                active_label = "활성" if row["is_active"] else "퇴장처리됨"
+                lines.append(f"{i}. {row['user_name']} / {active_label}\n   USER_ID: {row['user_id']}")
+            reply(event.reply_token, "\n".join(lines))
+            return
+
+        target = matches[0]
+        count, missions = mission_status(date_str, COUNT_SOURCE_ID, target["user_id"])
+
+        lines = [
+            f"🎯 {target['user_name']} 미션 확인",
+            f"오늘 마디수: {count}",
+            "",
+        ]
+
+        for mission in missions:
+            mark = "✅" if mission["done"] else "❌"
+            received = " / 수령완료" if mission["received"] else ""
+            lines.append(f"{mark} {mission['required']}마디 +{coin_text(mission['reward'])}{received}")
+
+        reply(event.reply_token, "\n".join(lines))
+        return
+
 
     if text.startswith("/유저검색"):
         keyword = text.replace("/유저검색", "", 1).strip()
