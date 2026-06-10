@@ -56,7 +56,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v18-nickdelete-confirm"
+BOT_VERSION = "active-id-v18-private-gacha-shop"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -2206,6 +2206,7 @@ def run_gacha(user_id, user_name, tier):
 def gacha_system_text():
     return (
         "🎰 가챠 시스템 🎰\n\n"
+        "※ 가챠는 봇 1:1 개인채팅에서만 이용 가능합니다.\n\n"
         "━━━━━━━━━━\n"
         "🎲 가챠 종류\n"
         "━━━━━━━━━━\n\n"
@@ -3538,6 +3539,55 @@ def push_private_message(user_id, text_value):
         return False
 
 
+def is_private_chat(event):
+    return getattr(event.source, "type", None) == "user"
+
+
+def private_only_notice(event, user_id, guide_text, title="개인 기능"):
+    if not user_id:
+        reply(event.reply_token, "개인 메시지를 보내려면 USER_ID가 필요합니다.\n방에서 채팅 1회 후 다시 입력해주세요.")
+        return
+
+    ok = push_private_message(user_id, guide_text)
+    if ok:
+        reply(event.reply_token, f"📩 {title} 안내를 봇 1:1 개인창으로 보냈습니다.")
+    else:
+        reply(
+            event.reply_token,
+            f"📩 {title}은 봇 1:1 개인창에서 이용해주세요.\n\n"
+            "개인 메시지 전송에 실패했습니다.\n"
+            "봇을 친구추가한 뒤 다시 입력해주세요."
+        )
+
+
+def gacha_private_guide_text():
+    return (
+        "🎰 가챠는 봇 개인채팅에서만 이용 가능합니다.\n\n"
+        "사용 가능 명령어\n"
+        "/가챠 하\n"
+        "/가챠 중\n"
+        "/가챠 상\n\n"
+        "/가챠타입 코인\n"
+        "/가챠타입 조각\n"
+        "/가챠타입 랜덤\n\n"
+        "/조각보유\n"
+        "/행운포인트\n\n"
+        "자세한 안내: /가챠시스템"
+    )
+
+
+def shop_private_guide_text():
+    return (
+        "🛒 상점 기능은 봇 개인채팅에서만 이용 가능합니다.\n\n"
+        "사용 가능 명령어\n"
+        "/상점\n"
+        "/구매 상품명\n"
+        "/내보유\n"
+        "/사용 구매번호\n\n"
+        "코인 보유 확인: /잔액"
+    )
+
+
 def manitto_private_text(row):
     title = "🌈 황금 마니또" if row["manitto_type"] == "golden" else "🎭 S.N.S 마니또"
     score = get_affinity_score(row["hunter_user_id"], row["target_user_id"], row["week_start"])
@@ -3938,13 +3988,14 @@ def handle(event):
             "/출석\n"
             "/미션\n"
             "/미션수령\n\n"
-            "🛒 상점\n"
+            "🛒 상점 ※봇 개인창 전용\n"
             "/상점\n"
             "/구매 상품명\n"
             "/내보유\n"
             "/사용 구매번호\n\n"
-            "🎰 가챠\n"
-            "/가챠시스템\n\n"
+            "🎰 가챠 ※봇 개인창 전용\n"
+            "/가챠시스템\n"
+            "/가챠 하|중|상\n\n"
             "🎖 업적·현상금\n"
             "/업적\n"
             "/현상금\n\n"
@@ -3958,6 +4009,28 @@ def handle(event):
             "/SNS핀볼설명"
         )
         return
+
+    private_gacha_commands = (
+        text == "/가챠시스템"
+        or text.startswith("/가챠타입")
+        or text.startswith("/가챠")
+        or text in ["/행운포인트", "/가챠포인트", "/조각", "/조각보유"]
+    )
+
+    private_shop_commands = (
+        text == "/상점"
+        or text.startswith("/구매 ")
+        or text in ["/내보유", "/내구매", "/보유"]
+        or text.startswith("/사용 ")
+    )
+
+    if not is_private_chat(event):
+        if private_gacha_commands:
+            private_only_notice(event, user_id, gacha_private_guide_text(), "가챠")
+            return
+        if private_shop_commands:
+            private_only_notice(event, user_id, shop_private_guide_text(), "상점")
+            return
 
     if text == "/가챠시스템":
         reply(event.reply_token, gacha_system_text())
