@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import random
+import re
 import threading
 import time
 from datetime import datetime, timezone, timedelta
@@ -58,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v24-chat-jackpot-notify-only"
+BOT_VERSION = "active-id-v25-jokbo-coin-auto"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -530,6 +531,15 @@ def init_db():
         updated_at TEXT NOT NULL,
         completed_at TEXT,
         PRIMARY KEY (week_start, hunter_user_id)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS genealogy_text (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        content TEXT NOT NULL,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL
     )
     """)
 
@@ -4057,6 +4067,116 @@ def manitto_admin_status_text():
             lines.append(f"{i}. {row['hunter_user_name']} → {row['target_user_name']} / {kind} / 목표 {row['required_score']} / {reward} / {mark}")
     return format_long_lines("", lines).strip()
 
+
+# =========================
+# 족보 / 코인 표시
+# =========================
+def strip_coin_suffix(line):
+    """족보를 다시 붙여넣을 때 기존 코인 표기가 중복되지 않도록 줄 끝 코인 표시 제거."""
+    return re.sub(r"\s*💰\s*\d+(?:\.\d+)?(?:코인)?\s*$", "", str(line)).rstrip()
+
+
+def normalize_genealogy_content(content):
+    lines = str(content or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return "\n".join(strip_coin_suffix(line) for line in lines).strip()
+
+
+def save_genealogy_content(content, staff_user_name=""):
+    content = normalize_genealogy_content(content)
+    if not content:
+        return False, "저장할 족보 내용이 없습니다."
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO genealogy_text (id, content, updated_by, updated_at)
+    VALUES (1, ?, ?, ?)
+    ON CONFLICT(id)
+    DO UPDATE SET
+        content = excluded.content,
+        updated_by = excluded.updated_by,
+        updated_at = excluded.updated_at
+    """, (content, staff_user_name, now_str()))
+    conn.commit()
+    conn.close()
+    return True, "📖 족보 저장 완료\n\n/족보 또는 /족보보기 로 확인할 수 있습니다."
+
+
+def get_genealogy_content():
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT content FROM genealogy_text WHERE id = 1")
+    row = cur.fetchone()
+    conn.close()
+    return row["content"] if row else ""
+
+
+def genealogy_coin_users():
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT u.user_id, u.user_name, COALESCE(c.balance, 0) AS balance
+    FROM users u
+    JOIN currency c ON u.user_id = c.user_id
+    WHERE COALESCE(c.balance, 0) > 0
+      AND COALESCE(u.is_active, 1) = 1
+    ORDER BY LENGTH(u.user_name) DESC, u.user_name ASC
+    """)
+    rows = [dict(row) for row in cur.fetchall()]
+    conn.close()
+
+    prepared = []
+    for row in rows:
+        name = row.get("user_name") or ""
+        clean_name = clean_keyword(name)
+        if not clean_name:
+            continue
+        # 숫자/나이/이모티콘이 섞인 족보 닉네임 매칭을 위해 이름 안의 한글/숫자 토큰도 같이 준비
+        prepared.append({
+            "user_id": row["user_id"],
+            "user_name": name,
+            "clean_name": clean_name,
+            "balance": int(row["balance"]),
+        })
+    return prepared
+
+
+def coin_for_genealogy_line(line, coin_users):
+    base_line = strip_coin_suffix(line)
+    clean_line = clean_keyword(base_line)
+    if not clean_line:
+        return None
+
+    # 사람 정보는 보통 줄 앞쪽에 닉네임이 있으므로 앞부분 위주로 매칭한다.
+    head = clean_line[:30]
+
+    for user in coin_users:
+        cn = user["clean_name"]
+        if not cn:
+            continue
+        if head.startswith(cn) or cn in head:
+            return user["balance"]
+
+    return None
+
+
+def genealogy_text_with_coins():
+    content = get_genealogy_content()
+    if not content:
+        return "저장된 족보가 없습니다.\n\n운영진이 아래 형식으로 먼저 저장해주세요.\n\n/족보입력\n족보 내용 붙여넣기"
+
+    coin_users = genealogy_coin_users()
+    lines = []
+    for line in content.split("\n"):
+        base = strip_coin_suffix(line)
+        balance = coin_for_genealogy_line(base, coin_users)
+        if balance and balance > 0:
+            lines.append(f"{base} 💰{points_to_coin(balance)}")
+        else:
+            lines.append(base)
+
+    return format_long_lines("", lines).strip()
+
 # =========================
 # 출력 포맷
 # =========================
@@ -4237,6 +4357,30 @@ def handle(event):
             "/SNS핀볼현황\n"
             "/SNS핀볼설명"
         )
+        return
+
+    if text in ["/족보", "/족보보기", "/족보코인"]:
+        reply(event.reply_token, genealogy_text_with_coins())
+        return
+
+    if text.startswith("/족보입력") or text.startswith("/족보저장"):
+        if source_id not in ADMIN_SOURCE_IDS or not is_staff(user_id):
+            reply(event.reply_token, "족보 입력은 운영진방에서 운영진만 사용할 수 있습니다.")
+            return
+
+        if text.startswith("/족보입력"):
+            content = text.replace("/족보입력", "", 1).strip()
+            usage = "/족보입력\n족보 내용 붙여넣기"
+        else:
+            content = text.replace("/족보저장", "", 1).strip()
+            usage = "/족보저장\n족보 내용 붙여넣기"
+
+        if not content:
+            reply(event.reply_token, f"사용법\n\n{usage}")
+            return
+
+        ok, msg = save_genealogy_content(content, user_name)
+        reply(event.reply_token, msg)
         return
 
     private_gacha_commands = (
