@@ -59,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v25-jokbo-coin-auto"
+BOT_VERSION = "active-id-v26-jokbo-input-fix"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -95,6 +95,10 @@ config = Configuration(access_token=TOKEN)
 # 닉삭제 다중 검색/확인 임시 저장소
 # key: 운영진 user_id / value: {mode, candidates|target}
 DELETE_PENDING = {}
+
+# 족보 입력 대기 저장소
+# /족보입력 만 입력한 뒤 다음 메시지 전체를 족보로 저장
+JOKBO_PENDING = {}
 
 
 # =========================
@@ -4077,7 +4081,28 @@ def strip_coin_suffix(line):
 
 
 def normalize_genealogy_content(content):
-    lines = str(content or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    text_value = str(content or "")
+
+    # LINE/복사 과정에서 실제 줄바꿈이 아니라 문자 \\n 으로 들어온 경우 복구
+    text_value = text_value.replace("\\r\\n", "\n").replace("\\n", "\n")
+    text_value = text_value.replace("\r\n", "\n").replace("\r", "\n")
+
+    # 실수로 본문 앞에 /족보입력, /족보저장 명령어를 같이 붙여넣은 경우 제거
+    text_value = text_value.strip()
+    while True:
+        stripped = text_value.lstrip()
+        lowered = stripped.lower()
+        removed = False
+        for cmd in ["/족보입력", "/족보저장"]:
+            if lowered.startswith(cmd):
+                stripped = stripped[len(cmd):].lstrip()
+                text_value = stripped
+                removed = True
+                break
+        if not removed:
+            break
+
+    lines = text_value.split("\n")
     return "\n".join(strip_coin_suffix(line) for line in lines).strip()
 
 
@@ -4273,6 +4298,29 @@ def handle(event):
 
     text = (event.message.text or "").strip()
 
+    # /족보입력 이후 다음 메시지를 족보 본문으로 저장
+    if user_id in JOKBO_PENDING and not (text.startswith("/족보입력") or text.startswith("/족보저장")):
+        if text == "/족보취소":
+            JOKBO_PENDING.pop(user_id, None)
+            reply(event.reply_token, "족보 입력을 취소했습니다.")
+            return
+
+        if source_id not in ADMIN_SOURCE_IDS or not is_staff(user_id):
+            JOKBO_PENDING.pop(user_id, None)
+            reply(event.reply_token, "족보 입력은 운영진방에서 운영진만 사용할 수 있습니다.")
+            return
+
+        # 명령어를 잘못 입력한 경우 족보로 저장하지 않음
+        if text.startswith("/") and "S.N.S" not in text and "족보" not in text:
+            JOKBO_PENDING.pop(user_id, None)
+            reply(event.reply_token, "족보 입력을 취소했습니다. 다시 입력하려면 /족보입력 을 사용해주세요.")
+            return
+
+        ok, msg = save_genealogy_content(text, user_name)
+        JOKBO_PENDING.pop(user_id, None)
+        reply(event.reply_token, msg)
+        return
+
     try:
         affinity_msg = process_affinity_message(source_id, user_id, user_name, text)
         if affinity_msg:
@@ -4370,17 +4418,32 @@ def handle(event):
 
         if text.startswith("/족보입력"):
             content = text.replace("/족보입력", "", 1).strip()
-            usage = "/족보입력\n족보 내용 붙여넣기"
         else:
             content = text.replace("/족보저장", "", 1).strip()
-            usage = "/족보저장\n족보 내용 붙여넣기"
 
         if not content:
-            reply(event.reply_token, f"사용법\n\n{usage}")
+            JOKBO_PENDING[user_id] = {"source_id": source_id, "started_at": now_str()}
+            reply(
+                event.reply_token,
+                "📒 족보 입력 대기중\n\n"
+                "이제 다음 메시지에 현재 족보 전체를 그대로 붙여넣어 주세요.\n\n"
+                "※ /족보입력 명령어를 다시 붙이지 않아도 됩니다.\n"
+                "※ 실수로 명령어가 앞에 붙어도 자동 제거됩니다.\n\n"
+                "취소: /족보취소"
+            )
             return
 
         ok, msg = save_genealogy_content(content, user_name)
+        JOKBO_PENDING.pop(user_id, None)
         reply(event.reply_token, msg)
+        return
+
+    if text == "/족보취소":
+        if user_id in JOKBO_PENDING:
+            JOKBO_PENDING.pop(user_id, None)
+            reply(event.reply_token, "족보 입력을 취소했습니다.")
+        else:
+            reply(event.reply_token, "취소할 족보 입력이 없습니다.")
         return
 
     private_gacha_commands = (
