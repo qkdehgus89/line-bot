@@ -58,7 +58,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v21-final-economy"
+BOT_VERSION = "active-id-v22-gacha-sat-window"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -2104,9 +2104,32 @@ def random_prize_kind(tier, grade):
     return weighted_pick([(50, "coin"), (50, "piece")])
 
 
+def is_gacha_open_now():
+    """
+    가챠 운영시간 체크.
+    KST 기준 매주 토요일 00:00 이상 21:00 미만만 이용 가능.
+    Python weekday(): 월=0, 토=5
+    """
+    now = datetime.now(KST)
+    return now.weekday() == 5 and 0 <= now.hour < 21
+
+
+def gacha_closed_text():
+    return (
+        "🎰 가챠 운영시간이 아닙니다.\n\n"
+        "운영시간\n"
+        "매주 토요일 00:00 ~ 21:00\n\n"
+        "21시 이후에는 다음 주 토요일에 이용 가능합니다.\n\n"
+        "※ 가챠는 봇 1:1 개인채팅에서만 이용 가능합니다."
+    )
+
+
 def run_gacha(user_id, user_name, tier):
     if tier not in GACHA_COSTS:
         return False, "사용법\n\n/가챠 하\n/가챠 중\n/가챠 상"
+
+    if not is_gacha_open_now():
+        return False, gacha_closed_text()
 
     gacha_type = get_gacha_type(user_id)
     cost = GACHA_COSTS[tier]
@@ -2208,7 +2231,10 @@ def run_gacha(user_id, user_name, tier):
 def gacha_system_text():
     return (
         "🎰 가챠 시스템 🎰\n\n"
-        "※ 가챠는 봇 1:1 개인채팅에서만 이용 가능합니다.\n\n"
+        "운영시간\n"
+        "매주 토요일 00:00 ~ 21:00\n\n"
+        "※ 가챠는 봇 1:1 개인채팅에서만 이용 가능합니다.\n"
+        "※ 운영시간 외에는 이용할 수 없습니다.\n\n"
         "━━━━━━━━━━\n"
         "🎲 가챠 종류\n"
         "━━━━━━━━━━\n\n"
@@ -3615,6 +3641,8 @@ def private_only_notice(event, user_id, guide_text, title="개인 기능"):
 def gacha_private_guide_text():
     return (
         "🎰 가챠는 봇 개인채팅에서만 이용 가능합니다.\n\n"
+        "운영시간\n"
+        "매주 토요일 00:00 ~ 21:00\n\n"
         "사용 가능 명령어\n"
         "/가챠 하\n"
         "/가챠 중\n"
