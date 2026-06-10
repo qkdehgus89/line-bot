@@ -58,7 +58,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v22-gacha-sat-window"
+BOT_VERSION = "active-id-v24-chat-jackpot-notify-only"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -2354,6 +2354,157 @@ def grant_hidden_reward_once(date_str, mission_key, user_id, user_name, reward, 
     return False
 
 
+
+
+def get_system_flag(key, default=None):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM system_flags WHERE key = ?", (key,))
+    row = cur.fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_system_flag(key, value):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO system_flags (key, value)
+    VALUES (?, ?)
+    ON CONFLICT(key)
+    DO UPDATE SET value = excluded.value
+    """, (key, str(value)))
+    conn.commit()
+    conn.close()
+
+
+def get_or_create_chat_jackpot_target():
+    """
+    전체 채팅 잭팟용 랜덤 번호.
+    1~10000 사이에서 777/7777과 겹치지 않게 1회 생성 후 유지.
+    """
+    current = get_system_flag("chat_jackpot_random_target")
+    if current:
+        try:
+            return int(current)
+        except Exception:
+            pass
+
+    target = random.randint(1, 10000)
+    while target in (777, 7777):
+        target = random.randint(1, 10000)
+
+    set_system_flag("chat_jackpot_random_target", target)
+    set_system_flag("chat_jackpot_random_claimed", "0")
+    return target
+
+
+def get_chat_jackpot_count():
+    try:
+        return int(get_system_flag("chat_jackpot_total_count", "0") or 0)
+    except Exception:
+        return 0
+
+
+def increment_chat_jackpot_count():
+    """
+    메인 카운트 대상 방의 유효 메시지를 전체 누적 채팅 1회로 계산.
+    system_flags에 저장해서 Railway 재시작 후에도 유지.
+    """
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT value FROM system_flags WHERE key = 'chat_jackpot_total_count'")
+    row = cur.fetchone()
+    try:
+        current = int(row["value"]) if row else 0
+    except Exception:
+        current = 0
+
+    new_value = current + 1
+
+    cur.execute("""
+    INSERT INTO system_flags (key, value)
+    VALUES ('chat_jackpot_total_count', ?)
+    ON CONFLICT(key)
+    DO UPDATE SET value = excluded.value
+    """, (str(new_value),))
+
+    conn.commit()
+    conn.close()
+    return new_value
+
+
+def check_chat_jackpot_rewards(source_id, user_id, user_name):
+    """
+    전체 누적 채팅 잭팟.
+    - 777번째 채팅: 1코인
+    - 7777번째 채팅: 2코인
+    - 랜덤 1~10000번째 채팅: 3코인
+    각 보상은 전체 기간 1회만 지급.
+    """
+    if source_id != COUNT_SOURCE_ID:
+        return []
+
+    seq = increment_chat_jackpot_count()
+    random_target = get_or_create_chat_jackpot_target()
+    paid = []
+
+    fixed_rewards = [
+        (777, "chat_jackpot_777", 10, "🎰 채팅 잭팟: 전체 777번째 채팅"),
+        (7777, "chat_jackpot_7777", 20, "🎰 메가 잭팟: 전체 7777번째 채팅"),
+    ]
+
+    for target_seq, mission_key, reward, reason in fixed_rewards:
+        if seq == target_seq:
+            ok = grant_hidden_reward_once(
+                "GLOBAL",
+                mission_key,
+                user_id,
+                user_name,
+                reward,
+                reason,
+                f"seq={seq}"
+            )
+            if ok:
+                paid.append((f"{target_seq}번째", reward))
+
+    if seq == random_target and get_system_flag("chat_jackpot_random_claimed", "0") != "1":
+        ok = grant_hidden_reward_once(
+            "GLOBAL",
+            "chat_jackpot_random",
+            user_id,
+            user_name,
+            30,
+            f"🎊 슈퍼 잭팟: 전체 {random_target}번째 채팅",
+            f"target={random_target};seq={seq}"
+        )
+        if ok:
+            set_system_flag("chat_jackpot_random_claimed", "1")
+            paid.append((f"랜덤 {random_target}번째", 30))
+
+    return paid
+
+
+def chat_jackpot_status():
+    target = get_or_create_chat_jackpot_target()
+    total = get_chat_jackpot_count()
+    random_claimed = get_system_flag("chat_jackpot_random_claimed", "0") == "1"
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT mission_key, user_name, reward, meta, created_at
+    FROM hidden_rewards
+    WHERE date = 'GLOBAL'
+      AND mission_key LIKE 'chat_jackpot_%'
+    ORDER BY created_at ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    return total, target, random_claimed, rows
+
 def check_hidden_1000_reward(date_str, source_id, user_id, user_name):
     """
     하루 1000마디 최초 달성자 1명에게 1코인 자동 지급.
@@ -3993,8 +4144,7 @@ def handle(event):
         try:
             check_hidden_1000_reward(date_str, source_id, user_id, user_name)
             check_hidden_2000_reward(date_str, source_id, user_id, user_name)
-            check_lucky_log_rewards(date_str, source_id, user_id, user_name)
-            check_lucky_guy_reward(date_str, source_id, user_id, user_name)
+            check_chat_jackpot_rewards(source_id, user_id, user_name)
         except Exception as e:
             print("HIDDEN_REWARD_ERROR:", e)
 
