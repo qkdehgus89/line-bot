@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import random
+import threading
+import time
 from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
@@ -56,7 +58,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v18-private-gacha-shop"
+BOT_VERSION = "active-id-v21-final-economy"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -1634,7 +1636,7 @@ def get_user_count(date_str, source_id, user_id):
 
 
 def attendance_check(date_str, user_id, user_name):
-    reward = 2  # 0.2코인
+    reward = 5  # 0.5코인
 
     conn = db()
     cur = conn.cursor()
@@ -2665,10 +2667,10 @@ def settle_weekly_rewards(source_id, week_start, week_end):
 # =========================
 # S.N.S 럭키드로우 / 핀볼
 # =========================
-EVENT_TICKET_PRICE = 10          # 1코인
-EVENT_BASE_PRIZE = 50            # 기본 부스팅 5코인
-EVENT_PAYOUT_RATE = 0.8          # 판매액 80% 지급
-PINBALL_MAX_TICKETS = 3
+EVENT_TICKET_PRICE = 10          # 럭키드로우 1장 = 1코인 / 핀볼 1볼 환산값 = 1코인
+EVENT_BASE_PRIZE = 0             # 럭키드로우는 판매액 80%만 지급
+EVENT_PAYOUT_RATE = 0.8          # 럭키드로우 판매액 80% 지급
+PINBALL_MAX_TICKETS = 99         # 운영진 등록용 넉넉한 상한
 
 
 def event_week_key():
@@ -2741,11 +2743,10 @@ def lucky_draw_status_text(week_start=None, week_end=None, title="🎟️ S.N.S 
         f"기간: {week_start} ~ {week_end}",
         "",
         f"참여자: {len(rows)}명",
-        f"기본 부스팅: {coin_text(EVENT_BASE_PRIZE)}",
         f"현재 예상 당첨금: {coin_text(prize)}",
-        "추첨: 매주 토요일 21:00",
+        "추첨/발표: 매주 토요일 21:00 자동",
         "",
-        "구매: /SNS럭키구매",
+        "구매: /럭키드로우구매",
     ]
 
     if rows:
@@ -2801,36 +2802,29 @@ def settle_lucky_draw(settled_by="자동추첨"):
         f"기간: {week_start} ~ {week_end}\n"
         f"참여자: {len(rows)}명\n"
         f"총 판매액: {coin_text(total_sales)}\n"
-        f"기본 부스팅: {coin_text(EVENT_BASE_PRIZE)}\n"
+
         f"소각: {coin_text(burned)}\n\n"
         f"🏆 당첨자: {winner['user_name']}\n"
         f"지급: {coin_text(prize)}"
     )
 
 
-def buy_pinball_ticket(user_id, user_name, amount=1):
-    amount = max(1, min(int(amount), PINBALL_MAX_TICKETS))
+def add_pinball_ticket_by_staff(keyword, amount=1):
+    """운영진 전용: 유저를 핀볼 이벤트에 등록합니다. 코인은 차감하지 않습니다."""
+    try:
+        amount = int(amount)
+    except Exception:
+        return False, "핀볼 수량은 숫자로 입력해주세요."
+
+    if amount <= 0:
+        return False, "핀볼 수량은 1 이상이어야 합니다."
+
+    amount = min(amount, PINBALL_MAX_TICKETS)
+    target = find_user(keyword)
+    if not target:
+        return False, f"대상을 찾을 수 없습니다.\n검색어: {keyword}"
+
     week_start, week_end = event_week_key()
-
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("SELECT COALESCE(tickets, 0) AS tickets FROM sns_pinball_entries WHERE week_start = ? AND user_id = ?", (week_start, user_id))
-    row = cur.fetchone()
-    current = row["tickets"] if row else 0
-    can_buy = PINBALL_MAX_TICKETS - current
-    if can_buy <= 0:
-        conn.close()
-        return False, "이번 주 S.N.S 핀볼 참여권은 이미 최대치입니다.\n구매 제한: 1인 최대 3장"
-    buy_count = min(amount, can_buy)
-    conn.close()
-
-    cost = buy_count * EVENT_TICKET_PRICE
-    balance = get_balance(user_id)
-    if balance < cost:
-        return False, f"코인이 부족합니다.\n\n필요: {coin_text(cost)}\n보유: {coin_text(balance)}"
-
-    change_money(user_id, user_name, -cost, f"S.N.S 핀볼 참여권 {buy_count}장 구매", None, "S.N.S이벤트")
-
     conn = db()
     cur = conn.cursor()
     cur.execute("""
@@ -2841,11 +2835,44 @@ def buy_pinball_ticket(user_id, user_name, amount=1):
         user_name = excluded.user_name,
         tickets = tickets + excluded.tickets,
         updated_at = excluded.updated_at
-    """, (week_start, week_end, user_id, user_name, buy_count, now_str(), now_str()))
+    """, (week_start, week_end, target["user_id"], target["user_name"], amount, now_str(), now_str()))
     conn.commit()
     conn.close()
 
-    return True, pinball_status_text(week_start, week_end, title=f"🎱 S.N.S 핀볼 참여 완료 / 구매 {buy_count}장")
+    return True, pinball_status_text(week_start, week_end, title=f"🎱 S.N.S 핀볼 등록 완료 / {target['user_name']} +{amount}볼")
+
+
+def remove_pinball_entry_by_staff(keyword):
+    target = find_user(keyword)
+    if not target:
+        return False, f"대상을 찾을 수 없습니다.\n검색어: {keyword}"
+
+    week_start, week_end = event_week_key()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    DELETE FROM sns_pinball_entries
+    WHERE week_start = ? AND user_id = ?
+    """, (week_start, target["user_id"]))
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+
+    if deleted <= 0:
+        return False, f"이번 핀볼 목록에 등록되어 있지 않습니다.\n대상: {target['user_name']}"
+
+    return True, pinball_status_text(week_start, week_end, title=f"🧹 S.N.S 핀볼 등록 삭제 / {target['user_name']}")
+
+
+def clear_pinball_entries_by_staff():
+    week_start, week_end = event_week_key()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM sns_pinball_entries WHERE week_start = ?", (week_start,))
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    return True, f"🧹 S.N.S 핀볼 목록 초기화 완료\n\n기간: {week_start} ~ {week_end}\n삭제: {deleted}건"
 
 
 def pinball_rows(week_start, week_end):
@@ -2875,19 +2902,20 @@ def pinball_status_text(week_start=None, week_end=None, title="🎱 S.N.S 핀볼
         f"기간: {week_start} ~ {week_end}",
         "",
         f"참여자: {len(rows)}명",
-        f"총 참여권: {total_tickets}장",
+        f"총 핀볼: {total_tickets}볼",
         f"기본 부스팅: {coin_text(EVENT_BASE_PRIZE)}",
         f"현재 지급풀: {coin_text(prize)}",
-        "구매 제한: 1인 최대 3장",
+        "방식: 운영진 등록/선정",
         "",
-        "구매: /SNS핀볼구매 또는 /SNS핀볼구매 3",
+        "운영진 등록: /SNS핀볼등록 닉네임 수량",
+        "운영진 정산: /SNS핀볼정산 닉네임1 닉네임2",
     ]
 
     if rows:
         lines.append("")
         lines.append("참여자 목록")
         for i, row in enumerate(rows, 1):
-            lines.append(f"{i}. {row['user_name']} - {row['tickets']}장")
+            lines.append(f"{i}. {row['user_name']} - {row['tickets']}볼")
 
     return format_long_lines("", lines).strip()
 
@@ -2948,11 +2976,11 @@ def settle_pinball_by_winners(winner_keywords, settled_by):
         "🎱 S.N.S 핀볼 정산 완료",
         f"기간: {week_start} ~ {week_end}",
         "",
-        f"총 참여권: {total_tickets}장",
-        f"총 판매액: {coin_text(total_sales)}",
+        f"총 핀볼: {total_tickets}볼",
+        f"핀볼 환산풀: {coin_text(total_sales)}",
         f"기본 부스팅: {coin_text(EVENT_BASE_PRIZE)}",
         f"총 지급풀: {coin_text(total_prize)}",
-        f"소각: {coin_text(burned)}",
+        f"시스템 잔여/소각: {coin_text(burned)}",
         f"당첨 인원: {len(winners)}명",
         f"1인 지급: {coin_text(prize_each)}",
         "",
@@ -2964,18 +2992,42 @@ def settle_pinball_by_winners(winner_keywords, settled_by):
 
 
 def maybe_auto_lucky_draw():
+    """토요일 21:00 이후 자동 럭키드로우 정산/발표.
+    중복 실행은 sns_lucky_draw_results의 week_start PK로 방지합니다.
+    """
     if not is_saturday_draw_time():
-        return
-    ok, msg = settle_lucky_draw("자동추첨")
+        return False
+
+    ok, msg = settle_lucky_draw("토요일 21시 자동추첨")
     if not ok:
-        return
+        return False
+
     try:
         from linebot.v3.messaging import PushMessageRequest, TextMessage
         with ApiClient(config) as client:
             api = MessagingApi(client)
             api.push_message(PushMessageRequest(to=COUNT_SOURCE_ID, messages=[TextMessage(text=msg)]))
+        return True
     except Exception as e:
         print("SNS_LUCKY_AUTO_PUSH_ERROR:", e)
+        return False
+
+
+def lucky_draw_auto_scheduler_loop():
+    """Railway/Gunicorn 환경에서도 동작하도록 백그라운드에서 1분마다 확인합니다."""
+    while True:
+        try:
+            maybe_auto_lucky_draw()
+        except Exception as e:
+            print("SNS_LUCKY_AUTO_SCHEDULER_ERROR:", e)
+        time.sleep(60)
+
+
+def start_lucky_draw_auto_scheduler():
+    if os.getenv("DISABLE_LUCKY_DRAW_AUTO", "").strip() == "1":
+        return
+    thread = threading.Thread(target=lucky_draw_auto_scheduler_loop, daemon=True)
+    thread.start()
 
 
 # =========================
@@ -3931,7 +3983,7 @@ def handle(event):
     except Exception as e:
         print("AFFINITY_PROCESS_ERROR:", e)
 
-    # 토요일 21시 이후 첫 메시지에서 S.N.S 럭키드로우 자동 추첨
+    # 토요일 21시 자동 스케줄러가 기본 처리합니다. 메시지 수신 시에도 보조 확인합니다.
     try:
         maybe_auto_lucky_draw()
     except Exception as e:
@@ -4004,7 +4056,6 @@ def handle(event):
             "/SNS럭키현황\n"
             "/SNS럭키설명\n\n"
             "🎱 S.N.S 핀볼\n"
-            "/SNS핀볼구매\n"
             "/SNS핀볼현황\n"
             "/SNS핀볼설명"
         )
@@ -4024,12 +4075,31 @@ def handle(event):
         or text.startswith("/사용 ")
     )
 
+    private_lucky_commands = (
+        text in [
+            "/SNS럭키구매", "/럭키드로우구매",
+            "/SNS럭키설명", "/럭키드로우설명",
+            "/SNS럭키현황", "/럭키드로우현황"
+        ]
+    )
+
     if not is_private_chat(event):
         if private_gacha_commands:
             private_only_notice(event, user_id, gacha_private_guide_text(), "가챠")
             return
         if private_shop_commands:
             private_only_notice(event, user_id, shop_private_guide_text(), "상점")
+            return
+        if private_lucky_commands:
+            private_only_notice(
+                event,
+                user_id,
+                "🎟️ S.N.S 럭키드로우는 봇 개인채팅에서만 구매 가능합니다.\n\n"
+                "구매: /SNS럭키구매\n"
+                "가격: 1코인\n"
+                "추첨/발표: 매주 토요일 21:00 자동",
+                "럭키드로우"
+            )
             return
 
     if text == "/가챠시스템":
@@ -4164,7 +4234,7 @@ def handle(event):
         lines = [
             "✅ 출석 완료",
             "",
-            f"+0.2{CURRENCY_NAME} 지급",
+            f"+0.5{CURRENCY_NAME} 지급",
             f"연속출석: {streak}일",
         ]
 
@@ -4234,12 +4304,13 @@ def handle(event):
             "🎟️ S.N.S 럭키드로우\n\n"
             "1인 1장만 구매 가능합니다.\n"
             "가격: 1장 = 1코인\n"
-            "추첨: 매주 토요일 21:00\n\n"
+            "추첨/발표: 매주 토요일 21:00 자동 진행\n\n"
             "구매자 중 1명을 랜덤 추첨하여\n"
-            "기본 부스팅 5코인 + 총 판매액의 80%를 지급합니다.\n"
+            "총 판매액의 80%를 지급합니다.\n"
             "나머지 20%는 시스템 소각됩니다.\n\n"
-            "구매: /SNS럭키구매\n"
-            "현황: /SNS럭키현황"
+            "구매: /럭키드로우구매\n\n"
+            "※ 럭키드로우는 구매만 가능합니다.\n"
+            "※ 정산/발표는 토요일 21:00에 자동 진행됩니다."
         )
         return
 
@@ -4259,29 +4330,24 @@ def handle(event):
             event.reply_token,
             "🎱 S.N.S 핀볼\n\n"
             "치지직 시청자 참여 핀볼 느낌의 주간 이벤트입니다.\n"
-            "가격: 1장 = 1코인\n"
-            "구매 제한: 1인 최대 3장\n\n"
+            "운영진 선정형 이벤트입니다.\n"
+            "유저 구매는 불가합니다.\n\n"
             "운영진이 당첨 인원을 선정하면\n"
-            "기본 부스팅 5코인 + 총 판매액의 80%를 당첨자에게 균등 지급합니다.\n"
+            "운영진 선정 후 등록된 핀볼 수량 기준 지급풀을 당첨자에게 균등 지급합니다.\n"
             "나머지 20%는 시스템 소각됩니다.\n\n"
-            "구매: /SNS핀볼구매 또는 /SNS핀볼구매 3\n"
+            "운영진 등록: /SNS핀볼등록 닉네임 수량\n"
             "현황: /SNS핀볼현황"
         )
         return
 
     if text.startswith("/SNS핀볼구매") or text.startswith("/핀볼구매"):
-        parts = text.split(maxsplit=1)
-        amount = 1
-        if len(parts) == 2:
-            try:
-                amount = int(parts[1])
-            except ValueError:
-                reply(event.reply_token, "사용법\n\n/SNS핀볼구매\n/SNS핀볼구매 3")
-                return
-        success, msg = buy_pinball_ticket(user_id, user_name, amount)
-        if success:
-            grant_achievement_once(user_id, user_name, "first_pinball", "🎱 첫 핀볼", 2, "S.N.S 핀볼")
-        reply(event.reply_token, msg)
+        reply(
+            event.reply_token,
+            "🎱 S.N.S 핀볼은 유저 구매형이 아닙니다.\n\n"
+            "운영진이 후보와 핀볼 수량을 직접 등록하고,\n"
+            "당첨자도 운영진이 직접 선정합니다.\n\n"
+            "현황: /SNS핀볼현황"
+        )
         return
 
     if text in ["/SNS핀볼현황", "/핀볼현황"]:
@@ -4406,7 +4472,9 @@ def handle(event):
             "/초기화\n"
             "/전체초기화\n\n"
             "🎟️ S.N.S 이벤트\n"
-            "/SNS럭키추첨\n"
+            "/SNS핀볼등록 닉네임 수량\n"
+            "/SNS핀볼삭제 닉네임\n"
+            "/SNS핀볼초기화\n"
             "/SNS핀볼정산 닉네임1 닉네임2\n"
             "/현상금목록\n\n"
             "⚙️ 시스템\n"
@@ -4428,8 +4496,36 @@ def handle(event):
         reply(event.reply_token, bounty_admin_status_text())
         return
 
-    if text in ["/SNS럭키추첨", "/럭키드로우추첨"]:
-        ok, msg = settle_lucky_draw(user_name)
+    if text in ["/SNS럭키추첨", "/럭키드로우추첨", "/럭키드로우정산"]:
+        reply(
+            event.reply_token,
+            "🎟️ 럭키드로우는 수동 정산하지 않습니다.\n\n"
+            "매주 토요일 21:00에 자동 정산/발표됩니다."
+        )
+        return
+
+    if text.startswith("/SNS핀볼등록") or text.startswith("/핀볼등록"):
+        parts = text.split()
+        if len(parts) < 2:
+            reply(event.reply_token, "사용법\n\n/SNS핀볼등록 닉네임 수량\n예) /SNS핀볼등록 무화 3")
+            return
+        keyword = parts[1]
+        amount = parts[2] if len(parts) >= 3 else 1
+        ok, msg = add_pinball_ticket_by_staff(keyword, amount)
+        reply(event.reply_token, msg)
+        return
+
+    if text.startswith("/SNS핀볼삭제") or text.startswith("/핀볼삭제"):
+        keyword = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
+        if not keyword:
+            reply(event.reply_token, "사용법\n\n/SNS핀볼삭제 닉네임")
+            return
+        ok, msg = remove_pinball_entry_by_staff(keyword)
+        reply(event.reply_token, msg)
+        return
+
+    if text in ["/SNS핀볼초기화", "/핀볼초기화"]:
+        ok, msg = clear_pinball_entries_by_staff()
         reply(event.reply_token, msg)
         return
 
@@ -5415,6 +5511,10 @@ if MemberJoinedEvent is not None:
 
         except Exception as e:
             print("MEMBER JOINED ERROR:", e)
+
+
+# 럭키드로우 자동 정산 스케줄러 시작
+start_lucky_draw_auto_scheduler()
 
 
 if __name__ == "__main__":
