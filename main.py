@@ -59,7 +59,8 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v30-user-guide-command"
+BOT_VERSION = "active-id-v31-daily-chat-jackpot"
+BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -2658,12 +2659,14 @@ def broadcast_hidden_reward(reason, user_name, reward):
             f"보상: 💰{coin_text(reward)}"
         )
 
-        messaging_api.push_message(
-            PushMessageRequest(
-                to=COUNT_SOURCE_ID,
-                messages=[TextMessage(text=msg)]
+        with ApiClient(config) as client:
+            api = MessagingApi(client)
+            api.push_message(
+                PushMessageRequest(
+                    to=COUNT_SOURCE_ID,
+                    messages=[TextMessage(text=msg)]
+                )
             )
-        )
     except Exception as e:
         print("HIDDEN_BROADCAST_ERROR:", e)
 
@@ -2735,132 +2738,275 @@ def set_system_flag(key, value):
     conn.close()
 
 
-def get_or_create_chat_jackpot_target():
+def daily_jackpot_mission_key(source_id, seq):
+    """당일 + 방 + 순번 기준으로 잭팟 중복 지급을 막기 위한 키."""
+    safe_source = str(source_id).replace(":", "_")
+    return f"daily_chat_jackpot_{safe_source}_{seq}"
+
+
+def is_bot_jackpot_user(user_id, user_name=""):
     """
-    전체 채팅 잭팟용 랜덤 번호.
-    1~10000 사이에서 777/7777과 겹치지 않게 1회 생성 후 유지.
+    봇이 잭팟 순번을 밟았는지 판단.
+    Railway Variables에 BOT_USER_ID를 넣으면 가장 정확합니다.
+    LINE 봇이 직접 보낸 push 메시지는 보통 webhook으로 다시 들어오지 않지만,
+    혹시 들어오는 환경이면 이 값으로 다음 사람 지급 처리가 됩니다.
     """
-    current = get_system_flag("chat_jackpot_random_target")
-    if current:
-        try:
-            return int(current)
-        except Exception:
-            pass
-
-    target = random.randint(1, 10000)
-    while target in (777, 7777):
-        target = random.randint(1, 10000)
-
-    set_system_flag("chat_jackpot_random_target", target)
-    set_system_flag("chat_jackpot_random_claimed", "0")
-    return target
+    if not user_id:
+        return True
+    if BOT_USER_ID and str(user_id).strip() == BOT_USER_ID:
+        return True
+    return False
 
 
-def get_chat_jackpot_count():
-    try:
-        return int(get_system_flag("chat_jackpot_total_count", "0") or 0)
-    except Exception:
-        return 0
-
-
-def increment_chat_jackpot_count():
+def get_daily_lucky_number(date_str):
     """
-    메인 카운트 대상 방의 유효 메시지를 전체 누적 채팅 1회로 계산.
-    system_flags에 저장해서 Railway 재시작 후에도 유지.
+    매일 1~10000 사이 랜덤 잭팟 번호 생성.
+    date_str가 바뀌면 새로 생성되므로 KST 자정 기준 자동 초기화됩니다.
+    고정 잭팟 번호 777 / 7777 / 10000과는 겹치지 않게 합니다.
     """
     conn = db()
     cur = conn.cursor()
 
-    cur.execute("SELECT value FROM system_flags WHERE key = 'chat_jackpot_total_count'")
+    cur.execute("""
+    SELECT lucky_number
+    FROM daily_lucky_numbers
+    WHERE date = ?
+    """, (date_str,))
     row = cur.fetchone()
-    try:
-        current = int(row["value"]) if row else 0
-    except Exception:
-        current = 0
 
-    new_value = current + 1
+    if row:
+        conn.close()
+        return int(row["lucky_number"])
+
+    lucky_number = random.randint(1, 10000)
+    while lucky_number in (777, 7777, 10000):
+        lucky_number = random.randint(1, 10000)
 
     cur.execute("""
-    INSERT INTO system_flags (key, value)
-    VALUES ('chat_jackpot_total_count', ?)
-    ON CONFLICT(key)
-    DO UPDATE SET value = excluded.value
-    """, (str(new_value),))
+    INSERT INTO daily_lucky_numbers (date, lucky_number, created_at)
+    VALUES (?, ?, ?)
+    """, (date_str, lucky_number, now_str()))
 
     conn.commit()
     conn.close()
-    return new_value
+
+    return lucky_number
 
 
-def check_chat_jackpot_rewards(source_id, user_id, user_name):
+def get_today_chat_log_sequence(source_id, date_str):
     """
-    전체 누적 채팅 잭팟.
+    당일 로그상 순번.
+    반드시 save_chat_log() 호출 후 실행해야 현재 메시지가 포함됩니다.
+    """
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT COUNT(*) AS total_logs
+    FROM chat_logs
+    WHERE source_id = ?
+      AND date = ?
+      AND user_id IS NOT NULL
+      AND user_id != ''
+      AND user_id != 'NO_USER_ID'
+    """, (source_id, date_str))
+    row = cur.fetchone()
+    conn.close()
+    return int(row["total_logs"] or 0) if row else 0
+
+
+def broadcast_hidden_reward_to(source_id, reason, user_name, reward):
+    """히든 보상 알림을 해당 방으로 발송."""
+    try:
+        from linebot.v3.messaging import PushMessageRequest, TextMessage
+
+        msg = (
+            "🎉 히든 보상 달성!\n\n"
+            f"{reason}\n"
+            f"달성자: {user_name}\n"
+            f"보상: 💰{coin_text(reward)}"
+        )
+
+        with ApiClient(config) as client:
+            api = MessagingApi(client)
+            api.push_message(
+                PushMessageRequest(
+                    to=source_id,
+                    messages=[TextMessage(text=msg)]
+                )
+            )
+    except Exception as e:
+        print("HIDDEN_BROADCAST_TO_ERROR:", e)
+
+
+def grant_daily_chat_jackpot(date_str, source_id, seq, user_id, user_name, reward, reason, meta=""):
+    """
+    당일 + 방 + 순번별 1회만 보상 지급.
+    hidden_rewards에 저장하고, 지급 성공 시 코인 지급 + 방 알림.
+    """
+    mission_key = daily_jackpot_mission_key(source_id, seq)
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+    INSERT OR IGNORE INTO hidden_rewards (
+        date, mission_key, user_id, user_name, reward, meta, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        date_str,
+        mission_key,
+        user_id,
+        user_name,
+        reward,
+        meta or f"source_id={source_id};seq={seq}",
+        now_str()
+    ))
+
+    inserted = cur.rowcount
+    conn.commit()
+    conn.close()
+
+    if not inserted:
+        return False
+
+    change_money(
+        user_id,
+        user_name,
+        reward,
+        reason,
+        None,
+        "채팅잭팟"
+    )
+
+    broadcast_hidden_reward_to(source_id, reason, user_name, reward)
+    return True
+
+
+def set_pending_daily_jackpot(date_str, source_id, seq, reward, reason):
+    """
+    봇이 잭팟 순번을 밟은 경우 다음 일반 유저에게 넘기기 위한 대기 저장.
+    날짜가 바뀌면 key가 달라지므로 자동 초기화 효과가 있습니다.
+    """
+    prefix = f"pending_daily_chat_jackpot:{date_str}:{source_id}"
+    set_system_flag(f"{prefix}:seq", seq)
+    set_system_flag(f"{prefix}:reward", reward)
+    set_system_flag(f"{prefix}:reason", reason)
+
+
+def pop_pending_daily_jackpot(date_str, source_id):
+    prefix = f"pending_daily_chat_jackpot:{date_str}:{source_id}"
+    seq = get_system_flag(f"{prefix}:seq", "")
+    reward = get_system_flag(f"{prefix}:reward", "")
+    reason = get_system_flag(f"{prefix}:reason", "")
+
+    if not seq or not reward or not reason:
+        return None
+
+    set_system_flag(f"{prefix}:seq", "")
+    set_system_flag(f"{prefix}:reward", "")
+    set_system_flag(f"{prefix}:reason", "")
+
+    return int(seq), int(reward), reason
+
+
+def check_daily_chat_jackpot_rewards(date_str, source_id, user_id, user_name):
+    """
+    당일 chat_logs 순번 기준 채팅 보상.
+
+    지급 목록:
     - 777번째 채팅: 1코인
     - 7777번째 채팅: 2코인
-    - 랜덤 1~10000번째 채팅: 3코인
-    각 보상은 전체 기간 1회만 지급.
+    - 10000번째 채팅: 3코인
+    - 매일 랜덤 1~10000번째 채팅: 3코인
+
+    봇이 해당 순번이면 바로 지급하지 않고 다음 일반 유저에게 지급합니다.
     """
     if source_id != COUNT_SOURCE_ID:
         return []
 
-    seq = increment_chat_jackpot_count()
-    random_target = get_or_create_chat_jackpot_target()
     paid = []
 
-    fixed_rewards = [
-        (777, "chat_jackpot_777", 10, "🎰 채팅 잭팟: 전체 777번째 채팅"),
-        (7777, "chat_jackpot_7777", 20, "🎰 메가 잭팟: 전체 7777번째 채팅"),
-    ]
-
-    for target_seq, mission_key, reward, reason in fixed_rewards:
-        if seq == target_seq:
-            ok = grant_hidden_reward_once(
-                "GLOBAL",
-                mission_key,
+    # 봇이 밟은 잭팟이 있으면 다음 일반 유저에게 지급
+    if not is_bot_jackpot_user(user_id, user_name):
+        pending = pop_pending_daily_jackpot(date_str, source_id)
+        if pending:
+            pending_seq, pending_reward, pending_reason = pending
+            ok = grant_daily_chat_jackpot(
+                date_str,
+                source_id,
+                pending_seq,
                 user_id,
                 user_name,
-                reward,
-                reason,
-                f"seq={seq}"
+                pending_reward,
+                f"{pending_reason} / 봇 순번으로 다음 채팅자 지급",
+                f"source_id={source_id};seq={pending_seq};pending_to_next=1"
             )
             if ok:
-                paid.append((f"{target_seq}번째", reward))
+                paid.append((pending_seq, pending_reward))
 
-    if seq == random_target and get_system_flag("chat_jackpot_random_claimed", "0") != "1":
-        ok = grant_hidden_reward_once(
-            "GLOBAL",
-            "chat_jackpot_random",
+    seq = get_today_chat_log_sequence(source_id, date_str)
+    lucky_number = get_daily_lucky_number(date_str)
+
+    targets = [
+        (777, 10, "🎰 당일 777번째 채팅 잭팟"),
+        (7777, 20, "🎰 당일 7777번째 채팅 메가잭팟"),
+        (10000, 30, "🎰 당일 10000번째 채팅 슈퍼잭팟"),
+        (lucky_number, 30, f"🎊 당일 랜덤 채팅 잭팟: {lucky_number}번째 채팅"),
+    ]
+
+    for target_seq, reward, reason in targets:
+        if seq != target_seq:
+            continue
+
+        if is_bot_jackpot_user(user_id, user_name):
+            set_pending_daily_jackpot(date_str, source_id, target_seq, reward, reason)
+            continue
+
+        ok = grant_daily_chat_jackpot(
+            date_str,
+            source_id,
+            target_seq,
             user_id,
             user_name,
-            30,
-            f"🎊 슈퍼 잭팟: 전체 {random_target}번째 채팅",
-            f"target={random_target};seq={seq}"
+            reward,
+            reason,
+            f"source_id={source_id};seq={seq};lucky_number={lucky_number}"
         )
         if ok:
-            set_system_flag("chat_jackpot_random_claimed", "1")
-            paid.append((f"랜덤 {random_target}번째", 30))
+            paid.append((target_seq, reward))
 
     return paid
 
 
-def chat_jackpot_status():
-    target = get_or_create_chat_jackpot_target()
-    total = get_chat_jackpot_count()
-    random_claimed = get_system_flag("chat_jackpot_random_claimed", "0") == "1"
+# 구버전 함수명 호환용: 다른 곳에서 호출해도 당일 기준으로 동작하게 유지
+# 단, date_str 없이 호출되는 구버전 형태라 today()를 사용합니다.
+def check_chat_jackpot_rewards(source_id, user_id, user_name):
+    return check_daily_chat_jackpot_rewards(today(), source_id, user_id, user_name)
+
+
+def chat_jackpot_status(date_str=None, source_id=None):
+    date_str = date_str or today()
+    source_id = source_id or COUNT_SOURCE_ID
+    target = get_daily_lucky_number(date_str)
+    total = get_today_chat_log_sequence(source_id, date_str)
 
     conn = db()
     cur = conn.cursor()
     cur.execute("""
     SELECT mission_key, user_name, reward, meta, created_at
     FROM hidden_rewards
-    WHERE date = 'GLOBAL'
-      AND mission_key LIKE 'chat_jackpot_%'
+    WHERE date = ?
+      AND mission_key LIKE ?
     ORDER BY created_at ASC
-    """)
+    """, (date_str, f"daily_chat_jackpot_{str(source_id).replace(':', '_')}_%"))
     rows = cur.fetchall()
     conn.close()
 
+    # 기존 반환 형태 유지: total, target, random_claimed, rows
+    random_claimed = any(str(target) in (row["meta"] or "") or row["mission_key"].endswith(f"_{target}") for row in rows)
     return total, target, random_claimed, rows
+
 
 def check_hidden_1000_reward(date_str, source_id, user_id, user_name):
     """
@@ -2969,117 +3115,15 @@ def check_attendance_streak_reward(date_str, user_id, user_name):
     return streak, paid
 
 
-def get_today_chat_log_sequence(source_id, date_str):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT COUNT(*) AS total_logs
-    FROM chat_logs
-    WHERE source_id = ?
-      AND date = ?
-      AND user_id IS NOT NULL
-      AND user_id != ''
-      AND user_id != 'NO_USER_ID'
-    """, (source_id, date_str))
-    row = cur.fetchone()
-    conn.close()
-    return row["total_logs"] if row else 0
-
-
 def check_lucky_log_rewards(date_str, source_id, user_id, user_name):
-    """
-    행운의 숫자:
-    메인방 일일 chat_logs 기준 777번째 = 0.5코인,
-    7777번째 = 1코인.
-    해당 순번 메시지를 친 사람에게 자동 지급.
-    """
-    if source_id != COUNT_SOURCE_ID:
-        return []
-
-    seq = get_today_chat_log_sequence(source_id, date_str)
-    paid = []
-
-    if seq == 777:
-        ok = grant_hidden_reward_once(
-            date_str,
-            "log_777",
-            user_id,
-            user_name,
-            5,
-            "행운의 숫자 보상: 오늘 777번째 대화",
-            f"seq={seq}"
-        )
-        if ok:
-            paid.append(("777번째", 5))
-
-    if seq == 7777:
-        ok = grant_hidden_reward_once(
-            date_str,
-            "log_7777",
-            user_id,
-            user_name,
-            10,
-            "행운의 숫자 보상: 오늘 7777번째 대화",
-            f"seq={seq}"
-        )
-        if ok:
-            paid.append(("7777번째", 10))
-
-    return paid
-
-
-def get_daily_lucky_number(date_str):
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute("""
-    SELECT lucky_number
-    FROM daily_lucky_numbers
-    WHERE date = ?
-    """, (date_str,))
-    row = cur.fetchone()
-
-    if row:
-        conn.close()
-        return row["lucky_number"]
-
-    lucky_number = random.randint(1, 10000)
-
-    cur.execute("""
-    INSERT INTO daily_lucky_numbers (date, lucky_number, created_at)
-    VALUES (?, ?, ?)
-    """, (date_str, lucky_number, now_str()))
-
-    conn.commit()
-    conn.close()
-
-    return lucky_number
+    """구버전 함수명 호환용. 실제 지급은 check_daily_chat_jackpot_rewards에서 처리합니다."""
+    return check_daily_chat_jackpot_rewards(date_str, source_id, user_id, user_name)
 
 
 def check_lucky_guy_reward(date_str, source_id, user_id, user_name):
-    """
-    럭키가이:
-    매일 1~10000 사이 숫자 자동 지정.
-    메인방 일일 chat_logs 순번이 그 숫자와 일치하면 1코인 지급.
-    """
-    if source_id != COUNT_SOURCE_ID:
-        return False
-
-    lucky_number = get_daily_lucky_number(date_str)
-    seq = get_today_chat_log_sequence(source_id, date_str)
-
-    if seq != lucky_number:
-        return False
-
-    return grant_hidden_reward_once(
-        date_str,
-        "lucky_guy",
-        user_id,
-        user_name,
-        10,
-        f"럭키가이 보상: 오늘 {lucky_number}번째 대화",
-        f"lucky_number={lucky_number};seq={seq}"
-    )
+    """구버전 함수명 호환용. 실제 지급은 check_daily_chat_jackpot_rewards에서 처리합니다."""
+    paid = check_daily_chat_jackpot_rewards(date_str, source_id, user_id, user_name)
+    return bool(paid)
 
 
 def hidden_reward_status(date_str):
@@ -4653,15 +4697,32 @@ def handle(event):
     if user_id:
         upsert_user(user_id, user_name, source_id)
 
-    # 메인방 + 운영진방 둘 다 마디수 카운트
+    # 메인방 + 운영진방 둘 다 마디수/로그 카운트
     if source_id in count_source_ids() and user_id:
         add_count(date_str, source_id, user_id, user_name)
+
+        # 당일 로그상 순번 계산을 위해 보상 체크 전에 먼저 저장
+        if isinstance(event.message, TextMessageContent):
+            message_type = "text"
+            message_text = event.message.text or ""
+        else:
+            message_type = type(event.message).__name__
+            message_text = ""
+
+        save_chat_log(
+            date_str,
+            source_id,
+            user_id,
+            user_name,
+            message_type,
+            message_text
+        )
 
         # 히든 미션 자동 체크
         try:
             check_hidden_1000_reward(date_str, source_id, user_id, user_name)
             check_hidden_2000_reward(date_str, source_id, user_id, user_name)
-            check_chat_jackpot_rewards(source_id, user_id, user_name)
+            check_daily_chat_jackpot_rewards(date_str, source_id, user_id, user_name)
         except Exception as e:
             print("HIDDEN_REWARD_ERROR:", e)
 
