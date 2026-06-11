@@ -59,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v27-jokbo-full-fix"
+BOT_VERSION = "active-id-v29-jokbo-first-nick-coin-fix"
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
 COIN_SCALE = 10
@@ -110,6 +110,83 @@ def is_admin(user_id):
 
 def is_staff(user_id):
     return user_id in ADMIN_USER_IDS or user_id in OPERATOR_USER_IDS
+
+
+def is_operator_command(text):
+    """
+    운영진 전용 명령어를 일반 유저가 입력했을 때
+    기능별 다른 문구 대신 동일한 경고 문구를 출력하기 위한 통합 체크.
+    """
+    if not text:
+        return False
+
+    exact_commands = {
+        "/운영명령어",
+        "/방정보",
+        "/상태확인",
+        "/DB상태",
+
+        "/족보",
+        "/족보보기",
+        "/족보코인",
+        "/족보입력",
+        "/족보저장",
+        "/족보취소",
+
+        "/주간정산",
+        "/주간초기화",
+        "/주간초기화 전체",
+
+        "/초기화",
+        "/전체초기화",
+        "/전체초기화 확인",
+        "/완전초기화",
+        "/완전초기화 확인",
+        "/멤버초기화",
+        "/멤버초기화 확인",
+        "/화폐초기화",
+        "/화폐초기화 확인",
+
+        "/삭제확인",
+        "/삭제취소",
+
+        "/SNS핀볼초기화",
+        "/핀볼초기화",
+        "/SNS럭키추첨",
+        "/SNS럭키정산",
+        "/럭키드로우추첨",
+        "/럭키드로우정산",
+    }
+
+    prefix_commands = [
+        "/지급 ",
+        "/차감 ",
+        "/상품추가 ",
+        "/상품삭제 ",
+        "/사용처리 ",
+        "/구매취소 ",
+
+        "/닉삭제",
+        "/닉삭제번호",
+
+        "/퇴장처리 ",
+        "/퇴장처리ID ",
+        "/복구처리 ",
+        "/복구처리ID ",
+
+        "/SNS핀볼등록 ",
+        "/SNS핀볼삭제 ",
+        "/SNS핀볼정산 ",
+        "/핀볼등록 ",
+        "/핀볼삭제 ",
+        "/핀볼정산 ",
+    ]
+
+    return text in exact_commands or any(text.startswith(prefix) for prefix in prefix_commands)
+
+
+def operator_only_warning():
+    return "⛔ 운영진 전용 명령어입니다."
 
 
 def count_source_ids():
@@ -4216,20 +4293,45 @@ def genealogy_coin_users():
     return prepared
 
 
-def coin_for_genealogy_line(line, coin_users):
-    base_line = strip_coin_suffix(line)
-    clean_line = clean_keyword(base_line)
-    if not clean_line:
-        return None
+def genealogy_first_member_key(line):
+    """
+    족보 한 줄에서 '맨 앞 사람 닉네임'만 추출한다.
+    소개자/동반자 이름 때문에 코인이 겹쳐 붙는 것을 방지한다.
 
-    # 사람 정보는 보통 줄 앞쪽에 닉네임이 있으므로 앞부분 위주로 매칭한다.
-    head = clean_line[:30]
+    예)
+    26요뜨🔻 대전 / 미트        -> 26요뜨
+    🪩미트🪩  남 37 강원 철원   -> 미트
+    37이안🔹 경기 파주 / 미트 소다동반 -> 37이안
+    """
+    base_line = strip_coin_suffix(line).strip()
+    if not base_line:
+        return ""
+
+    # 구분선/제목/설명 줄은 제외
+    if base_line.startswith(("---", "——", "━━━━━━━━", "설명은", "방장 ", "관리자 ", "인증자 ", "남미클자", "여미클자", "노미클자")):
+        return ""
+    if base_line in {"🔹족보🔻", "🪩방장🪩", "🔗관리자🔗", "🏁인증자🏁"}:
+        return ""
+    if base_line.startswith(("🔹남자", "🔰노미클", "🔻여자", "👾외출", "STD검사", "피검사", "외출 ", "바쁨 ", "경고 ", "벙금지", "무제한", "미션클리어", "봇등록권", "칭호권", "닉변권", "임티권")):
+        return ""
+
+    first = base_line.split()[0] if base_line.split() else ""
+    return clean_keyword(first)
+
+
+def coin_for_genealogy_line(line, coin_users):
+    first_key = genealogy_first_member_key(line)
+    if not first_key:
+        return None
 
     for user in coin_users:
         cn = user["clean_name"]
         if not cn:
             continue
-        if head.startswith(cn) or cn in head:
+
+        # 줄 맨 앞 닉네임만 기준으로 매칭.
+        # '26요뜨 ... / 미트'에서 미트 코인이 붙는 문제 방지.
+        if first_key == cn or first_key.startswith(cn) or cn.startswith(first_key):
             return user["balance"]
 
     return None
@@ -4352,6 +4454,12 @@ def handle(event):
 
     text = (event.message.text or "").strip()
 
+    # 운영진 전용 명령어 통합 차단
+    # 일반 유저가 운영 명령어를 입력하면 모든 기능에서 같은 경고 문구만 출력한다.
+    if is_operator_command(text) and not is_staff(user_id):
+        reply(event.reply_token, operator_only_warning())
+        return
+
     # /족보입력 이후 다음 메시지를 족보 본문으로 저장
     if user_id in JOKBO_PENDING:
         if text == "/족보취소":
@@ -4361,7 +4469,7 @@ def handle(event):
 
         if source_id not in ADMIN_SOURCE_IDS or not is_staff(user_id):
             JOKBO_PENDING.pop(user_id, None)
-            reply(event.reply_token, "족보 입력은 운영진방에서 운영진만 사용할 수 있습니다.")
+            reply(event.reply_token, operator_only_warning())
             return
 
         # 명령어를 잘못 입력한 경우 족보로 저장하지 않음
@@ -4468,7 +4576,7 @@ def handle(event):
 
     if text.startswith("/족보입력") or text.startswith("/족보저장"):
         if source_id not in ADMIN_SOURCE_IDS or not is_staff(user_id):
-            reply(event.reply_token, "족보 입력은 운영진방에서 운영진만 사용할 수 있습니다.")
+            reply(event.reply_token, operator_only_warning())
             return
 
         if text.startswith("/족보입력"):
