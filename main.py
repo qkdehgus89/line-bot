@@ -59,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v31-daily-chat-jackpot"
+BOT_VERSION = "active-id-v35-hard-delete-command"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -96,6 +96,10 @@ config = Configuration(access_token=TOKEN)
 # 닉삭제 다중 검색/확인 임시 저장소
 # key: 운영진 user_id / value: {mode, candidates|target}
 DELETE_PENDING = {}
+
+# 완전삭제 다중 검색/확인 임시 저장소
+# key: 운영진 user_id / value: {mode, candidates|target}
+HARD_DELETE_PENDING = {}
 
 # 족보 입력 대기 저장소
 # /족보입력 만 입력한 뒤 다음 메시지 전체를 족보로 저장
@@ -150,6 +154,8 @@ def is_operator_command(text):
 
         "/삭제확인",
         "/삭제취소",
+        "/완전삭제확인",
+        "/완전삭제취소",
 
         "/SNS핀볼초기화",
         "/핀볼초기화",
@@ -169,6 +175,8 @@ def is_operator_command(text):
 
         "/닉삭제",
         "/닉삭제번호",
+        "/완전삭제",
+        "/완전삭제번호",
 
         "/퇴장처리 ",
         "/퇴장처리ID ",
@@ -4050,6 +4058,46 @@ def format_delete_done(keyword, deleted_users, deleted_counts, deleted_names, de
 
 
 
+def format_hard_delete_warning(target):
+    return (
+        "⚠️ 완전삭제 경고\n\n"
+        f"대상\n{target['user_name']}\n\n"
+        "아래 기록이 DB에서 영구 삭제됩니다.\n"
+        "- 유저 정보\n"
+        "- 코인 / 코인 내역\n"
+        "- 구매 내역\n"
+        "- 마디수 / 채팅 로그\n"
+        "- 출석 / 미션 / 업적\n"
+        "- 가챠 / 조각 / 행운포인트\n"
+        "- 주간랭킹 / 이벤트 / 마니또 / 친밀도 기록\n\n"
+        "복구할 수 없습니다.\n\n"
+        "진행: /완전삭제확인\n"
+        "취소: /완전삭제취소"
+    )
+
+
+def format_hard_delete_done(target_name, deleted_users, deleted_counts, deleted_names, deleted_detail):
+    names_text = "\n".join([f"- {name}" for name in deleted_names]) or f"- {target_name}"
+    detail_lines = []
+    for table, count in sorted(deleted_detail.items()):
+        if count:
+            detail_lines.append(f"- {table}: {count}개")
+
+    detail_text = "\n".join(detail_lines) if detail_lines else "- 삭제된 세부 기록 없음"
+
+    return (
+        "🗑️ 완전삭제 완료\n\n"
+        f"대상: {target_name}\n"
+        f"삭제 유저DB: {deleted_users}명\n"
+        f"삭제 마디수 데이터: {deleted_counts}개\n"
+        f"삭제 전체 기록: {sum(deleted_detail.values())}개\n\n"
+        f"삭제된 닉네임:\n{names_text}\n\n"
+        f"삭제 상세:\n{detail_text}\n\n"
+        "DB에서 완전히 제거되었습니다."
+    )
+
+
+
 
 
 # =========================
@@ -5334,6 +5382,8 @@ def handle(event):
             "/유저동기화\n"
             "/퇴장처리\n"
             "/복구처리\n"
+            "/전체유저\n"
+            "/완전삭제 닉네임\n"
             "※ 닉네임 또는 USER_ID 사용 가능\n\n"
             "📡 수집확인\n"
             "/수집상태\n"
@@ -6269,6 +6319,87 @@ def handle(event):
             f"삭제 화폐내역: {deleted['currency_logs']}개\n"
             f"삭제 구매내역: {deleted['purchases']}개"
         )
+        return
+
+
+    if text.startswith("/완전삭제번호"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].isdigit():
+            reply(event.reply_token, "사용법\n\n/완전삭제번호 번호")
+            return
+
+        pending = HARD_DELETE_PENDING.get(user_id)
+        if not pending or pending.get("mode") != "candidates":
+            reply(event.reply_token, "완전삭제 후보가 없습니다. 먼저 /완전삭제 닉네임 으로 검색해주세요.")
+            return
+
+        index = int(parts[1]) - 1
+        candidates = pending.get("candidates", [])
+        if index < 0 or index >= len(candidates):
+            reply(event.reply_token, f"번호가 올바르지 않습니다. 1~{len(candidates)}번 중에서 선택해주세요.")
+            return
+
+        target = candidates[index]
+        HARD_DELETE_PENDING[user_id] = {"mode": "confirm", "target": target}
+        reply(event.reply_token, format_hard_delete_warning(target))
+        return
+
+    if text == "/완전삭제취소":
+        if user_id in HARD_DELETE_PENDING:
+            HARD_DELETE_PENDING.pop(user_id, None)
+            reply(event.reply_token, "완전삭제 요청을 취소했습니다.")
+        else:
+            reply(event.reply_token, "취소할 완전삭제 요청이 없습니다.")
+        return
+
+    if text == "/완전삭제확인":
+        pending = HARD_DELETE_PENDING.get(user_id)
+        if not pending or pending.get("mode") != "confirm":
+            reply(event.reply_token, "확인할 완전삭제 요청이 없습니다. 먼저 /완전삭제 닉네임 으로 검색해주세요.")
+            return
+
+        target = pending["target"]
+        HARD_DELETE_PENDING.pop(user_id, None)
+        deleted_users, deleted_counts, deleted_names, deleted_detail = delete_users_by_ids({target["user_id"]: target["user_name"]})
+        reply(event.reply_token, format_hard_delete_done(target["user_name"], deleted_users, deleted_counts, deleted_names, deleted_detail))
+        return
+
+    if text.startswith("/완전삭제"):
+        keyword = text.replace("/완전삭제", "", 1).strip()
+
+        if not keyword:
+            reply(event.reply_token, "사용법\n\n/완전삭제 닉네임")
+            return
+
+        candidates = find_delete_candidates(keyword)
+
+        if not candidates:
+            reply(event.reply_token, f"완전삭제 대상이 없습니다.\n\n검색어: {keyword}")
+            return
+
+        if len(candidates) > 1:
+            HARD_DELETE_PENDING[user_id] = {"mode": "candidates", "keyword": keyword, "candidates": candidates}
+            lines = [
+                f"완전삭제 검색 결과가 여러 명입니다: @{keyword}",
+                "",
+            ]
+            for i, row in enumerate(candidates, 1):
+                lines.append(f"{i}. {row['user_name']}")
+            lines.extend([
+                "",
+                "완전삭제할 대상을 번호로 선택해주세요.",
+                "/완전삭제번호 1",
+                "/완전삭제번호 2",
+                "",
+                "선택 후 /완전삭제확인 단계가 한 번 더 진행됩니다.",
+                "※ 완전삭제는 복구할 수 없습니다.",
+            ])
+            reply(event.reply_token, "\n".join(lines))
+            return
+
+        target = candidates[0]
+        HARD_DELETE_PENDING[user_id] = {"mode": "confirm", "target": target}
+        reply(event.reply_token, format_hard_delete_warning(target))
         return
 
     if text.startswith("/닉삭제번호"):
