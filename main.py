@@ -4060,7 +4060,7 @@ AFFINITY_PAIR_COOLDOWN_SECONDS = 30
 MANITTO_REQUIRED_SCORE = 15
 MANITTO_REWARD_MIN = 10   # 1코인
 MANITTO_REWARD_MAX = 50   # 5코인
-MANITTO_TARGET_MIN_BALANCE = 50  # 5코인 이상 보유자
+MANITTO_TARGET_MAX_WEEKLY_ASSIGNED = 2  # 이번 주 같은 타겟 최대 배정 횟수
 GOLDEN_MANITTO_RATE = 5  # 5%
 
 
@@ -4076,20 +4076,41 @@ def pair_key(user_id_1, user_id_2):
 
 
 def manitto_target_candidates(exclude_user_id):
+    """
+    마니또 타겟 선정 방식
+    - 활성 유저 전체 대상
+    - 본인 제외
+    - 이번 주 이미 타겟으로 2회 이상 배정된 사람 제외
+    - 기존 5코인 이상 보유 조건 제거
+    """
+    week_start, _ = event_week_key()
+
     conn = db()
     cur = conn.cursor()
     cur.execute("""
-    SELECT u.user_id, u.user_name, COALESCE(c.balance, 0) AS balance
+    SELECT
+        u.user_id,
+        u.user_name,
+        COALESCE(c.balance, 0) AS balance,
+        COALESCE(t.assigned_count, 0) AS assigned_count
     FROM users u
-    JOIN currency c ON c.user_id = u.user_id
+    LEFT JOIN currency c
+      ON c.user_id = u.user_id
+    LEFT JOIN (
+        SELECT target_user_id, COUNT(*) AS assigned_count
+        FROM manitto_assignments
+        WHERE week_start = ?
+        GROUP BY target_user_id
+    ) t
+      ON t.target_user_id = u.user_id
     WHERE COALESCE(u.is_active, 1) = 1
       AND u.user_id IS NOT NULL
       AND u.user_id != ''
       AND u.user_id != ?
-      AND COALESCE(c.balance, 0) >= ?
+      AND COALESCE(t.assigned_count, 0) < ?
     ORDER BY RANDOM()
     LIMIT 1
-    """, (exclude_user_id, MANITTO_TARGET_MIN_BALANCE))
+    """, (week_start, exclude_user_id, MANITTO_TARGET_MAX_WEEKLY_ASSIGNED))
     row = cur.fetchone()
     conn.close()
     return row
@@ -4111,7 +4132,7 @@ def ensure_weekly_manitto(user_id, user_name):
 
     target = manitto_target_candidates(user_id)
     if not target:
-        return None, "마니또 대상을 지정할 수 없습니다. 5코인 이상 보유한 활성 유저가 부족합니다."
+        return None, "마니또 대상을 지정할 수 없습니다. 활성 유저가 부족하거나 이번 주 타겟 배정 제한에 걸렸습니다."
 
     manitto_type = "golden" if random.randint(1, 100) <= GOLDEN_MANITTO_RATE else "normal"
     reward_min = MANITTO_REWARD_MIN
@@ -4463,8 +4484,27 @@ def manitto_admin_status_text():
 # 족보 / 코인 표시
 # =========================
 def strip_coin_suffix(line):
-    """족보를 다시 붙여넣을 때 기존 코인 표기가 중복되지 않도록 줄 끝 코인 표시 제거."""
-    return re.sub(r"\s*💰\s*\d+(?:\.\d+)?(?:코인)?\s*$", "", str(line)).rstrip()
+    """
+    족보를 다시 붙여넣을 때 기존 코인 표기를 전부 제거한다.
+
+    예)
+    🪩미트🪩 남 37 강원 철원 💰21.8 -> 🪩미트🪩 남 37 강원 철원
+    28망치🏁 남 서울 광진 / 용왕 💰1.7 -> 28망치🏁 남 서울 광진 / 용왕
+
+    저장할 때는 기존 족보에 붙어 있던 코인을 무시하고,
+    /족보 조회 시 현재 DB 잔액 기준으로 다시 붙인다.
+    """
+    value = str(line)
+
+    # 💰21.8 / 💰 21.8 / 💰21.8코인 / 💰 21.8 코인 전부 제거
+    value = re.sub(r"\s*💰\s*[-+]?\d+(?:\.\d+)?\s*(?:코인)?", "", value)
+
+    # 혹시 텍스트로 붙은 코인 표기도 제거: 21.8코인
+    value = re.sub(r"\s*[-+]?\d+(?:\.\d+)?\s*코인\b", "", value)
+
+    # 제거 후 남는 공백 정리
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    return value.rstrip()
 
 
 def normalize_genealogy_content(content):
@@ -4511,7 +4551,12 @@ def save_genealogy_content(content, staff_user_name=""):
     """, (content, staff_user_name, now_str()))
     conn.commit()
     conn.close()
-    return True, "📖 족보 저장 완료\n\n/족보 또는 /족보보기 로 확인할 수 있습니다."
+    return True, (
+        "📖 족보 저장 완료\n\n"
+        "붙여넣은 족보 안의 기존 💰코인 표기는 무시하고 저장했습니다.\n"
+        "이후 /족보 조회 시 현재 DB 잔액 기준으로 코인이 다시 표시됩니다.\n\n"
+        "/족보 또는 /족보보기 로 확인할 수 있습니다."
+    )
 
 
 def get_genealogy_content():
@@ -4887,7 +4932,8 @@ def handle(event):
                 "📒 족보 입력 대기중\n\n"
                 "이제 다음 메시지에 현재 족보 전체를 그대로 붙여넣어 주세요.\n\n"
                 "※ /족보입력 명령어를 다시 붙이지 않아도 됩니다.\n"
-                "※ 실수로 명령어가 앞에 붙어도 자동 제거됩니다.\n\n"
+                "※ 실수로 명령어가 앞에 붙어도 자동 제거됩니다.\n"
+                "※ 기존 족보에 붙어있는 💰코인 표기는 자동 무시됩니다.\n\n"
                 "취소: /족보취소"
             )
             return
