@@ -59,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v35-hard-delete-command"
+BOT_VERSION = "active-id-v37-nickdelete-all-users-full"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -130,6 +130,7 @@ def is_operator_command(text):
         "/방정보",
         "/상태확인",
         "/DB상태",
+        "/전체유저",
 
         "/족보",
         "/족보보기",
@@ -154,8 +155,6 @@ def is_operator_command(text):
 
         "/삭제확인",
         "/삭제취소",
-        "/완전삭제확인",
-        "/완전삭제취소",
 
         "/SNS핀볼초기화",
         "/핀볼초기화",
@@ -175,8 +174,7 @@ def is_operator_command(text):
 
         "/닉삭제",
         "/닉삭제번호",
-        "/완전삭제",
-        "/완전삭제번호",
+        "/전체유저",
 
         "/퇴장처리 ",
         "/퇴장처리ID ",
@@ -1311,6 +1309,65 @@ def user_debug(keyword):
 
     conn.close()
     return result
+
+
+def all_registered_users_text():
+    """
+    현재 DB users 테이블에 등록된 전체 유저를 모두 조회합니다.
+    LINE 메시지 길이 제한은 호출부에서 reply_many + split_text_messages로 자동 분할합니다.
+    사용법: /전체유저
+    """
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN COALESCE(is_active, 1) = 1 THEN 1 ELSE 0 END) AS active_count,
+        SUM(CASE WHEN COALESCE(is_active, 1) = 0 THEN 1 ELSE 0 END) AS inactive_count
+    FROM users
+    """)
+    summary = cur.fetchone()
+
+    total = int(summary["total"] or 0)
+    active_count = int(summary["active_count"] or 0)
+    inactive_count = int(summary["inactive_count"] or 0)
+
+    if total == 0:
+        conn.close()
+        return "📋 현재 DB에 등록된 유저가 없습니다."
+
+    cur.execute("""
+    SELECT
+        u.user_id,
+        u.user_name,
+        COALESCE(u.is_active, 1) AS is_active,
+        COALESCE(c.balance, 0) AS balance,
+        u.updated_at
+    FROM users u
+    LEFT JOIN currency c ON c.user_id = u.user_id
+    ORDER BY COALESCE(u.is_active, 1) DESC, u.user_name ASC
+    """)
+
+    rows = cur.fetchall()
+    conn.close()
+
+    lines = [
+        "📋 전체 등록 유저",
+        "",
+        f"총 인원: {total}명",
+        f"활성: {active_count}명",
+        f"비활성: {inactive_count}명",
+        "",
+    ]
+
+    for idx, row in enumerate(rows, 1):
+        status = "활성" if int(row["is_active"]) == 1 else "비활성"
+        lines.append(
+            f"{idx}. {row['user_name']} / {status} / {coin_text(row['balance'])}"
+        )
+
+    return "\n".join(lines)
 
 
 def set_gender(user_name_keyword, gender):
@@ -5383,8 +5440,8 @@ def handle(event):
             "/퇴장처리\n"
             "/복구처리\n"
             "/전체유저\n"
-            "/완전삭제 닉네임\n"
-            "※ 닉네임 또는 USER_ID 사용 가능\n\n"
+            "/닉삭제 닉네임\n"
+            "※ /닉삭제는 DB에서 완전히 삭제됩니다. 닉네임 또는 USER_ID 사용 가능\n\n"
             "📡 수집확인\n"
             "/수집상태\n"
             "/최근로그\n"
@@ -5534,6 +5591,12 @@ def handle(event):
 
         reply(event.reply_token, "\n".join(lines))
         return
+
+    if text == "/전체유저" or text.startswith("/전체유저 "):
+        users_output = all_registered_users_text()
+        reply_many(event.reply_token, split_text_messages(users_output, max_chars=4500, max_messages=5))
+        return
+
 
     if text == "/유저동기화":
         inserted, updated = sync_users_from_history()
@@ -6322,7 +6385,7 @@ def handle(event):
         return
 
 
-    if text.startswith("/완전삭제번호"):
+    if False and text.startswith("/완전삭제번호"):
         parts = text.split(maxsplit=1)
         if len(parts) < 2 or not parts[1].isdigit():
             reply(event.reply_token, "사용법\n\n/완전삭제번호 번호")
@@ -6344,7 +6407,7 @@ def handle(event):
         reply(event.reply_token, format_hard_delete_warning(target))
         return
 
-    if text == "/완전삭제취소":
+    if False and text == "/완전삭제취소":
         if user_id in HARD_DELETE_PENDING:
             HARD_DELETE_PENDING.pop(user_id, None)
             reply(event.reply_token, "완전삭제 요청을 취소했습니다.")
@@ -6352,7 +6415,7 @@ def handle(event):
             reply(event.reply_token, "취소할 완전삭제 요청이 없습니다.")
         return
 
-    if text == "/완전삭제확인":
+    if False and text == "/완전삭제확인":
         pending = HARD_DELETE_PENDING.get(user_id)
         if not pending or pending.get("mode") != "confirm":
             reply(event.reply_token, "확인할 완전삭제 요청이 없습니다. 먼저 /완전삭제 닉네임 으로 검색해주세요.")
@@ -6364,7 +6427,7 @@ def handle(event):
         reply(event.reply_token, format_hard_delete_done(target["user_name"], deleted_users, deleted_counts, deleted_names, deleted_detail))
         return
 
-    if text.startswith("/완전삭제"):
+    if False and text.startswith("/완전삭제"):
         keyword = text.replace("/완전삭제", "", 1).strip()
 
         if not keyword:
