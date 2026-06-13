@@ -59,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v38-beginner-guide"
+BOT_VERSION = "active-id-v40-sat-gacha-limit"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -459,6 +459,18 @@ def init_db():
         count INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (user_id, piece_key)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS gacha_weekly_counts (
+        week_start TEXT NOT NULL,
+        week_end TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (week_start, user_id)
     )
     """)
 
@@ -1113,6 +1125,10 @@ def beginner_guide_text():
 이용시간
 매주 토요일 00:00 ~ 21:00
 
+이용횟수
+주간 최대 15회
+매주 토요일 00:00 초기화
+
 ※ 가챠는 봇 1:1 개인채팅에서만 이용 가능합니다.
 
 가격
@@ -1135,6 +1151,7 @@ def beginner_guide_text():
 
 확률 확인
 /가챠시스템
+/가챠횟수
 /코인가챠확률
 
 ━━━━━━━━━━━━━━
@@ -2430,6 +2447,11 @@ GACHA_COSTS = {
     "상": 50,  # 5코인
 }
 
+# 주간 가챠 횟수 제한
+# KST 기준 매주 토요일 00:00에 새 가챠 주차로 자동 초기화됩니다.
+# 이용 가능 시간: 토요일 00:00 ~ 21:00 이전
+WEEKLY_GACHA_LIMIT = 15
+
 GACHA_TYPE_LABELS = {
     "coin": "코인형",
     "piece": "조각형",
@@ -2789,6 +2811,62 @@ def gacha_closed_text():
     )
 
 
+def get_weekly_gacha_count(user_id):
+    """
+    이번 주 가챠 사용 횟수 조회.
+    gacha_week_range_for_today() 기준이라 KST 토요일 00:00에 자동 초기화됩니다.
+    """
+    week_start, week_end = gacha_week_range_for_today()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT count
+    FROM gacha_weekly_counts
+    WHERE week_start = ?
+      AND user_id = ?
+    """, (week_start, user_id))
+    row = cur.fetchone()
+    conn.close()
+    return int(row["count"]) if row else 0
+
+
+def add_weekly_gacha_count(user_id, user_name):
+    """
+    가챠 성공 이용 후 이번 주 사용 횟수 +1.
+    """
+    week_start, week_end = gacha_week_range_for_today()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO gacha_weekly_counts (
+        week_start, week_end, user_id, user_name, count, updated_at
+    )
+    VALUES (?, ?, ?, ?, 1, ?)
+    ON CONFLICT(week_start, user_id)
+    DO UPDATE SET
+        week_end = excluded.week_end,
+        user_name = excluded.user_name,
+        count = count + 1,
+        updated_at = excluded.updated_at
+    """, (week_start, week_end, user_id, user_name, now_str()))
+    conn.commit()
+    conn.close()
+    return get_weekly_gacha_count(user_id)
+
+
+def gacha_count_status_text(user_id):
+    week_start, week_end = gacha_week_range_for_today()
+    used = get_weekly_gacha_count(user_id)
+    remain = max(0, WEEKLY_GACHA_LIMIT - used)
+    return (
+        "🎰 주간 가챠 사용 현황\n\n"
+        f"기간: {week_start} ~ {week_end}\n"
+        f"사용: {used} / {WEEKLY_GACHA_LIMIT}회\n"
+        f"남은 횟수: {remain}회\n\n"
+        "※ 매주 토요일 00:00(KST)에 자동 초기화됩니다."
+    )
+
+
 def run_gacha(user_id, user_name, tier):
     if tier not in GACHA_COSTS:
         return False, "사용법\n\n/가챠 하\n/가챠 중\n/가챠 상"
@@ -2800,6 +2878,15 @@ def run_gacha(user_id, user_name, tier):
     cost = GACHA_COSTS[tier]
     balance = get_balance(user_id)
 
+    used_count = get_weekly_gacha_count(user_id)
+    if used_count >= WEEKLY_GACHA_LIMIT:
+        return False, (
+            "🎰 이번 주 가챠 횟수를 모두 사용했습니다.\n\n"
+            f"사용: {used_count} / {WEEKLY_GACHA_LIMIT}회\n"
+            "초기화: 매주 토요일 00:00(KST)\n\n"
+            "확인: /가챠횟수"
+        )
+
     if balance < cost:
         return False, (
             f"코인이 부족합니다.\n\n"
@@ -2808,6 +2895,7 @@ def run_gacha(user_id, user_name, tier):
         )
 
     change_money(user_id, user_name, -cost, f"{tier} 가챠 이용", None, "가챠시스템")
+    weekly_used_after = add_weekly_gacha_count(user_id, user_name)
 
     grade = gacha_grade(gacha_type, tier)
     lines = [
@@ -2888,6 +2976,7 @@ def run_gacha(user_id, user_name, tier):
                         lines.append("🔨 대장장이 최초 완성 보상 +2코인")
 
     lines.append("")
+    lines.append(f"이번 주 가챠: {weekly_used_after} / {WEEKLY_GACHA_LIMIT}회")
     lines.append(f"현재 잔액: {coin_text(get_balance(user_id))}")
 
     return True, "\n".join(lines)
@@ -2899,7 +2988,9 @@ def gacha_system_text():
         "운영시간\n"
         "매주 토요일 00:00 ~ 21:00\n\n"
         "※ 가챠는 봇 1:1 개인채팅에서만 이용 가능합니다.\n"
-        "※ 운영시간 외에는 이용할 수 없습니다.\n\n"
+        "※ 운영시간 외에는 이용할 수 없습니다.\n"
+        "※ 주간 최대 15회 이용 가능합니다.\n"
+        "※ 매주 토요일 00:00(KST)에 횟수가 초기화됩니다.\n\n"
         "━━━━━━━━━━\n"
         "🎲 가챠 종류\n"
         "━━━━━━━━━━\n\n"
@@ -2912,7 +3003,8 @@ def gacha_system_text():
         "사용법\n"
         "/가챠 하\n"
         "/가챠 중\n"
-        "/가챠 상\n\n"
+        "/가챠 상\n"
+        "/가챠횟수\n\n"
         "━━━━━━━━━━\n"
         "⚙️ 가챠 타입\n"
         "━━━━━━━━━━\n\n"
@@ -3455,6 +3547,20 @@ def hidden_reward_status(date_str):
 def week_range_for_today():
     now = datetime.now(KST).date()
     start = now - timedelta(days=now.weekday())
+    end = start + timedelta(days=6)
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
+def gacha_week_range_for_today():
+    """
+    가챠 전용 주차.
+    KST 기준 매주 토요일 00:00에 새 주차로 자동 초기화됩니다.
+    기간: 토요일 ~ 다음 주 금요일
+    """
+    now = datetime.now(KST).date()
+    # Python weekday(): 월=0, 토=5
+    days_since_saturday = (now.weekday() - 5) % 7
+    start = now - timedelta(days=days_since_saturday)
     end = start + timedelta(days=6)
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
@@ -5318,7 +5424,7 @@ def handle(event):
         text == "/가챠시스템"
         or text.startswith("/가챠타입")
         or text.startswith("/가챠")
-        or text in ["/행운포인트", "/가챠포인트", "/조각", "/조각보유"]
+        or text in ["/행운포인트", "/가챠포인트", "/가챠횟수", "/조각", "/조각보유"]
     )
 
     private_shop_commands = (
@@ -5375,6 +5481,10 @@ def handle(event):
 
     if text in ["/마니또", "/마니또확인"]:
         reply(event.reply_token, send_manitto_dm(user_id, user_name))
+        return
+
+    if text in ["/가챠횟수", "/가챠사용횟수"]:
+        reply(event.reply_token, gacha_count_status_text(user_id))
         return
 
     if text in ["/친밀도", "/내친밀도"]:
