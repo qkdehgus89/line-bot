@@ -844,7 +844,7 @@ def user_guide_text():
 4등 이하 → 💰0.2코인
 
 🎭 마니또
-성공 시 💰1~5코인
+성공 시 💰1.5~7.5코인
 
 🎰 채팅 잭팟
 
@@ -977,7 +977,7 @@ def user_guide_text():
 /마니또
 
 주간 랜덤 배정
-성공 시 💰1~5코인 지급
+성공 시 💰1.5~7.5코인 지급
 
 ━━━━━━━━━━
 🏅 업적
@@ -1105,7 +1105,7 @@ def beginner_guide_text():
 
 🎭 마니또 성공
 /마니또
-→ 성공 시 💰1~5코인
+→ 성공 시 💰1.5~7.5코인
 
 🎰 채팅 잭팟
 → 당일 777번째 채팅 💰1코인
@@ -1126,7 +1126,7 @@ def beginner_guide_text():
 매주 토요일 00:00 ~ 21:00
 
 이용횟수
-주간 최대 15회
+주간 최대 25회
 매주 토요일 00:00 초기화
 
 ※ 가챠는 봇 1:1 개인채팅에서만 이용 가능합니다.
@@ -2450,7 +2450,7 @@ GACHA_COSTS = {
 # 주간 가챠 횟수 제한
 # KST 기준 매주 토요일 00:00에 새 가챠 주차로 자동 초기화됩니다.
 # 이용 가능 시간: 토요일 00:00 ~ 21:00 이전
-WEEKLY_GACHA_LIMIT = 15
+WEEKLY_GACHA_LIMIT = 25
 
 GACHA_TYPE_LABELS = {
     "coin": "코인형",
@@ -2989,7 +2989,7 @@ def gacha_system_text():
         "매주 토요일 00:00 ~ 21:00\n\n"
         "※ 가챠는 봇 1:1 개인채팅에서만 이용 가능합니다.\n"
         "※ 운영시간 외에는 이용할 수 없습니다.\n"
-        "※ 주간 최대 15회 이용 가능합니다.\n"
+        "※ 주간 최대 25회 이용 가능합니다.\n"
         "※ 매주 토요일 00:00(KST)에 횟수가 초기화됩니다.\n\n"
         "━━━━━━━━━━\n"
         "🎲 가챠 종류\n"
@@ -3800,6 +3800,58 @@ def settle_lucky_draw(settled_by="자동추첨"):
     )
 
 
+def lucky_draw_result_text():
+    """최근 S.N.S 럭키드로우 추첨 결과를 조회합니다."""
+    current_week_start, current_week_end = event_week_key()
+
+    conn = db()
+    cur = conn.cursor()
+
+    # 이번 주 결과가 있으면 이번 주 결과를 우선 표시하고, 없으면 가장 최근 결과 표시
+    cur.execute("""
+    SELECT week_start, week_end, winner_user_name, participants,
+           total_sales, prize, burned, settled_by, created_at
+    FROM sns_lucky_draw_results
+    WHERE week_start = ?
+    """, (current_week_start,))
+    row = cur.fetchone()
+
+    if not row:
+        cur.execute("""
+        SELECT week_start, week_end, winner_user_name, participants,
+               total_sales, prize, burned, settled_by, created_at
+        FROM sns_lucky_draw_results
+        ORDER BY created_at DESC
+        LIMIT 1
+        """)
+        row = cur.fetchone()
+
+    conn.close()
+
+    if not row:
+        return (
+            "🎟️ S.N.S 럭키드로우 결과\n\n"
+            "아직 추첨 결과가 없습니다.\n\n"
+            "참여 현황: /럭키드로우현황\n"
+            "구매: /럭키드로우구매"
+        )
+
+    is_current = row["week_start"] == current_week_start
+    title = "🎉 이번 주 S.N.S 럭키드로우 결과" if is_current else "🎉 최근 S.N.S 럭키드로우 결과"
+
+    return (
+        f"{title}\n\n"
+        f"기간: {row['week_start']} ~ {row['week_end']}\n"
+        f"참여자: {row['participants']}명\n"
+        f"총 판매액: {coin_text(row['total_sales'])}\n"
+        f"소각: {coin_text(row['burned'])}\n\n"
+        f"🏆 당첨자: {row['winner_user_name']}\n"
+        f"지급: {coin_text(row['prize'])}\n\n"
+        f"추첨: {row['settled_by'] or '자동추첨'}\n"
+        f"추첨일: {row['created_at']}"
+    )
+
+
 def add_pinball_ticket_by_staff(keyword, amount=1):
     """운영진 전용: 유저를 핀볼 이벤트에 등록합니다. 코인은 차감하지 않습니다."""
     try:
@@ -4510,9 +4562,9 @@ def format_hard_delete_done(target_name, deleted_users, deleted_counts, deleted_
 # =========================
 AFFINITY_REPLY_WINDOW_SECONDS = 180
 AFFINITY_PAIR_COOLDOWN_SECONDS = 30
-MANITTO_REQUIRED_SCORE = 15
-MANITTO_REWARD_MIN = 10   # 1코인
-MANITTO_REWARD_MAX = 50   # 5코인
+MANITTO_REQUIRED_SCORE = 30
+MANITTO_REWARD_MIN = 15   # 1.5코인
+MANITTO_REWARD_MAX = 75   # 7.5코인
 MANITTO_TARGET_MAX_WEEKLY_ASSIGNED = 2  # 이번 주 같은 타겟 최대 배정 횟수
 GOLDEN_MANITTO_RATE = 5  # 5%
 
@@ -4589,7 +4641,7 @@ def ensure_weekly_manitto(user_id, user_name):
 
     manitto_type = "golden" if random.randint(1, 100) <= GOLDEN_MANITTO_RATE else "normal"
     reward_min = MANITTO_REWARD_MIN
-    reward_max = 80 if manitto_type == "golden" else MANITTO_REWARD_MAX
+    reward_max = 120 if manitto_type == "golden" else MANITTO_REWARD_MAX
     required_score = 10 if manitto_type == "golden" else MANITTO_REQUIRED_SCORE
 
     conn = db()
@@ -5671,7 +5723,8 @@ def handle(event):
             "구매자 중 1명을 랜덤 추첨하여\n"
             "총 판매액의 80%를 지급합니다.\n"
             "나머지 20%는 시스템 소각됩니다.\n\n"
-            "구매: /럭키드로우구매\n\n"
+            "구매: /럭키드로우구매\n"
+            "결과 조회: /럭키드로우결과\n\n"
             "※ 럭키드로우는 구매만 가능합니다.\n"
             "※ 정산/발표는 토요일 21:00에 자동 진행됩니다."
         )
@@ -5686,6 +5739,10 @@ def handle(event):
 
     if text in ["/SNS럭키현황", "/럭키드로우현황"]:
         reply(event.reply_token, lucky_draw_status_text())
+        return
+
+    if text in ["/SNS럭키결과", "/럭키드로우결과"]:
+        reply(event.reply_token, lucky_draw_result_text())
         return
 
     if text in ["/SNS핀볼설명", "/핀볼설명"]:
