@@ -59,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v40-sat-gacha-limit"
+BOT_VERSION = "active-id-v44-full-purchase-list"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -1033,19 +1033,40 @@ def beginner_guide_text():
     return """📖 S.N.S 초보자 가이드
 
 환영합니다! 🎉
-처음 오신 분들을 위한 필수 안내입니다.
+
+S.N.S에서는
+
+👥 공개대화방
+🤖 꽃봇 1:1 채팅
+
+두 곳에서 사용하는 기능이 다릅니다.
 
 ━━━━━━━━━━━━━━
-1️⃣ 먼저 해야 할 것
+🌟 처음 오셨다면
 ━━━━━━━━━━━━━━
 
-✅ 프로필 작성
-✅ 공지 확인
-✅ 인사하기
-✅ 족보 댓글 작성
+1️⃣ 공지 확인
 
-초대받아 오신 경우 반드시
-노트의 초대 게시판에 댓글을 남겨주세요.
+방 운영 규칙 및 이용 방법을 확인해주세요.
+
+──────
+
+2️⃣ 꽃봇 친구추가
+
+🤖 꽃봇을 먼저 친구추가 해주세요.
+
+가챠, 상점, 내정보, 럭키드로우 등
+다양한 기능을 이용할 수 있습니다.
+
+──────
+
+3️⃣ 인사하기
+
+간단한 자기소개와 인사를 남겨주세요 😊
+
+──────
+
+4️⃣ 초대 게시판 댓글 작성
 
 예시)
 
@@ -1056,8 +1077,161 @@ def beginner_guide_text():
 
 ※ 미작성 시 초대 보상 지급 불가
 
+──────
+
+5️⃣ /출석
+
+매일 출석 보상을 받을 수 있습니다.
+
+──────
+
+6️⃣ 꽃봇과 1:1 채팅 시작
+
+다양한 기능을 이용해보세요.
+
 ━━━━━━━━━━━━━━
-2️⃣ 이모티콘 뜻
+👥 공개대화방 명령어
+━━━━━━━━━━━━━━
+
+📌 출석
+
+/출석
+
+매일 1회
+💰 0.5코인 지급
+
+──────
+
+📌 마디 미션
+
+/미션
+/미션수령
+
+100마디 → 0.1코인
+
+200마디 → 0.1코인
+
+300마디 → 0.1코인
+
+──────
+
+📌 마니또
+
+/마니또
+
+이번 주 타겟 확인
+
+──────
+
+📌 족보
+
+/족보
+
+현재 인원 확인
+
+━━━━━━━━━━━━━━
+🤖 꽃봇 1:1 채팅 명령어
+━━━━━━━━━━━━━━
+
+📌 내 정보
+
+/내정보
+
+확인 가능
+
+💰 보유 코인
+🍀 행운포인트
+🎰 가챠 현황
+💕 친밀도
+🎭 마니또 진행도
+🧩 조각 보유량
+🎁 보유 상품
+
+──────
+
+📌 가챠
+
+/가챠 하
+/가챠 중
+/가챠 상
+
+📅 이용 시간
+
+매주 토요일
+00:00 ~ 21:00
+
+주간 최대 25회
+
+──────
+
+📌 가챠 정보
+
+/가챠횟수
+/가챠시스템
+/코인가챠확률
+/조각보유
+
+──────
+
+📌 상점
+
+/상점
+
+상품 확인
+
+/구매 상품명
+
+예)
+/구매 닉변권
+
+/사용 구매번호
+
+──────
+
+📌 럭키드로우
+
+/럭키드로우구매
+
+주간 추첨권 구매
+
+/럭키드로우결과
+
+지난 추첨 결과 확인
+
+━━━━━━━━━━━━━━
+💰 코인 획득 방법
+━━━━━━━━━━━━━━
+
+✅ 출석
+
+✅ 마디 미션
+
+✅ 주간 랭킹
+
+✅ 마니또 성공
+
+✅ 채팅 잭팟
+
+✅ 이벤트 참여
+
+━━━━━━━━━━━━━━
+🎰 채팅 잭팟
+━━━━━━━━━━━━━━
+
+당일
+
+🎯 777번째 채팅
+🎯 7777번째 채팅
+🎯 10000번째 채팅
+🎯 랜덤 채팅번호
+
+달성 시
+💰 코인 지급
+
+※ 봇 메시지는 제외됩니다.
+
+━━━━━━━━━━━━━━
+🏷️ 이모티콘 설명
 ━━━━━━━━━━━━━━
 
 🪩 방장
@@ -1065,17 +1239,19 @@ def beginner_guide_text():
 🏁 인증자
 
 🔹 남미클
-🔻 여미클
+🔸 여미클
 🔰 노미클
 
-💉 STD 검사
+💉 STD검사
 💊 피검사
+
 👾 외출
 🛸 바쁨
-⚠️ 경고
 
+⚠️ 경고
 🚫 벙금지
-💠 무제한 단벙 주최권
+
+💠 무제한 단벙주최권
 🛟 미션클리어권
 📸 봇등록권
 🔤 칭호권
@@ -1083,193 +1259,23 @@ def beginner_guide_text():
 🎟 임티권
 
 ━━━━━━━━━━━━━━
-3️⃣ 코인 획득 방법
+❗ 중요 안내
 ━━━━━━━━━━━━━━
 
-📅 출석
-/출석
-→ 매일 1회 💰0.5코인
+가챠, 상점, 내정보,
+럭키드로우 등은
 
-🎯 마디 미션
-/미션
-/미션수령
-→ 100마디 💰0.1코인
-→ 200마디 💰0.1코인
-→ 300마디 💰0.1코인
+🤖 꽃봇과 1:1 채팅
 
-🏆 주간 랭킹
-→ 1등 💰2코인
-→ 2등 💰1코인
-→ 3등 💰0.5코인
-→ 4등 이하 💰0.2코인
+에서 사용하는 것을 권장합니다.
 
-🎭 마니또 성공
-/마니또
-→ 성공 시 💰1.5~7.5코인
-
-🎰 채팅 잭팟
-→ 당일 777번째 채팅 💰1코인
-→ 당일 7777번째 채팅 💰2코인
-→ 당일 10000번째 채팅 💰3코인
-→ 랜덤 채팅번호 💰3코인
-
-🍀 행운포인트
-/행운포인트
-→ 코인가챠 F등급 시 +1
-→ 10포인트 달성 시 💰1코인
-
-━━━━━━━━━━━━━━
-4️⃣ 가챠 시스템
-━━━━━━━━━━━━━━
-
-이용시간
-매주 토요일 00:00 ~ 21:00
-
-이용횟수
-주간 최대 25회
-매주 토요일 00:00 초기화
-
-※ 가챠는 봇 1:1 개인채팅에서만 이용 가능합니다.
-
-가격
-🟢 하급 💰1코인
-🟡 중급 💰3코인
-🔴 상급 💰5코인
-
-사용법
-/가챠 하
-/가챠 중
-/가챠 상
-
-가챠 타입
-/가챠타입 코인
-/가챠타입 조각
-/가챠타입 랜덤
-
-현재 타입 확인
-/가챠타입
-
-확률 확인
-/가챠시스템
-/가챠횟수
-/코인가챠확률
-
-━━━━━━━━━━━━━━
-5️⃣ 조각 시스템
-━━━━━━━━━━━━━━
-
-/조각보유
-
-💠 선갠라권 : 조각 10개
-💠 단벙주최권 : 조각 12개
-📸 봇등록권 : 조각 20개
-🛟 미션클리어권 : 조각 40개
-🎟 임티권 : 조각 100개
-🔤 칭호권 : 조각 100개
-
-조각이 모이면 자동으로 상품이 지급됩니다.
-
-━━━━━━━━━━━━━━
-6️⃣ 상점 / 보유상품
-━━━━━━━━━━━━━━
-
-/상점
-→ 구매 가능한 상품 확인
-
-/구매 상품명
-→ 상품 구매
-
-/내보유
-→ 보유 상품 확인
-
-/사용 구매번호
-→ 구매한 상품 사용 신청
-
-※ 상점은 봇 1:1 개인채팅에서 이용하는 걸 권장합니다.
-
-━━━━━━━━━━━━━━
-7️⃣ 럭키드로우
-━━━━━━━━━━━━━━
-
-/럭키드로우구매
-
-가격
-💰1코인
-
-추첨
-매주 토요일 21:00
-
-당첨금
-판매금액의 80%
-
-당첨자
-1명
-
-※ 봇 1:1 개인채팅 전용
-
-━━━━━━━━━━━━━━
-8️⃣ 자주 사용하는 명령어
-━━━━━━━━━━━━━━
-
-📌 내 정보
-/잔액
-/내보유
-/행운포인트
-/업적
-/친밀도
-
-📌 출석 / 미션
-/출석
-/미션
-/미션수령
-
-📌 게임
-/가챠시스템
-/가챠 하
-/가챠 중
-/가챠 상
-/코인가챠확률
-
-📌 마니또
-/마니또
-
-📌 족보
-/족보
-
-📌 안내
-/초보자가이드
-/안내서
-/명령어
-
-━━━━━━━━━━━━━━
-9️⃣ 마디(채팅) 집계 기준
-━━━━━━━━━━━━━━
-
-✔ 일반 대화 인정
-✔ 의미 있는 대화 인정
-
-❌ 초성만
-❌ 1~2글자 단답
-❌ 스티커만
-❌ 이모티콘만
-❌ 멘션만
-
-집계 기준은 봇이 자동 판단합니다.
-
-━━━━━━━━━━━━━━
-🔟 주의사항
-━━━━━━━━━━━━━━
-
-🚫 읽씹 금지
-🚫 정치질 금지
-🚫 따돌림 금지
-🚫 타인 사진 저장 금지
-🚫 과도한 분쟁 유발 금지
-🚫 운영진 업무 방해 금지
+꽃봇을 친구추가하지 않으면
+일부 기능 이용이 제한될 수 있습니다.
 
 ━━━━━━━━━━━━━━
 
 궁금한 점은
+
 🪩 방장
 🔗 관리자
 
@@ -2114,29 +2120,148 @@ def list_purchases(status=None, limit=30):
     return rows
 
 
-def list_user_purchases(user_id, status=None, limit=30):
+def list_user_purchases(user_id, status=None, limit=None):
+    """
+    유저 구매/보유 아이템 목록 조회.
+    limit=None이면 전체 조회합니다.
+    status 예: owned, used, cancel
+    """
     conn = db()
     cur = conn.cursor()
+
+    base_sql = """
+        SELECT id, item_name, price, status, created_at, used_at, used_by, use_note
+        FROM purchases
+        WHERE user_id = ?
+    """
+    params = [user_id]
+
     if status:
-        cur.execute("""
-        SELECT id, item_name, price, status, created_at, used_at, used_by, use_note
-        FROM purchases
-        WHERE user_id = ?
-          AND status = ?
-        ORDER BY id DESC
-        LIMIT ?
-        """, (user_id, status, limit))
-    else:
-        cur.execute("""
-        SELECT id, item_name, price, status, created_at, used_at, used_by, use_note
-        FROM purchases
-        WHERE user_id = ?
-        ORDER BY id DESC
-        LIMIT ?
-        """, (user_id, limit))
+        base_sql += " AND status = ?"
+        params.append(status)
+
+    base_sql += """
+        ORDER BY
+            CASE status
+                WHEN 'owned' THEN 0
+                WHEN 'pending' THEN 1
+                WHEN 'used' THEN 2
+                WHEN 'done' THEN 3
+                WHEN 'cancel' THEN 4
+                ELSE 5
+            END,
+            id DESC
+    """
+
+    if limit is not None:
+        base_sql += " LIMIT ?"
+        params.append(limit)
+
+    cur.execute(base_sql, params)
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def purchase_status_counts(user_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT status, COUNT(*) AS cnt
+    FROM purchases
+    WHERE user_id = ?
+    GROUP BY status
+    """, (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    result = {"owned": 0, "used": 0, "cancel": 0, "pending": 0, "done": 0}
+    for row in rows:
+        result[row["status"]] = int(row["cnt"] or 0)
+    return result
+
+
+def user_purchases_text(user_id, filter_mode="all"):
+    """
+    /내보유 출력용.
+    filter_mode: all / owned / used
+    미사용 아이템과 사용 완료 아이템을 분리해서 전체 출력합니다.
+    """
+    rows = list_user_purchases(user_id, limit=None)
+
+    if not rows:
+        return "보유하거나 구매한 상품이 없습니다."
+
+    owned_rows = [r for r in rows if r["status"] in ("owned", "pending")]
+    used_rows = [r for r in rows if r["status"] in ("used", "done")]
+    cancel_rows = [r for r in rows if r["status"] == "cancel"]
+    other_rows = [r for r in rows if r["status"] not in ("owned", "pending", "used", "done", "cancel")]
+
+    if filter_mode == "owned":
+        shown_groups = [("🎁 미사용 아이템", owned_rows)]
+        title = "🎁 내 미사용 아이템"
+    elif filter_mode == "used":
+        shown_groups = [("📦 사용 완료 아이템", used_rows)]
+        title = "📦 내 사용 완료 아이템"
+    else:
+        shown_groups = [
+            ("🎁 미사용 아이템", owned_rows),
+            ("📦 사용 완료 아이템", used_rows),
+        ]
+        title = "🎁 내 상품 보유 현황"
+
+    lines = [
+        title,
+        "",
+        f"미사용: {len(owned_rows)}개",
+        f"사용완료: {len(used_rows)}개",
+    ]
+
+    if filter_mode == "all" and cancel_rows:
+        lines.append(f"취소됨: {len(cancel_rows)}개")
+
+    for group_title, group_rows in shown_groups:
+        lines += ["", "━━━━━━━━━━", group_title, "━━━━━━━━━━"]
+
+        if not group_rows:
+            lines.append("없음")
+            continue
+
+        for row in group_rows:
+            if row["status"] in ("owned", "pending"):
+                lines.append(
+                    f"#{row['id']} {row['item_name']} / {coin_text(row['price'])}\n"
+                    f"구매일: {row['created_at']}"
+                )
+            else:
+                used_line = row["used_at"] or "기록 없음"
+                note_line = f"\n메모: {row['use_note']}" if row["use_note"] else ""
+                lines.append(
+                    f"#{row['id']} {row['item_name']} / {coin_text(row['price'])}\n"
+                    f"사용일: {used_line}{note_line}"
+                )
+
+    if filter_mode == "all" and other_rows:
+        lines += ["", "━━━━━━━━━━", "기타 상태 아이템", "━━━━━━━━━━"]
+        for row in other_rows:
+            lines.append(
+                f"#{row['id']} {row['item_name']} / {coin_text(row['price'])}\n"
+                f"상태: {status_text(row['status'])}"
+            )
+
+    lines += [
+        "",
+        "━━━━━━━━━━",
+        "사용 방법",
+        "━━━━━━━━━━",
+        "/사용 구매번호",
+        "",
+        "필터 보기",
+        "/내보유 미사용",
+        "/내보유 사용",
+    ]
+
+    return "\n".join(lines)
 
 
 def use_purchase(purchase_id, requester_user_id, requester_user_name, note=""):
@@ -5206,6 +5331,121 @@ def format_total_rows(title, rows):
 
 
 # =========================
+# 개인 메시지 / 내정보 통합
+# =========================
+def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 결과를 개인 메시지로 보내드렸습니다."):
+    """공개방에서는 DM으로 보내고 한 줄만 안내, 1:1에서는 그대로 출력."""
+    if is_private_chat(event):
+        reply_many(event.reply_token, split_text_messages(text_value))
+        return
+
+    if not user_id:
+        reply(event.reply_token, "개인 메시지를 보내려면 USER_ID가 필요합니다.\n방에서 채팅 1회 후 다시 입력해주세요.")
+        return
+
+    ok = push_private_message(user_id, text_value)
+    if ok:
+        reply(event.reply_token, public_notice)
+    else:
+        reply(
+            event.reply_token,
+            "📩 개인 메시지 전송에 실패했습니다.\n\n"
+            "꽃봇을 친구추가한 뒤 다시 입력해주세요."
+        )
+
+
+def my_info_text(user_id, user_name):
+    balance = get_balance(user_id)
+    pity = get_gacha_pity_point(user_id)
+    week_start, week_end = gacha_week_range_for_today()
+    gacha_used = get_weekly_gacha_count(user_id)
+    gacha_remain = max(0, WEEKLY_GACHA_LIMIT - gacha_used)
+
+    lines = [
+        "📌 S.N.S 내정보",
+        "",
+        f"닉네임: {user_name}",
+        f"보유 코인: {coin_text(balance)}",
+        f"행운포인트: {pity} / 10",
+        "",
+        "🎰 이번 주 가챠",
+        f"기간: {week_start} ~ {week_end}",
+        f"사용: {gacha_used} / {WEEKLY_GACHA_LIMIT}회",
+        f"남음: {gacha_remain}회",
+        "이용시간: 토요일 00:00 ~ 21:00",
+    ]
+
+    try:
+        row, err = ensure_weekly_manitto(user_id, user_name)
+        if row and not err:
+            score = get_affinity_score(user_id, row["target_user_id"], row["week_start"])
+            reward_text = coin_text(row["reward"]) if row["reward"] else f"{coin_text(row['reward_min'])} ~ {coin_text(row['reward_max'])}"
+            lines += [
+                "",
+                "🎭 마니또",
+                f"타겟: {row['target_user_name']}",
+                f"진행도: {score} / {row['required_score']}",
+                f"보상: {reward_text}",
+                "상태: 완료" if row["completed"] else "상태: 진행중",
+            ]
+        elif err:
+            lines += ["", "🎭 마니또", err]
+    except Exception as e:
+        print("MY_INFO_MANITTO_ERROR:", e)
+
+    try:
+        w_start, _ = event_week_key()
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT user_a, user_b, user_a_name, user_b_name, score
+        FROM affinity_scores
+        WHERE week_start = ? AND (user_a = ? OR user_b = ?)
+        ORDER BY score DESC, updated_at DESC
+        LIMIT 3
+        """, (w_start, user_id, user_id))
+        affinity_rows = cur.fetchall()
+        conn.close()
+        lines += ["", "💕 친밀도 TOP3"]
+        if not affinity_rows:
+            lines.append("이번 주 친밀도 기록이 없습니다.")
+        else:
+            for i, row in enumerate(affinity_rows, 1):
+                other = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
+                lines.append(f"{i}. {other} - {row['score']}")
+    except Exception as e:
+        print("MY_INFO_AFFINITY_ERROR:", e)
+
+    try:
+        piece_rows = get_all_gacha_pieces(user_id)
+        lines += ["", "🧩 조각"]
+        if not piece_rows:
+            lines.append("보유한 조각이 없습니다.")
+        else:
+            for row in piece_rows[:8]:
+                info = PIECE_INFO.get(row["piece_key"])
+                if info:
+                    lines.append(f"{info['label']} {row['count']} / {info['need']}")
+            if len(piece_rows) > 8:
+                lines.append(f"외 {len(piece_rows) - 8}개")
+    except Exception as e:
+        print("MY_INFO_PIECE_ERROR:", e)
+
+    try:
+        counts = purchase_status_counts(user_id)
+        lines += ["", "🎁 보유 상품"]
+        lines.append(f"미사용: {counts.get('owned', 0) + counts.get('pending', 0)}개")
+        lines.append(f"사용완료: {counts.get('used', 0) + counts.get('done', 0)}개")
+        if counts.get('cancel', 0):
+            lines.append(f"취소됨: {counts.get('cancel', 0)}개")
+        lines.append("자세히 보기: /내보유")
+    except Exception as e:
+        print("MY_INFO_PURCHASE_ERROR:", e)
+
+    lines += ["", "자세히 보기", "/내보유 /친밀도 /업적 /조각보유 /가챠횟수"]
+    return "\n".join(lines)
+
+# =========================
 # WEBHOOK
 # =========================
 @app.route("/", methods=["GET"])
@@ -5358,9 +5598,17 @@ def handle(event):
         )
         return
 
+    if text == "/내정보":
+        push_or_reply_private_info(event, user_id, my_info_text(user_id, user_name), "📩 내정보를 개인 메시지로 보내드렸습니다.")
+        return
+
     if text == "/잔액":
-        balance = get_balance(user_id)
-        reply(event.reply_token, f"💰 {user_name}님의 보유 {CURRENCY_NAME}\n\n{coin_text(balance)}")
+        push_or_reply_private_info(
+            event,
+            user_id,
+            f"💰 {user_name}님의 보유 {CURRENCY_NAME}\n\n{coin_text(get_balance(user_id))}",
+            "📩 잔액을 개인 메시지로 보내드렸습니다."
+        )
         return
 
     if text == "/도움말":
@@ -5402,32 +5650,47 @@ def handle(event):
     if text == "/명령어":
         reply(
             event.reply_token,
-            "📌 일반 명령어\n\n"
-            "🌸 처음 사용\n"
-            "/안내서\n"
-            "/이용안내\n\n"
-            "🎁 출석·미션\n"
+            "📌 S.N.S 사용 명령어\n\n"
+            "━━━━━━━━━━\n"
+            "👥 공개대화방\n"
+            "━━━━━━━━━━\n"
+            "/초보자가이드\n"
             "/출석\n"
             "/미션\n"
-            "/미션수령\n\n"
-            "🛒 상점 ※봇 개인창 전용\n"
+            "/미션수령\n"
+            "/마니또\n\n"
+            "※ 공개방에서는 긴 결과를 최대한 줄이고,\n"
+            "개인 정보성 내용은 봇 1:1로 전송됩니다.\n\n"
+            "━━━━━━━━━━\n"
+            "🤖 꽃봇 1:1 추천 기능\n"
+            "━━━━━━━━━━\n"
+            "/내정보\n"
+            "/내보유\n"
+            "/행운포인트\n"
+            "/업적\n"
+            "/친밀도\n\n"
+            "🎰 가챠\n"
+            "/가챠시스템\n"
+            "/가챠횟수\n"
+            "/가챠 하\n"
+            "/가챠 중\n"
+            "/가챠 상\n"
+            "/가챠타입\n"
+            "/가챠타입 코인\n"
+            "/가챠타입 조각\n"
+            "/가챠타입 랜덤\n"
+            "/조각보유\n\n"
+            "🛒 상점\n"
             "/상점\n"
             "/구매 상품명\n"
-            "/내보유\n"
             "/사용 구매번호\n\n"
-            "🎰 가챠 ※봇 개인창 전용\n"
-            "/가챠시스템\n"
-            "/가챠 하|중|상\n\n"
-            "🎖 업적·현상금\n"
-            "/업적\n"
-            "/현상금\n\n"
-            "🎟️ S.N.S 럭키드로우\n"
-            "/SNS럭키구매\n"
-            "/SNS럭키현황\n"
-            "/SNS럭키설명\n\n"
-            "🎱 S.N.S 핀볼\n"
-            "/SNS핀볼현황\n"
-            "/SNS핀볼설명"
+            "🎟 럭키드로우\n"
+            "/럭키드로우구매\n"
+            "/럭키드로우결과\n\n"
+            "━━━━━━━━━━\n"
+            "🔗 운영진 명령어\n"
+            "━━━━━━━━━━\n"
+            "/운영명령어"
         )
         return
 
@@ -5476,13 +5739,16 @@ def handle(event):
         text == "/가챠시스템"
         or text.startswith("/가챠타입")
         or text.startswith("/가챠")
-        or text in ["/행운포인트", "/가챠포인트", "/가챠횟수", "/조각", "/조각보유"]
+        or text in ["/행운포인트", "/가챠포인트", "/가챠횟수", "/조각", "/조각보유", "/코인가챠확률"]
     )
 
     private_shop_commands = (
         text == "/상점"
         or text.startswith("/구매 ")
         or text in ["/내보유", "/내구매", "/보유"]
+        or text.startswith("/내보유 ")
+        or text.startswith("/내구매 ")
+        or text.startswith("/보유 ")
         or text.startswith("/사용 ")
     )
 
@@ -5490,7 +5756,8 @@ def handle(event):
         text in [
             "/SNS럭키구매", "/럭키드로우구매",
             "/SNS럭키설명", "/럭키드로우설명",
-            "/SNS럭키현황", "/럭키드로우현황"
+            "/SNS럭키현황", "/럭키드로우현황",
+            "/SNS럭키결과", "/럭키드로우결과"
         ]
     )
 
@@ -5502,33 +5769,42 @@ def handle(event):
             private_only_notice(event, user_id, shop_private_guide_text(), "상점")
             return
         if private_lucky_commands:
-            private_only_notice(
-                event,
-                user_id,
-                "🎟️ S.N.S 럭키드로우는 봇 개인채팅에서만 구매 가능합니다.\n\n"
-                "구매: /SNS럭키구매\n"
-                "가격: 1코인\n"
-                "추첨/발표: 매주 토요일 21:00 자동",
-                "럭키드로우"
-            )
+            if text in ["/SNS럭키결과", "/럭키드로우결과"]:
+                push_or_reply_private_info(event, user_id, lucky_draw_result_text(), "📩 럭키드로우 결과를 개인 메시지로 보내드렸습니다.")
+            else:
+                private_only_notice(
+                    event,
+                    user_id,
+                    "🎟️ S.N.S 럭키드로우는 봇 개인채팅에서만 구매 가능합니다.\n\n"
+                    "구매: /럭키드로우구매\n"
+                    "결과: /럭키드로우결과\n"
+                    "가격: 1코인\n"
+                    "추첨/발표: 매주 토요일 21:00 자동",
+                    "럭키드로우"
+                )
             return
 
     if text == "/가챠시스템":
-        reply(event.reply_token, gacha_system_text())
+        push_or_reply_private_info(event, user_id, gacha_system_text(), "📩 가챠 시스템 안내를 개인 메시지로 보내드렸습니다.")
+        return
+
+    if text == "/코인가챠확률":
+        push_or_reply_private_info(
+            event,
+            user_id,
+            "📊 코인가챠 확률 안내\n\n"
+            "하급/중급/상급 모두 기본 구조는 다음과 같습니다.\n\n"
+            "손해 구간: 약 40%\n"
+            "본전 구간: 약 30%\n"
+            "이득 구간: 약 30%\n\n"
+            "※ 등급별 실제 보상은 /가챠시스템 에서 확인할 수 있습니다.",
+            "📩 코인가챠 확률 안내를 개인 메시지로 보내드렸습니다."
+        )
         return
 
 
     if text == "/업적":
-        ok = push_private_message(user_id, achievement_status_text(user_id, user_name))
-        if ok:
-            reply(event.reply_token, "🎖 업적 현황을 개인 메시지로 보내드렸습니다.")
-        else:
-            reply(
-                event.reply_token,
-                "🎖 개인 메시지 전송에 실패했습니다.\n\n"
-                "봇을 친구추가한 뒤 다시 /업적 을 입력해주세요.\n"
-                "업적 현황은 본인에게만 보이도록 공방에는 공개하지 않습니다."
-            )
+        push_or_reply_private_info(event, user_id, achievement_status_text(user_id, user_name), "🎖 업적 현황을 개인 메시지로 보내드렸습니다.")
         return
 
     if text in ["/마니또", "/마니또확인"]:
@@ -5536,11 +5812,11 @@ def handle(event):
         return
 
     if text in ["/가챠횟수", "/가챠사용횟수"]:
-        reply(event.reply_token, gacha_count_status_text(user_id))
+        push_or_reply_private_info(event, user_id, gacha_count_status_text(user_id), "📩 가챠 현황을 개인 메시지로 보내드렸습니다.")
         return
 
     if text in ["/친밀도", "/내친밀도"]:
-        reply(event.reply_token, affinity_status_text(user_id, user_name))
+        push_or_reply_private_info(event, user_id, affinity_status_text(user_id, user_name), "📩 친밀도 현황을 개인 메시지로 보내드렸습니다.")
         return
 
     if text in ["/친밀도랭킹", "/친밀도순위"]:
@@ -5609,30 +5885,21 @@ def handle(event):
 
     if text in ["/행운포인트", "/가챠포인트"]:
         pity_points = get_gacha_pity_point(user_id)
-        reply(
-            event.reply_token,
-            f"🎁 가챠 행운포인트\n\n"
-            f"현재: {pity_points} / 10\n\n"
-            f"코인형 가챠 F등급 1회마다 1점 적립\n"
-            f"10점 달성 시 💰1코인 자동 지급"
-        )
+        push_or_reply_private_info(event, user_id, f"🎁 가챠 행운포인트\n\n현재: {pity_points} / 10\n\n코인형 가챠 F등급 1회마다 1점 적립\n10점 달성 시 💰1코인 자동 지급", "📩 행운포인트를 개인 메시지로 보내드렸습니다.")
         return
 
     if text in ["/조각", "/조각보유"]:
         rows = get_all_gacha_pieces(user_id)
-
         if not rows:
-            reply(event.reply_token, "보유한 조각이 없습니다.")
+            push_or_reply_private_info(event, user_id, "보유한 조각이 없습니다.", "📩 조각 현황을 개인 메시지로 보내드렸습니다.")
             return
-
         lines = ["🧩 보유 조각", ""]
         for row in rows:
             info = PIECE_INFO.get(row["piece_key"])
             if not info:
                 continue
             lines.append(f"{info['label']} {row['count']} / {info['need']}")
-
-        reply(event.reply_token, "\n".join(lines))
+        push_or_reply_private_info(event, user_id, "\n".join(lines), "📩 조각 현황을 개인 메시지로 보내드렸습니다.")
         return
 
 
@@ -5742,7 +6009,7 @@ def handle(event):
         return
 
     if text in ["/SNS럭키결과", "/럭키드로우결과"]:
-        reply(event.reply_token, lucky_draw_result_text())
+        push_or_reply_private_info(event, user_id, lucky_draw_result_text(), "📩 럭키드로우 결과를 개인 메시지로 보내드렸습니다.")
         return
 
     if text in ["/SNS핀볼설명", "/핀볼설명"]:
@@ -5797,7 +6064,7 @@ def handle(event):
         lines.append("구매 방법: /구매 상품명")
         lines.append("보유 확인: /내보유")
 
-        reply(event.reply_token, "\n".join(lines))
+        push_or_reply_private_info(event, user_id, "\n".join(lines), "📩 상점 정보를 개인 메시지로 보내드렸습니다.")
         return
 
     if text.startswith("/구매 "):
@@ -5806,25 +6073,31 @@ def handle(event):
         reply(event.reply_token, msg)
         return
 
-    if text in ["/내보유", "/내구매", "/보유"]:
-        rows = list_user_purchases(user_id)
-        if not rows:
-            reply(event.reply_token, "보유하거나 구매한 상품이 없습니다.")
-            return
+    if text in ["/내보유", "/내구매", "/보유"] or text.startswith("/내보유 ") or text.startswith("/내구매 ") or text.startswith("/보유 "):
+        parts = text.split(maxsplit=1)
+        filter_mode = "all"
 
-        lines = ["🎁 내 상품 보유 현황", ""]
-        for row in rows:
-            used_info = ""
-            if row["status"] == "used":
-                used_info = f"\n   사용일: {row['used_at']}"
-            lines.append(
-                f"#{row['id']} {row['item_name']} / {coin_text(row['price'])}\n"
-                f"   상태: {status_text(row['status'])}{used_info}"
-            )
+        if len(parts) >= 2:
+            arg = parts[1].strip()
+            if arg in ["미사용", "보유", "owned"]:
+                filter_mode = "owned"
+            elif arg in ["사용", "사용완료", "used"]:
+                filter_mode = "used"
+            else:
+                push_or_reply_private_info(
+                    event,
+                    user_id,
+                    "사용법\n\n/내보유\n/내보유 미사용\n/내보유 사용",
+                    "📩 보유 상품 사용법을 개인 메시지로 보내드렸습니다."
+                )
+                return
 
-        lines.append("")
-        lines.append("사용 방법: /사용 구매번호")
-        reply(event.reply_token, "\n".join(lines))
+        push_or_reply_private_info(
+            event,
+            user_id,
+            user_purchases_text(user_id, filter_mode),
+            "📩 보유 상품 현황을 개인 메시지로 보내드렸습니다."
+        )
         return
 
     if text.startswith("/사용 "):
