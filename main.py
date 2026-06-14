@@ -131,62 +131,31 @@ def is_operator_command(text):
         "/상태확인",
         "/DB상태",
         "/전체유저",
-
-        "/족보",
-        "/족보보기",
-        "/족보코인",
-        "/족보입력",
-        "/족보저장",
-        "/족보취소",
-
-        "/주간정산",
-        "/주간초기화",
-        "/주간초기화 전체",
-
-        "/초기화",
-        "/전체초기화",
-        "/전체초기화 확인",
-        "/완전초기화",
-        "/완전초기화 확인",
-        "/멤버초기화",
-        "/멤버초기화 확인",
-        "/화폐초기화",
-        "/화폐초기화 확인",
-
         "/삭제확인",
         "/삭제취소",
-
-        "/SNS핀볼초기화",
-        "/핀볼초기화",
-        "/SNS럭키추첨",
-        "/SNS럭키정산",
-        "/럭키드로우추첨",
+        "/족보입력",
+        "/족보취소",
+        "/주간정산",
+        "/주간초기화",
         "/럭키드로우정산",
+        "/칭호목록",
     }
 
     prefix_commands = [
+        "/유저검색 ",
+        "/닉삭제",
+        "/닉삭제번호",
         "/지급 ",
         "/차감 ",
+        "/코인내역",
         "/상품추가 ",
+        "/상품등록 ",
         "/상품삭제 ",
         "/사용처리 ",
         "/구매취소 ",
-
-        "/닉삭제",
-        "/닉삭제번호",
-        "/전체유저",
-
-        "/퇴장처리 ",
-        "/퇴장처리ID ",
-        "/복구처리 ",
-        "/복구처리ID ",
-
-        "/SNS핀볼등록 ",
-        "/SNS핀볼삭제 ",
-        "/SNS핀볼정산 ",
-        "/핀볼등록 ",
-        "/핀볼삭제 ",
-        "/핀볼정산 ",
+        "/아이템지급 ",
+        "/칭호지급 ",
+        "/칭호삭제 ",
     ]
 
     return text in exact_commands or any(text.startswith(prefix) for prefix in prefix_commands)
@@ -639,6 +608,18 @@ def init_db():
         id INTEGER PRIMARY KEY CHECK (id = 1),
         content TEXT NOT NULL,
         updated_by TEXT,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS user_titles (
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        title TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )
     """)
@@ -5493,29 +5474,68 @@ def get_best_affinity(user_id):
 
 
 def get_public_title(user_id):
-    balance = get_balance(user_id)
-    achievement_count = get_achievement_count(user_id)
-    attendance_count = get_attendance_count(user_id)
-    _, best_score = get_best_affinity(user_id)
-    conn = db(); cur = conn.cursor()
-    cur.execute("SELECT item_name FROM purchases WHERE user_id = ? AND item_name LIKE '%칭호%' ORDER BY id DESC LIMIT 1", (user_id,))
-    title_ticket = cur.fetchone()
-    cur.execute("SELECT COUNT(*) AS cnt FROM sns_lucky_draw_results WHERE winner_user_id = ?", (user_id,))
-    lucky_wins = int((cur.fetchone()["cnt"] or 0))
+    conn = db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+        SELECT title
+        FROM user_titles
+        WHERE user_id = ? AND is_active = 1
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1
+        """, (user_id,))
+        row = cur.fetchone()
+    except Exception:
+        row = None
     conn.close()
-    if lucky_wins > 0:
-        return "💎 럭키드로우 챔피언"
-    if achievement_count >= 20:
-        return "🏆 업적 수집가"
-    if best_score >= 60:
-        return "💕 친밀도 장인"
-    if balance >= 200:
-        return "💰 코인 부자"
-    if attendance_count >= 30:
-        return "📅 성실 출석러"
-    if title_ticket:
-        return "👑 칭호권 보유자"
-    return "아직 대표 칭호가 없습니다."
+    if row and row["title"]:
+        return row["title"]
+    return "칭호 없음"
+
+
+def set_user_title(user_id, user_name, title, staff_name):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("UPDATE user_titles SET is_active = 0, updated_at = ? WHERE user_id = ?", (now_str(), user_id))
+    cur.execute("""
+    INSERT INTO user_titles (user_id, user_name, title, is_active, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, 1, ?, ?, ?)
+    """, (user_id, user_name, title, staff_name, now_str(), now_str()))
+    conn.commit()
+    conn.close()
+
+
+def clear_user_title(user_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("UPDATE user_titles SET is_active = 0, updated_at = ? WHERE user_id = ?", (now_str(), user_id))
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def title_list_text():
+    conn = db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+        SELECT user_name, title, created_by, updated_at
+        FROM user_titles
+        WHERE is_active = 1
+        ORDER BY updated_at DESC, user_name ASC
+        """)
+        rows = cur.fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    if not rows:
+        return "👑 등록된 칭호가 없습니다."
+    lines = ["👑 칭호 목록", ""]
+    for i, row in enumerate(rows, 1):
+        by = f" / 지급: {row['created_by']}" if row['created_by'] else ""
+        lines.append(f"{i}. {row['user_name']} - {row['title']}{by}")
+    return "\n".join(lines)
 
 
 def title_text(user_id, user_name):
@@ -5539,6 +5559,66 @@ def profile_text(target_user_id, target_user_name):
     ]
     lines.append(f"{best_name} ({best_score})" if best_name else "이번 주 친밀도 기록 없음")
     return "\n".join(lines)
+
+
+
+def admin_user_detail_text(keyword):
+    rows = find_users(keyword, limit=5)
+    if not rows:
+        return f"검색 결과가 없습니다.\n\n검색어: {keyword}"
+    if len(rows) > 1:
+        lines = [f"검색 결과가 여러 명입니다: {keyword}", ""]
+        for i, row in enumerate(rows, 1):
+            status = "활성" if int(row.get("is_active", 1)) == 1 else "비활성"
+            lines.append(f"{i}. {row['user_name']} / {status}\n   USER_ID: {row['user_id']}")
+        lines.append("\n더 정확한 닉네임으로 다시 입력해주세요.")
+        return "\n".join(lines)
+    user = rows[0]
+    uid = user["user_id"]
+    status = "활성" if int(user.get("is_active", 1)) == 1 else "비활성"
+    best_name, best_score = get_best_affinity(uid)
+    conn = db(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS cnt FROM purchases WHERE user_id = ? AND status = 'owned'", (uid,))
+    owned = int(cur.fetchone()["cnt"] or 0)
+    cur.execute("SELECT COUNT(*) AS cnt FROM purchases WHERE user_id = ? AND status = 'used'", (uid,))
+    used = int(cur.fetchone()["cnt"] or 0)
+    conn.close()
+    lines = [
+        "🔎 유저 상세",
+        "",
+        f"닉네임: {user['user_name']}",
+        f"상태: {status}",
+        f"USER_ID: {uid}",
+        "",
+        f"💰 코인: {coin_text(get_balance(uid))}",
+        f"📅 출석: {get_attendance_count(uid)}일",
+        f"🏆 업적: {get_achievement_count(uid)}개",
+        f"👑 칭호: {get_public_title(uid)}",
+        f"💕 최고 친밀도: {best_name} ({best_score})" if best_name else "💕 최고 친밀도: 기록 없음",
+        f"🎁 보유상품: 미사용 {owned}개 / 사용완료 {used}개",
+    ]
+    return "\n".join(lines)
+
+
+def grant_item_to_user(keyword, item_name, staff_name):
+    rows = find_users(keyword, limit=5)
+    if not rows:
+        return False, f"대상을 찾을 수 없습니다.\n검색어: {keyword}"
+    if len(rows) > 1:
+        lines = [f"검색 결과가 여러 명입니다: {keyword}", ""]
+        for i, row in enumerate(rows, 1):
+            lines.append(f"{i}. {row['user_name']}")
+        lines.append("\n더 정확한 닉네임으로 다시 입력해주세요.")
+        return False, "\n".join(lines)
+    target = rows[0]
+    purchase_id = add_reward_purchase(target["user_id"], target["user_name"], item_name)
+    return True, (
+        "🎁 아이템 지급 완료\n\n"
+        f"대상: {target['user_name']}\n"
+        f"상품: {item_name}\n"
+        f"구매번호: #{purchase_id}\n"
+        f"처리: {staff_name}"
+    )
 
 # =========================
 # WEBHOOK
@@ -5698,7 +5778,7 @@ def handle(event):
         return
 
     if text == "/잔액":
-        TEMP
+        reply(event.reply_token, f"💰 {user_name}님의 보유 {CURRENCY_NAME}\n\n{coin_text(get_balance(user_id))}")
         return
 
     if text == "/칭호":
@@ -5718,7 +5798,7 @@ def handle(event):
         reply(event.reply_token, "일반 명령어: /명령어\n운영 명령어: /운영명령어")
         return
 
-    if text in ["/안내서", "/이용안내", "/봇안내", "/꽃봇안내", "/설명서"]:
+    if False and text in ["/안내서", "/이용안내", "/봇안내", "/꽃봇안내", "/설명서"]:
         guide = user_guide_text()
         if is_private_chat(event):
             reply_many(event.reply_token, split_text_messages(guide))
@@ -5751,60 +5831,65 @@ def handle(event):
         return
 
     if text == "/명령어":
-        reply(
-            event.reply_token,
-            "📌 S.N.S 사용 명령어\n\n"
-            "━━━━━━━━━━\n"
-            "👥 공개대화방\n"
-            "━━━━━━━━━━\n"
-            "/초보자가이드\n"
-            "/출석\n"
-            "/미션\n"
-            "/미션수령\n"
-            "/잔액\n"
-            "/친밀도\n"
-            "/업적\n"
-            "/프로필\n"
-            "/프로필 닉네임\n"
-            "/칭호\n"
-            "/럭키드로우결과\n\n"
-            "━━━━━━━━━━\n"
-            "🤖 꽃봇 1:1 추천 기능\n"
-            "━━━━━━━━━━\n"
-            "/내정보\n"
-            "/마니또\n"
-            "/행운포인트\n"
-            "/내보유\n"
-            "/내보유 미사용\n"
-            "/내보유 사용\n\n"
-            "🎰 가챠\n"
-            "/가챠 하\n"
-            "/가챠 중\n"
-            "/가챠 상\n"
-            "/가챠시스템\n"
-            "/가챠횟수\n"
-            "/가챠타입\n"
-            "/가챠타입 코인\n"
-            "/가챠타입 조각\n"
-            "/가챠타입 랜덤\n"
-            "/코인가챠확률\n"
-            "/조각보유\n\n"
-            "🛒 상점\n"
-            "/상점\n"
-            "/구매 상품명\n"
-            "/사용 구매번호\n\n"
-            "🎟 럭키드로우\n"
-            "/럭키드로우구매\n"
-            "/럭키드로우결과\n\n"
-            "※ 가챠, 상점, 내정보성 명령어는 공개방에서 입력해도 개인 메시지로 전송됩니다.\n\n"
-            "━━━━━━━━━━\n"
-            "🔗 운영진 명령어\n"
-            "━━━━━━━━━━\n"
-            "/운영명령어"
-        )
+        command_text = """📌 S.N.S 사용 명령어
+
+━━━━━━━━━━
+👥 공개대화방
+━━━━━━━━━━
+/출석
+/미션
+/미션수령
+
+/잔액
+/친밀도
+/업적
+
+/코인순위
+/주간랭킹
+
+/프로필
+/프로필 닉네임
+
+/칭호
+
+/럭키드로우결과
+
+━━━━━━━━━━
+🤖 꽃봇 1:1 전용
+━━━━━━━━━━
+/초보자가이드
+/명령어
+
+/내정보
+
+/마니또
+/행운포인트
+
+/가챠 하
+/가챠 중
+/가챠 상
+
+/가챠횟수
+/가챠시스템
+/가챠타입
+/코인가챠확률
+/조각보유
+
+/상점
+/내보유
+/내보유 미사용
+/내보유 사용
+
+/구매 상품명
+/사용 구매번호
+
+/럭키드로우구매
+
+※ 1:1 전용 명령어를 공개방에서 입력하면 결과는 개인메시지로 전송됩니다."""
+        push_or_reply_private_info(event, user_id, command_text, "📩 명령어 목록을 개인 메시지로 보내드렸습니다.")
         return
 
-    if text in ["/족보", "/족보보기", "/족보코인"]:
+    if text == "/족보":
         jokbo_output = genealogy_text_with_coins()
         reply_many(event.reply_token, split_text_messages(jokbo_output))
         return
@@ -5855,20 +5940,13 @@ def handle(event):
     private_shop_commands = (
         text == "/상점"
         or text.startswith("/구매 ")
-        or text in ["/내보유", "/내구매", "/보유"]
+        or text == "/내보유"
         or text.startswith("/내보유 ")
-        or text.startswith("/내구매 ")
-        or text.startswith("/보유 ")
         or text.startswith("/사용 ")
     )
 
     private_lucky_commands = (
-        text in [
-            "/SNS럭키구매", "/럭키드로우구매",
-            "/SNS럭키설명", "/럭키드로우설명",
-            "/SNS럭키현황", "/럭키드로우현황",
-            "/SNS럭키결과", "/럭키드로우결과"
-        ]
+        text in ["/럭키드로우구매"]
     )
 
     if not is_private_chat(event):
@@ -5891,7 +5969,7 @@ def handle(event):
             private_only_notice(event, user_id, shop_private_guide_text(), "상점")
             return
         if private_lucky_commands:
-            if text in ["/SNS럭키결과", "/럭키드로우결과"]:
+            if text == "/럭키드로우결과":
                 reply(event.reply_token, lucky_draw_result_text())
             else:
                 private_only_notice(
@@ -5941,11 +6019,11 @@ def handle(event):
         reply(event.reply_token, affinity_status_text(user_id, user_name))
         return
 
-    if text in ["/친밀도랭킹", "/친밀도순위"]:
+    if False and text in ["/친밀도랭킹", "/친밀도순위"]:
         reply(event.reply_token, affinity_ranking_text())
         return
 
-    if text in ["/현상금", "/현상금현황"]:
+    if False and text in ["/현상금", "/현상금현황"]:
         reply(event.reply_token, "현상금은 🎭 S.N.S 마니또로 개편되었습니다.\n확인: /마니또")
         return
 
@@ -6102,7 +6180,7 @@ def handle(event):
 
 
 
-    if text in ["/SNS럭키설명", "/럭키드로우설명"]:
+    if False and text in ["/SNS럭키설명", "/럭키드로우설명"]:
         reply(
             event.reply_token,
             "🎟️ S.N.S 럭키드로우\n\n"
@@ -6119,22 +6197,22 @@ def handle(event):
         )
         return
 
-    if text in ["/SNS럭키구매", "/럭키드로우구매"]:
+    if text == "/럭키드로우구매":
         success, msg = buy_lucky_draw_ticket(user_id, user_name)
         if success:
             grant_achievement_once(user_id, user_name, "first_lucky", "🎟️ 첫 럭키드로우", 2, "S.N.S 럭키드로우")
         reply(event.reply_token, msg)
         return
 
-    if text in ["/SNS럭키현황", "/럭키드로우현황"]:
+    if False and text in ["/SNS럭키현황", "/럭키드로우현황"]:
         reply(event.reply_token, lucky_draw_status_text())
         return
 
-    if text in ["/SNS럭키결과", "/럭키드로우결과"]:
+    if text == "/럭키드로우결과":
         reply(event.reply_token, lucky_draw_result_text())
         return
 
-    if text in ["/SNS핀볼설명", "/핀볼설명"]:
+    if False and text in ["/SNS핀볼설명", "/핀볼설명"]:
         reply(
             event.reply_token,
             "🎱 S.N.S 핀볼\n\n"
@@ -6149,7 +6227,7 @@ def handle(event):
         )
         return
 
-    if text.startswith("/SNS핀볼구매") or text.startswith("/핀볼구매"):
+    if False and (text.startswith("/SNS핀볼구매") or text.startswith("/핀볼구매")):
         reply(
             event.reply_token,
             "🎱 S.N.S 핀볼은 유저 구매형이 아닙니다.\n\n"
@@ -6159,7 +6237,7 @@ def handle(event):
         )
         return
 
-    if text in ["/SNS핀볼현황", "/핀볼현황"]:
+    if False and text in ["/SNS핀볼현황", "/핀볼현황"]:
         reply(event.reply_token, pinball_status_text())
         return
 
@@ -6195,7 +6273,7 @@ def handle(event):
         reply(event.reply_token, msg)
         return
 
-    if text in ["/내보유", "/내구매", "/보유"] or text.startswith("/내보유 ") or text.startswith("/내구매 ") or text.startswith("/보유 "):
+    if text == "/내보유" or text.startswith("/내보유 "):
         parts = text.split(maxsplit=1)
         filter_mode = "all"
 
@@ -6233,6 +6311,30 @@ def handle(event):
         reply(event.reply_token, msg)
         return
 
+    if text == "/코인순위":
+        rows = currency_ranking()
+        if not rows:
+            reply(event.reply_token, f"{CURRENCY_NAME} 보유 데이터가 없습니다.")
+            return
+        lines = [f"🏆 {CURRENCY_NAME} 보유 순위", ""]
+        for i, row in enumerate(rows, 1):
+            lines.append(f"{i}. {row['user_name']} - {coin_text(row['balance'])}")
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text == "/주간랭킹":
+        week_start, week_end = week_range_for_today()
+        rows = weekly_ranking_rows(COUNT_SOURCE_ID, week_start, week_end, limit=10)
+        if not rows:
+            reply(event.reply_token, "이번 주 랭킹 데이터가 없습니다.")
+            return
+        lines = ["🏆 이번 주 마디수 랭킹", f"기간: {week_start} ~ {week_end}", ""]
+        for i, row in enumerate(rows, 1):
+            reward = weekly_reward_amount(i)
+            lines.append(f"{i}. {row['user_name']} - {row['total_count']}마디 / 보상 {coin_text(reward)}")
+        reply(event.reply_token, "\n".join(lines))
+        return
+
     # 운영진방 아니면 관리자 명령어 무시
     if source_id not in ADMIN_SOURCE_IDS:
         return
@@ -6245,75 +6347,107 @@ def handle(event):
     # 도움말
     # =========================
     if text == "/운영명령어":
-        reply(
-            event.reply_token,
-            "🛠 운영 명령어\n\n"
-            "📊 마디수\n"
-            "/마디수\n"
-            "/순위\n"
-            "/경고\n"
-            "/경고기준\n"
-            "※ 날짜 조회 가능: /마디수 2026-06-10\n\n"
-            "👥 유저관리\n"
-            "/유저검색\n"
-            "/유저동기화\n"
-            "/퇴장처리\n"
-            "/복구처리\n"
-            "/전체유저\n"
-            "/닉삭제 닉네임\n"
-            "※ /닉삭제는 DB에서 완전히 삭제됩니다. 닉네임 또는 USER_ID 사용 가능\n\n"
-            "📡 수집확인\n"
-            "/수집상태\n"
-            "/최근로그\n"
-            "/유저상세\n"
-            "/DB상태\n\n"
-            "💰 코인관리\n"
-            "/지급\n"
-            "/차감\n"
-            "/코인순위\n"
-            "/코인내역\n\n"
-            "🏆 주간랭킹\n"
-            "/주간랭킹\n"
-            "/주간정산\n"
-            "/주간초기화\n\n"
-            "🛒 상점관리\n"
-            "/상품등록\n"
-            "/상품삭제\n"
-            "/보유목록\n"
-            "/사용처리\n\n"
-            "📖 족보\n"
-            "/족보저장\n"
-            "/족보보기\n"
-            "/족보코인\n\n"
-            "🧹 초기화\n"
-            "/초기화\n"
-            "/전체초기화\n\n"
-            "🎟️ S.N.S 이벤트\n"
-            "/SNS핀볼등록 닉네임 수량\n"
-            "/SNS핀볼삭제 닉네임\n"
-            "/SNS핀볼초기화\n"
-            "/SNS핀볼정산 닉네임1 닉네임2\n"
-            "/현상금목록\n\n"
-            "⚙️ 시스템\n"
-            "/방정보\n"
-            "/버전"
-        )
+        admin_text = """🛠 운영 명령어
+
+⚙️ 시스템
+/운영명령어
+/방정보
+/상태확인
+/DB상태
+
+👥 유저관리
+/전체유저
+/유저검색 닉네임
+/닉삭제 닉네임
+/닉삭제번호 번호
+/삭제확인
+/삭제취소
+
+💰 코인관리
+/지급 닉네임 금액 사유
+/차감 닉네임 금액 사유
+/코인내역 닉네임
+
+🎁 아이템관리
+/상품추가 상품명 가격 설명
+/상품삭제 상품명
+/사용처리 구매번호 메모
+/구매취소 구매번호
+/아이템지급 닉네임 상품명
+
+📖 족보관리
+/족보입력
+/족보취소
+
+🏆 주간관리
+/주간랭킹
+/주간정산
+/주간초기화
+
+🎟 럭키드로우
+/럭키드로우정산
+
+👑 칭호관리
+/칭호지급 닉네임 칭호명
+/칭호삭제 닉네임
+/칭호목록"""
+        reply(event.reply_token, admin_text)
         return
 
+    if text.startswith("/칭호지급 "):
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            reply(event.reply_token, "사용법\n\n/칭호지급 닉네임 칭호명")
+            return
+        keyword = parts[1].strip()
+        title = parts[2].strip()
+        target, err = get_user_row_by_keyword_or_self(keyword)
+        if err:
+            reply(event.reply_token, err)
+            return
+        set_user_title(target["user_id"], target["user_name"], title, user_name)
+        reply(event.reply_token, f"👑 칭호 지급 완료\n\n대상: {target['user_name']}\n칭호: {title}")
+        return
 
-    if text in ["/마니또목록", "/마니또현황전체"]:
+    if text.startswith("/칭호삭제 "):
+        keyword = text.replace("/칭호삭제", "", 1).strip()
+        if not keyword:
+            reply(event.reply_token, "사용법\n\n/칭호삭제 닉네임")
+            return
+        target, err = get_user_row_by_keyword_or_self(keyword)
+        if err:
+            reply(event.reply_token, err)
+            return
+        changed = clear_user_title(target["user_id"])
+        reply(event.reply_token, f"👑 칭호 삭제 완료\n\n대상: {target['user_name']}\n처리: {changed}건")
+        return
+
+    if text == "/칭호목록":
+        reply_many(event.reply_token, split_text_messages(title_list_text()))
+        return
+
+    if text.startswith("/아이템지급 "):
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            reply(event.reply_token, "사용법\n\n/아이템지급 닉네임 상품명")
+            return
+        ok, msg = grant_item_to_user(parts[1].strip(), parts[2].strip(), user_name)
+        reply(event.reply_token, msg)
+        return
+
+    if False and text in ["/마니또목록", "/마니또현황전체"]:
         reply(event.reply_token, manitto_admin_status_text())
         return
 
-    if text in ["/친밀도랭킹", "/친밀도순위"]:
+    if False and text in ["/친밀도랭킹", "/친밀도순위"]:
         reply(event.reply_token, affinity_ranking_text())
         return
 
-    if text in ["/현상금목록", "/현상금현황전체"]:
+    if False and text in ["/현상금목록", "/현상금현황전체"]:
         reply(event.reply_token, bounty_admin_status_text())
         return
 
-    if text in ["/SNS럭키추첨", "/럭키드로우추첨", "/럭키드로우정산"]:
+    if text == "/럭키드로우정산":
         reply(
             event.reply_token,
             "🎟️ 럭키드로우는 수동 정산하지 않습니다.\n\n"
@@ -6321,7 +6455,7 @@ def handle(event):
         )
         return
 
-    if text.startswith("/SNS핀볼등록") or text.startswith("/핀볼등록"):
+    if False and (text.startswith("/SNS핀볼등록") or text.startswith("/핀볼등록")):
         parts = text.split()
         if len(parts) < 2:
             reply(event.reply_token, "사용법\n\n/SNS핀볼등록 닉네임 수량\n예) /SNS핀볼등록 무화 3")
@@ -6332,7 +6466,7 @@ def handle(event):
         reply(event.reply_token, msg)
         return
 
-    if text.startswith("/SNS핀볼삭제") or text.startswith("/핀볼삭제"):
+    if False and (text.startswith("/SNS핀볼삭제") or text.startswith("/핀볼삭제")):
         keyword = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
         if not keyword:
             reply(event.reply_token, "사용법\n\n/SNS핀볼삭제 닉네임")
@@ -6341,12 +6475,12 @@ def handle(event):
         reply(event.reply_token, msg)
         return
 
-    if text in ["/SNS핀볼초기화", "/핀볼초기화"]:
+    if False and text in ["/SNS핀볼초기화", "/핀볼초기화"]:
         ok, msg = clear_pinball_entries_by_staff()
         reply(event.reply_token, msg)
         return
 
-    if text.startswith("/SNS핀볼정산") or text.startswith("/핀볼정산"):
+    if False and (text.startswith("/SNS핀볼정산") or text.startswith("/핀볼정산")):
         parts = text.split()[1:]
         ok, msg = settle_pinball_by_winners(parts, user_name)
         reply(event.reply_token, msg)
@@ -6355,31 +6489,31 @@ def handle(event):
     # =========================
     # 마디수 조회
     # =========================
-    if text.startswith("/마디수"):
+    if False and text.startswith("/마디수"):
         target_date = parse_date(text)
         rows = ranking(target_date, COUNT_SOURCE_ID)
         reply(event.reply_token, format_rows("📊 메인방 전체 마디수", target_date, rows))
         return
 
-    if text.startswith("/순위"):
+    if False and text.startswith("/순위"):
         target_date = parse_date(text)
         rows = ranking(target_date, COUNT_SOURCE_ID, limit=10)
         reply(event.reply_token, format_rows("🏆 메인방 순위 TOP 10", target_date, rows))
         return
 
-    if text.startswith("/전체순위"):
+    if False and text.startswith("/전체순위"):
         rows = total_ranking(COUNT_SOURCE_ID, limit=30)
         reply(event.reply_token, format_total_rows("🏆 전체 누적 순위 TOP 30", rows))
         return
 
-    if text == "/경고기준":
+    if False and text == "/경고기준":
         reply(
             event.reply_token,
             f"⚠️ 현재 마디수 경고 기준\n\n{WARNING_LIMIT}마디 미만"
         )
         return
 
-    if text.startswith("/경고"):
+    if False and text.startswith("/경고"):
         target_date = parse_date(text)
         rows = warning_list(target_date, COUNT_SOURCE_ID)
 
@@ -6418,7 +6552,7 @@ def handle(event):
         return
 
 
-    if text == "/유저동기화":
+    if False and text == "/유저동기화":
         inserted, updated = sync_users_from_history()
         reply(
             event.reply_token,
@@ -6426,7 +6560,7 @@ def handle(event):
         )
         return
 
-    if text.startswith("/유저검색ID "):
+    if False and text.startswith("/유저검색ID "):
         target_user_id = text.replace("/유저검색ID", "", 1).strip()
         user = get_user_by_id(target_user_id)
 
@@ -6441,7 +6575,7 @@ def handle(event):
         )
         return
 
-    if text.startswith("/미션확인 "):
+    if False and text.startswith("/미션확인 "):
         keyword = text.replace("/미션확인", "", 1).strip()
         matches = find_users(keyword, limit=5)
 
@@ -6477,22 +6611,10 @@ def handle(event):
 
     if text.startswith("/유저검색"):
         keyword = text.replace("/유저검색", "", 1).strip()
-
         if not keyword:
             reply(event.reply_token, "사용법\n\n/유저검색 닉네임")
             return
-
-        rows = find_users(keyword, limit=10)
-
-        if not rows:
-            reply(event.reply_token, f"검색 결과가 없습니다.\n검색어: {keyword}")
-            return
-
-        lines = [f"🔎 유저검색 결과: {keyword}", ""]
-        for i, row in enumerate(rows, 1):
-            lines.append(f"{i}. {row['user_name']}\n   USER_ID: {row['user_id']}")
-
-        reply(event.reply_token, "\n".join(lines))
+        reply(event.reply_token, admin_user_detail_text(keyword))
         return
 
     if text == "/주간랭킹":
@@ -6539,7 +6661,7 @@ def handle(event):
         )
         return
 
-    if text == "/주간초기화 전체":
+    if False and text == "/주간초기화 전체":
         conn = db()
         cur = conn.cursor()
         cur.execute("DELETE FROM weekly_rewards")
@@ -6580,28 +6702,7 @@ def handle(event):
         return
 
 
-    if text.startswith("/유저검색"):
-        keyword = text.replace("/유저검색", "", 1).strip()
-
-        if not keyword:
-            reply(event.reply_token, "사용법\n\n/유저검색 닉네임")
-            return
-
-        rows = find_users(keyword, limit=10)
-
-        if not rows:
-            reply(event.reply_token, f"검색 결과가 없습니다.\n검색어: {keyword}")
-            return
-
-        lines = [f"🔎 유저검색 결과: {keyword}", ""]
-        for i, row in enumerate(rows, 1):
-            active_label = "활성" if row["is_active"] else "퇴장처리됨"
-            lines.append(f"{i}. {row['user_name']} / {active_label}\n   USER_ID: {row['user_id']}")
-
-        reply(event.reply_token, "\n".join(lines))
-        return
-
-    if text.startswith("/퇴장처리ID "):
+    if False and text.startswith("/퇴장처리ID "):
         target_user_id = text.replace("/퇴장처리ID", "", 1).strip()
 
         if not target_user_id:
@@ -6623,7 +6724,7 @@ def handle(event):
         )
         return
 
-    if text.startswith("/복구처리ID "):
+    if False and text.startswith("/복구처리ID "):
         target_user_id = text.replace("/복구처리ID", "", 1).strip()
 
         if not target_user_id:
@@ -6645,7 +6746,7 @@ def handle(event):
         )
         return
 
-    if text.startswith("/퇴장처리 "):
+    if False and text.startswith("/퇴장처리 "):
         keyword = text.replace("/퇴장처리", "", 1).strip()
 
         if not keyword:
@@ -6667,7 +6768,7 @@ def handle(event):
         )
         return
 
-    if text.startswith("/복구처리 "):
+    if False and text.startswith("/복구처리 "):
         keyword = text.replace("/복구처리", "", 1).strip()
 
         if not keyword:
@@ -6968,7 +7069,7 @@ def handle(event):
         reply(event.reply_token, f"💰 {target['user_name']}님의 보유 {CURRENCY_NAME}\n\n{coin_text(balance)}")
         return
 
-    if text in ["/화폐순위", "/코인순위"]:
+    if text == "/코인순위":
         rows = currency_ranking()
         if not rows:
             reply(event.reply_token, f"{CURRENCY_NAME} 보유 데이터가 없습니다.")
@@ -6981,7 +7082,7 @@ def handle(event):
         reply(event.reply_token, "\n".join(lines))
         return
 
-    if text.startswith("/화폐내역") or text.startswith("/코인내역"):
+    if text.startswith("/코인내역"):
         parts = text.split(maxsplit=1)
 
         if len(parts) == 1:
@@ -7012,10 +7113,10 @@ def handle(event):
     # =========================
     # 상점 관리 / 보유 현황
     # =========================
-    if text.startswith("/상품등록 "):
+    if text.startswith("/상품추가 ") or text.startswith("/상품등록 "):
         parts = text.split(maxsplit=3)
         if len(parts) < 3:
-            reply(event.reply_token, "사용법\n/상품등록 상품명 가격 설명")
+            reply(event.reply_token, "사용법\n/상품추가 상품명 가격 설명")
             return
 
         name = parts[1]
@@ -7047,7 +7148,7 @@ def handle(event):
         reply(event.reply_token, f"상품 삭제 완료\n\n상품명: {name}\n처리: {changed}개")
         return
 
-    if text == "/구매목록":
+    if False and text == "/구매목록":
         rows = list_purchases()
         if not rows:
             reply(event.reply_token, "구매 내역이 없습니다.")
@@ -7065,7 +7166,7 @@ def handle(event):
         reply(event.reply_token, "\n".join(lines))
         return
 
-    if text == "/사용목록":
+    if False and text == "/사용목록":
         rows = list_purchases(status="used")
         if not rows:
             reply(event.reply_token, "사용 완료된 상품이 없습니다.")
@@ -7081,7 +7182,7 @@ def handle(event):
         reply(event.reply_token, "\n".join(lines))
         return
 
-    if text.startswith("/보유목록"):
+    if False and text.startswith("/보유목록"):
         parts = text.split(maxsplit=1)
 
         if len(parts) == 1:
@@ -7144,7 +7245,7 @@ def handle(event):
     # =========================
     # 초기화
     # =========================
-    if text.startswith("/초기화"):
+    if False and text.startswith("/초기화"):
         target_date = parse_date(text)
         deleted = reset_date(target_date, COUNT_SOURCE_ID)
         reply(
@@ -7155,29 +7256,29 @@ def handle(event):
         )
         return
 
-    if text == "/전체초기화":
+    if False and text == "/전체초기화":
         reply(event.reply_token, "⚠️ 전체 마디수를 삭제하려면 아래처럼 입력하세요.\n\n/전체초기화 확인")
         return
 
-    if text == "/전체초기화 확인":
+    if False and text == "/전체초기화 확인":
         deleted = reset_all_counts()
         reply(event.reply_token, f"🧹 전체 마디수 초기화 완료\n\n삭제 데이터: {deleted}개\n멤버 목록은 유지됩니다.")
         return
 
-    if text == "/멤버초기화":
+    if False and text == "/멤버초기화":
         reply(event.reply_token, "⚠️ 전체 멤버 목록을 삭제하려면 아래처럼 입력하세요.\n\n/멤버초기화 확인")
         return
 
-    if text == "/멤버초기화 확인":
+    if False and text == "/멤버초기화 확인":
         deleted = reset_all_users()
         reply(event.reply_token, f"👥 전체 멤버 초기화 완료\n\n삭제 인원: {deleted}명")
         return
 
-    if text == "/화폐초기화":
+    if False and text == "/화폐초기화":
         reply(event.reply_token, f"⚠️ 모든 {CURRENCY_NAME}과 화폐 내역을 삭제하려면 아래처럼 입력하세요.\n\n/화폐초기화 확인")
         return
 
-    if text == "/화폐초기화 확인":
+    if False and text == "/화폐초기화 확인":
         deleted_currency, deleted_logs = reset_currency()
         reply(
             event.reply_token,
@@ -7187,11 +7288,11 @@ def handle(event):
         )
         return
 
-    if text == "/완전초기화":
+    if False and text == "/완전초기화":
         reply(event.reply_token, "⚠️ 멤버, 마디수, 화폐, 구매내역을 전부 삭제하려면 아래처럼 입력하세요.\n\n/완전초기화 확인")
         return
 
-    if text == "/완전초기화 확인":
+    if False and text == "/완전초기화 확인":
         deleted = reset_everything()
         reply(
             event.reply_token,
