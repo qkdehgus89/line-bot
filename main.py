@@ -1121,14 +1121,6 @@ S.N.S에서는
 
 이번 주 타겟 확인
 
-──────
-
-📌 족보
-
-/족보
-
-현재 인원 확인
-
 ━━━━━━━━━━━━━━
 🤖 꽃봇 1:1 채팅 명령어
 ━━━━━━━━━━━━━━
@@ -5445,6 +5437,109 @@ def my_info_text(user_id, user_name):
     lines += ["", "자세히 보기", "/내보유 /친밀도 /업적 /조각보유 /가챠횟수"]
     return "\n".join(lines)
 
+
+# =========================
+# 프로필 / 칭호
+# =========================
+def get_user_row_by_keyword_or_self(keyword, default_user_id=None, default_user_name=None):
+    if keyword:
+        rows = find_users(keyword, limit=5)
+        if not rows:
+            return None, f"검색 결과가 없습니다.\n\n검색어: {keyword}"
+        if len(rows) > 1:
+            lines = ["검색 결과가 여러 명입니다:", ""]
+            for idx, row in enumerate(rows, 1):
+                lines.append(f"{idx}. {row['user_name']}")
+            lines += ["", "더 정확한 닉네임으로 다시 입력해주세요."]
+            return None, "\n".join(lines)
+        return rows[0], None
+    if not default_user_id:
+        return None, "USER_ID를 확인할 수 없습니다."
+    row = get_user_by_id(default_user_id)
+    if row:
+        return dict(row), None
+    return {"user_id": default_user_id, "user_name": default_user_name or "알 수 없음", "is_active": 1}, None
+
+
+def get_achievement_count(user_id):
+    conn = db(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS cnt FROM achievements WHERE user_id = ?", (user_id,))
+    row = cur.fetchone(); conn.close()
+    return int(row["cnt"] or 0) if row else 0
+
+
+def get_attendance_count(user_id):
+    conn = db(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS cnt FROM attendance WHERE user_id = ?", (user_id,))
+    row = cur.fetchone(); conn.close()
+    return int(row["cnt"] or 0) if row else 0
+
+
+def get_best_affinity(user_id):
+    week_start, _ = event_week_key()
+    conn = db(); cur = conn.cursor()
+    cur.execute("""
+    SELECT user_a, user_b, user_a_name, user_b_name, score
+    FROM affinity_scores
+    WHERE week_start = ? AND (user_a = ? OR user_b = ?)
+    ORDER BY score DESC, updated_at DESC
+    LIMIT 1
+    """, (week_start, user_id, user_id))
+    row = cur.fetchone(); conn.close()
+    if not row:
+        return None, 0
+    other = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
+    return other, int(row["score"] or 0)
+
+
+def get_public_title(user_id):
+    balance = get_balance(user_id)
+    achievement_count = get_achievement_count(user_id)
+    attendance_count = get_attendance_count(user_id)
+    _, best_score = get_best_affinity(user_id)
+    conn = db(); cur = conn.cursor()
+    cur.execute("SELECT item_name FROM purchases WHERE user_id = ? AND item_name LIKE '%칭호%' ORDER BY id DESC LIMIT 1", (user_id,))
+    title_ticket = cur.fetchone()
+    cur.execute("SELECT COUNT(*) AS cnt FROM sns_lucky_draw_results WHERE winner_user_id = ?", (user_id,))
+    lucky_wins = int((cur.fetchone()["cnt"] or 0))
+    conn.close()
+    if lucky_wins > 0:
+        return "💎 럭키드로우 챔피언"
+    if achievement_count >= 20:
+        return "🏆 업적 수집가"
+    if best_score >= 60:
+        return "💕 친밀도 장인"
+    if balance >= 200:
+        return "💰 코인 부자"
+    if attendance_count >= 30:
+        return "📅 성실 출석러"
+    if title_ticket:
+        return "👑 칭호권 보유자"
+    return "아직 대표 칭호가 없습니다."
+
+
+def title_text(user_id, user_name):
+    return (
+        f"👑 {user_name}\n\n"
+        "현재 칭호\n\n"
+        f"{get_public_title(user_id)}\n\n"
+        "※ 칭호는 업적, 럭키드로우, 코인, 출석, 친밀도 기록을 기준으로 자동 표시됩니다."
+    )
+
+
+def profile_text(target_user_id, target_user_name):
+    best_name, best_score = get_best_affinity(target_user_id)
+    lines = [
+        f"👤 {target_user_name}", "",
+        "👑 칭호", get_public_title(target_user_id), "",
+        "💰 코인", coin_text(get_balance(target_user_id)), "",
+        "🏆 업적", f"{get_achievement_count(target_user_id)}개", "",
+        "📅 출석", f"{get_attendance_count(target_user_id)}일", "",
+        "💕 최고 친밀도",
+    ]
+    lines.append(f"{best_name} ({best_score})" if best_name else "이번 주 친밀도 기록 없음")
+    return "\n".join(lines)
+
 # =========================
 # WEBHOOK
 # =========================
@@ -5603,12 +5698,20 @@ def handle(event):
         return
 
     if text == "/잔액":
-        push_or_reply_private_info(
-            event,
-            user_id,
-            f"💰 {user_name}님의 보유 {CURRENCY_NAME}\n\n{coin_text(get_balance(user_id))}",
-            "📩 잔액을 개인 메시지로 보내드렸습니다."
-        )
+        TEMP
+        return
+
+    if text == "/칭호":
+        reply(event.reply_token, title_text(user_id, user_name))
+        return
+
+    if text.startswith("/프로필"):
+        keyword = text.replace("/프로필", "", 1).strip()
+        target, err = get_user_row_by_keyword_or_self(keyword, user_id, user_name)
+        if err:
+            reply(event.reply_token, err)
+            return
+        reply(event.reply_token, profile_text(target["user_id"], target["user_name"]))
         return
 
     if text == "/도움말":
@@ -5658,27 +5761,33 @@ def handle(event):
             "/출석\n"
             "/미션\n"
             "/미션수령\n"
-            "/마니또\n\n"
-            "※ 공개방에서는 긴 결과를 최대한 줄이고,\n"
-            "개인 정보성 내용은 봇 1:1로 전송됩니다.\n\n"
+            "/잔액\n"
+            "/친밀도\n"
+            "/업적\n"
+            "/프로필\n"
+            "/프로필 닉네임\n"
+            "/칭호\n"
+            "/럭키드로우결과\n\n"
             "━━━━━━━━━━\n"
             "🤖 꽃봇 1:1 추천 기능\n"
             "━━━━━━━━━━\n"
             "/내정보\n"
-            "/내보유\n"
+            "/마니또\n"
             "/행운포인트\n"
-            "/업적\n"
-            "/친밀도\n\n"
+            "/내보유\n"
+            "/내보유 미사용\n"
+            "/내보유 사용\n\n"
             "🎰 가챠\n"
-            "/가챠시스템\n"
-            "/가챠횟수\n"
             "/가챠 하\n"
             "/가챠 중\n"
             "/가챠 상\n"
+            "/가챠시스템\n"
+            "/가챠횟수\n"
             "/가챠타입\n"
             "/가챠타입 코인\n"
             "/가챠타입 조각\n"
             "/가챠타입 랜덤\n"
+            "/코인가챠확률\n"
             "/조각보유\n\n"
             "🛒 상점\n"
             "/상점\n"
@@ -5687,6 +5796,7 @@ def handle(event):
             "🎟 럭키드로우\n"
             "/럭키드로우구매\n"
             "/럭키드로우결과\n\n"
+            "※ 가챠, 상점, 내정보성 명령어는 공개방에서 입력해도 개인 메시지로 전송됩니다.\n\n"
             "━━━━━━━━━━\n"
             "🔗 운영진 명령어\n"
             "━━━━━━━━━━\n"
@@ -5762,6 +5872,18 @@ def handle(event):
     )
 
     if not is_private_chat(event):
+        if text.startswith("/가챠 "):
+            parts = text.split(maxsplit=1)
+            tier = parts[1].strip() if len(parts) > 1 else ""
+            success, message = run_gacha(user_id, user_name, tier)
+            if success:
+                grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, tier)
+            ok = push_private_message(user_id, message)
+            if ok:
+                reply(event.reply_token, "📩 가챠 결과를 개인 메시지로 보내드렸습니다.")
+            else:
+                reply(event.reply_token, "📩 개인 메시지 전송에 실패했습니다.\n\n꽃봇을 친구추가한 뒤 다시 입력해주세요.")
+            return
         if private_gacha_commands:
             private_only_notice(event, user_id, gacha_private_guide_text(), "가챠")
             return
@@ -5770,7 +5892,7 @@ def handle(event):
             return
         if private_lucky_commands:
             if text in ["/SNS럭키결과", "/럭키드로우결과"]:
-                push_or_reply_private_info(event, user_id, lucky_draw_result_text(), "📩 럭키드로우 결과를 개인 메시지로 보내드렸습니다.")
+                reply(event.reply_token, lucky_draw_result_text())
             else:
                 private_only_notice(
                     event,
@@ -5804,7 +5926,7 @@ def handle(event):
 
 
     if text == "/업적":
-        push_or_reply_private_info(event, user_id, achievement_status_text(user_id, user_name), "🎖 업적 현황을 개인 메시지로 보내드렸습니다.")
+        reply(event.reply_token, achievement_status_text(user_id, user_name))
         return
 
     if text in ["/마니또", "/마니또확인"]:
@@ -5816,7 +5938,7 @@ def handle(event):
         return
 
     if text in ["/친밀도", "/내친밀도"]:
-        push_or_reply_private_info(event, user_id, affinity_status_text(user_id, user_name), "📩 친밀도 현황을 개인 메시지로 보내드렸습니다.")
+        reply(event.reply_token, affinity_status_text(user_id, user_name))
         return
 
     if text in ["/친밀도랭킹", "/친밀도순위"]:
@@ -6009,7 +6131,7 @@ def handle(event):
         return
 
     if text in ["/SNS럭키결과", "/럭키드로우결과"]:
-        push_or_reply_private_info(event, user_id, lucky_draw_result_text(), "📩 럭키드로우 결과를 개인 메시지로 보내드렸습니다.")
+        reply(event.reply_token, lucky_draw_result_text())
         return
 
     if text in ["/SNS핀볼설명", "/핀볼설명"]:
