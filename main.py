@@ -59,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v48-manitto-private-only-reply"
+BOT_VERSION = "active-id-v53-coin-gacha-balance-fix"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -569,6 +569,18 @@ def init_db():
         score INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (week_start, user_a, user_b)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS affinity_cumulative_scores (
+        user_a TEXT NOT NULL,
+        user_b TEXT NOT NULL,
+        user_a_name TEXT NOT NULL,
+        user_b_name TEXT NOT NULL,
+        total_score INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_a, user_b)
     )
     """)
 
@@ -1130,6 +1142,7 @@ S.N.S에서는
 🍀 행운포인트
 🎰 가챠 현황
 💕 친밀도
+🌱 누적 친밀도
 🎭 마니또 진행도
 🧩 조각 보유량
 🎁 보유 상품
@@ -2822,17 +2835,18 @@ def get_gacha_pity_point(user_id):
 
 def gacha_grade(gacha_type, tier):
     if gacha_type == "coin":
-        # 코인형: 손해 40%, 본전 30%, 이득 30%
+        # 코인형: 과도한 복사 방지 밸런스
+        # 손해 50.1%, 본전 24.9%, 소이득 20%, 고이득 5% 내외
         if tier == "하":
             return weighted_pick([
-                (40, "F"), (30, "E"), (18, "D"), (9, "C"), (3, "B")
+                (50.1, "F"), (24.9, "E"), (17, "D"), (6, "C"), (2, "B")
             ])
         if tier == "중":
             return weighted_pick([
-                (40, "F"), (30, "E"), (18, "D"), (9, "C"), (2.5, "B"), (0.5, "A")
+                (50.1, "F"), (24.9, "E"), (17, "D"), (6, "C"), (1.7, "B"), (0.3, "A")
             ])
         return weighted_pick([
-            (40, "F"), (30, "E"), (18, "D"), (8, "C"), (3, "B"), (0.8, "A"), (0.2, "S")
+            (50.1, "F"), (24.9, "E"), (17, "D"), (5.5, "C"), (2.0, "B"), (0.45, "A"), (0.05, "S")
         ])
 
     # 조각형 / 랜덤형: 손해 구간 약 40%
@@ -2866,28 +2880,28 @@ def random_piece_by_group(group):
 def coin_prize_for(tier, grade):
     prize_table = {
         "하": {
-            "F": [3, 5, 7],      # 0.3~0.7코인
+            "F": [2, 3, 5],      # 0.2~0.5코인
             "E": [10],           # 본전 1코인
-            "D": [15],           # 1.5코인
-            "C": [20],           # 2코인
-            "B": [30],           # 3코인
+            "D": [12],           # 1.2코인
+            "C": [15],           # 1.5코인
+            "B": [20],           # 2코인
         },
         "중": {
             "F": [10, 15, 20],   # 1~2코인
             "E": [30],           # 본전 3코인
-            "D": [40, 50],       # 4~5코인
-            "C": [60, 80],       # 6~8코인
-            "B": [100],          # 10코인
-            "A": [150],          # 15코인
+            "D": [35, 40],       # 3.5~4코인
+            "C": [50],           # 5코인
+            "B": [70],           # 7코인
+            "A": [100],          # 10코인
         },
         "상": {
             "F": [20, 30, 40],   # 2~4코인
             "E": [50],           # 본전 5코인
-            "D": [70, 100],      # 7~10코인
-            "C": [150],          # 15코인
-            "B": [200],          # 20코인
-            "A": [300],          # 30코인
-            "S": [500],          # 50코인
+            "D": [60, 70],       # 6~7코인
+            "C": [90],           # 9코인
+            "B": [120],          # 12코인
+            "A": [180],          # 18코인
+            "S": [250],          # 25코인
         },
     }
 
@@ -4286,10 +4300,19 @@ def achievement_status_text(user_id, user_name):
         f"완료: {len(rows)}개",
         "",
     ]
+    catalog_keys = {key for key, _, _, _ in catalog}
     for key, name, desc, reward in catalog:
         mark = "✅" if key in owned else "⬜"
         lines.append(f"{mark} {name}")
         lines.append(f"   {desc} / 보상 {coin_text(reward)}")
+
+    extra_rows = [row for row in rows if row["achievement_key"] not in catalog_keys]
+    if extra_rows:
+        lines += ["", "━━━━━━━━━━", "추가 달성 업적", "━━━━━━━━━━"]
+        for row in extra_rows:
+            lines.append(f"✅ {row['achievement_name']}")
+            lines.append(f"   보상 {coin_text(row['reward'])}")
+
     return "\n".join(lines)
 
 
@@ -4623,6 +4646,8 @@ def delete_users_by_ids(targets):
             ("weekly_bounties", "target_user_id"),
             ("affinity_scores", "user_a"),
             ("affinity_scores", "user_b"),
+            ("affinity_cumulative_scores", "user_a"),
+            ("affinity_cumulative_scores", "user_b"),
             ("affinity_pair_cooldowns", "user_a"),
             ("affinity_pair_cooldowns", "user_b"),
             ("manitto_assignments", "hunter_user_id"),
@@ -4706,11 +4731,24 @@ def format_hard_delete_done(target_name, deleted_users, deleted_counts, deleted_
 
 
 
+
+
+def jagiya_achievement_notice(user_name, other_name):
+    return (
+        "🏆 신규 업적 달성!\n\n"
+        "💕 자기야\n\n"
+        f"{user_name}님과 {other_name}님이\n"
+        "누적 친밀도 500을 달성했습니다.\n\n"
+        "보상: 💰3코인"
+    )
+
 # =========================
 # 마니또 / 친밀도
 # =========================
 AFFINITY_REPLY_WINDOW_SECONDS = 180
 AFFINITY_PAIR_COOLDOWN_SECONDS = 30
+AFFINITY_CUMULATIVE_JAGIYA_SCORE = 500
+AFFINITY_CUMULATIVE_JAGIYA_REWARD = 30  # 3코인
 MANITTO_REQUIRED_SCORE = 30
 MANITTO_REWARD_MIN = 15   # 1.5코인
 MANITTO_REWARD_MAX = 75   # 7.5코인
@@ -4838,6 +4876,52 @@ def get_affinity_score(user_id_1, user_id_2, week_start=None):
     row = cur.fetchone()
     conn.close()
     return row["score"] if row else 0
+
+
+
+def get_cumulative_affinity_score(user_id_1, user_id_2):
+    a, b = pair_key(user_id_1, user_id_2)
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT total_score
+    FROM affinity_cumulative_scores
+    WHERE user_a = ? AND user_b = ?
+    """, (a, b))
+    row = cur.fetchone()
+    conn.close()
+    return int(row["total_score"] or 0) if row else 0
+
+
+def grant_jagiya_achievement_if_ready(user_id_1, user_name_1, user_id_2, user_name_2, total_score):
+    """
+    누적 친밀도 500 이상을 상대별 최초 달성하면
+    양쪽에게 '자기야' 업적과 3코인을 지급합니다.
+    achievement_key에 상대 user_id를 포함해 같은 상대와는 1회만 지급합니다.
+    """
+    if int(total_score or 0) < AFFINITY_CUMULATIVE_JAGIYA_SCORE:
+        return None
+
+    paid = []
+    for owner_id, owner_name, partner_id, partner_name in [
+        (user_id_1, user_name_1, user_id_2, user_name_2),
+        (user_id_2, user_name_2, user_id_1, user_name_1),
+    ]:
+        key = "jagiya"
+        title = "💕 자기야"
+        meta = f"partner_id={partner_id};partner_name={partner_name};total_affinity={total_score}"
+        if grant_achievement_once(owner_id, owner_name, key, title, AFFINITY_CUMULATIVE_JAGIYA_REWARD, meta):
+            paid.append(owner_name)
+
+    if paid:
+        return (
+            "🏆 신규 업적 달성!\n\n"
+            "💕 자기야\n\n"
+            f"{user_name_1}님과 {user_name_2}님이\n"
+            f"누적 친밀도 {total_score}을 달성했습니다.\n\n"
+            f"보상: 각 {coin_text(AFFINITY_CUMULATIVE_JAGIYA_REWARD)}"
+        )
+    return None
 
 
 def push_private_message(user_id, text_value):
@@ -5174,6 +5258,24 @@ def process_affinity_message(source_id, user_id, user_name, text_value):
     """, (week_start, a, b, a_name, b_name, now_str()))
 
     cur.execute("""
+    INSERT INTO affinity_cumulative_scores (user_a, user_b, user_a_name, user_b_name, total_score, updated_at)
+    VALUES (?, ?, ?, ?, 1, ?)
+    ON CONFLICT(user_a, user_b)
+    DO UPDATE SET total_score = total_score + 1,
+                  user_a_name = excluded.user_a_name,
+                  user_b_name = excluded.user_b_name,
+                  updated_at = excluded.updated_at
+    """, (a, b, a_name, b_name, now_str()))
+
+    cur.execute("""
+    SELECT total_score
+    FROM affinity_cumulative_scores
+    WHERE user_a = ? AND user_b = ?
+    """, (a, b))
+    cumulative_row = cur.fetchone()
+    cumulative_score = int(cumulative_row["total_score"] or 0) if cumulative_row else 0
+
+    cur.execute("""
     INSERT INTO affinity_pair_cooldowns (source_id, week_start, user_a, user_b, last_at)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(source_id, week_start, user_a, user_b)
@@ -5184,6 +5286,10 @@ def process_affinity_message(source_id, user_id, user_name, text_value):
     conn.close()
 
     messages = []
+    jagiya_msg = grant_jagiya_achievement_if_ready(user_id, user_name, last["user_id"], last["user_name"], cumulative_score)
+    if jagiya_msg:
+        messages.append(jagiya_msg)
+
     msg1 = complete_manitto_if_ready(user_id, user_name, last["user_id"])
     if msg1:
         messages.append(msg1)
@@ -5197,6 +5303,11 @@ def process_affinity_message(source_id, user_id, user_name, text_value):
 
 
 def affinity_status_text(user_id, user_name):
+    """
+    /친밀도
+    이번 주 친밀도만 표시합니다.
+    누적 친밀도는 /누적친밀도 에서 따로 확인합니다.
+    """
     week_start, week_end = event_week_key()
     conn = db()
     cur = conn.cursor()
@@ -5207,18 +5318,65 @@ def affinity_status_text(user_id, user_name):
     ORDER BY score DESC, updated_at DESC
     LIMIT 10
     """, (week_start, user_id, user_id))
+    weekly_rows = cur.fetchall()
+    conn.close()
+
+    lines = ["💞 이번 주 친밀도", f"기간: {week_start} ~ {week_end}", ""]
+
+    if not weekly_rows:
+        lines.append("이번 주 친밀도 기록이 없습니다.")
+    else:
+        for i, row in enumerate(weekly_rows, 1):
+            other_name = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
+            lines.append(f"{i}. {other_name} - {row['score']}")
+
+    lines += [
+        "",
+        "누적 친밀도 확인",
+        "/누적친밀도",
+        "",
+        "※ 3분 이내 서로 번갈아 대화하면 친밀도가 오릅니다.",
+    ]
+    return "\n".join(lines)
+
+
+def cumulative_affinity_status_text(user_id, user_name):
+    """
+    /누적친밀도
+    누적 친밀도만 따로 표시합니다.
+    """
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT user_a, user_b, user_a_name, user_b_name, total_score, updated_at
+    FROM affinity_cumulative_scores
+    WHERE user_a = ? OR user_b = ?
+    ORDER BY total_score DESC, updated_at DESC
+    LIMIT 20
+    """, (user_id, user_id))
     rows = cur.fetchall()
     conn.close()
 
-    lines = ["💞 내 친밀도", f"기간: {week_start} ~ {week_end}", ""]
+    lines = ["🌱 누적 친밀도", f"대상: {user_name}", ""]
+
     if not rows:
-        lines.append("이번 주 친밀도 기록이 없습니다.")
+        lines.append("누적 친밀도 기록이 없습니다.")
     else:
         for i, row in enumerate(rows, 1):
             other_name = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
-            lines.append(f"{i}. {other_name} - {row['score']}")
-    lines.append("")
-    lines.append("※ 3분 이내 서로 번갈아 대화하면 친밀도가 오릅니다.")
+            total = int(row["total_score"] or 0)
+            mark = " 💕" if total >= AFFINITY_CUMULATIVE_JAGIYA_SCORE else ""
+            lines.append(f"{i}. {other_name} - {total}{mark}")
+
+    lines += [
+        "",
+        "💕 자기야 업적",
+        f"상대와 누적 친밀도 {AFFINITY_CUMULATIVE_JAGIYA_SCORE} 달성 시",
+        f"각 {coin_text(AFFINITY_CUMULATIVE_JAGIYA_REWARD)} 지급",
+        "",
+        "※ 업적 목록에는 상대 닉네임이 표시되지 않습니다.",
+        "※ 달성 알림에만 함께 달성한 상대가 표시됩니다.",
+    ]
     return "\n".join(lines)
 
 
@@ -5645,20 +5803,19 @@ def get_attendance_count(user_id):
 
 
 def get_best_affinity(user_id):
-    week_start, _ = event_week_key()
     conn = db(); cur = conn.cursor()
     cur.execute("""
-    SELECT user_a, user_b, user_a_name, user_b_name, score
-    FROM affinity_scores
-    WHERE week_start = ? AND (user_a = ? OR user_b = ?)
-    ORDER BY score DESC, updated_at DESC
+    SELECT user_a, user_b, user_a_name, user_b_name, total_score
+    FROM affinity_cumulative_scores
+    WHERE user_a = ? OR user_b = ?
+    ORDER BY total_score DESC, updated_at DESC
     LIMIT 1
-    """, (week_start, user_id, user_id))
+    """, (user_id, user_id))
     row = cur.fetchone(); conn.close()
     if not row:
         return None, 0
     other = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
-    return other, int(row["score"] or 0)
+    return other, int(row["total_score"] or 0)
 
 
 def get_public_title(user_id):
@@ -5743,9 +5900,9 @@ def profile_text(target_user_id, target_user_name):
         "💰 코인", coin_text(get_balance(target_user_id)), "",
         "🏆 업적", f"{get_achievement_count(target_user_id)}개", "",
         "📅 출석", f"{get_attendance_count(target_user_id)}일", "",
-        "💕 최고 친밀도",
+        "💕 최고 누적 친밀도",
     ]
-    lines.append(f"{best_name} ({best_score})" if best_name else "이번 주 친밀도 기록 없음")
+    lines.append(f"{best_name} ({best_score})" if best_name else "누적 친밀도 기록 없음")
     return "\n".join(lines)
 
 
@@ -6030,7 +6187,6 @@ def handle(event):
 
 /잔액
 /친밀도
-/업적
 
 /코인순위
 /주간랭킹
@@ -6049,6 +6205,9 @@ def handle(event):
 /명령어
 
 /내정보
+
+/업적
+/누적친밀도
 
 /마니또
 /마니또변경
@@ -6193,7 +6352,12 @@ def handle(event):
 
 
     if text == "/업적":
-        reply(event.reply_token, achievement_status_text(user_id, user_name))
+        push_or_reply_private_info(
+            event,
+            user_id,
+            achievement_status_text(user_id, user_name),
+            "📩 업적 현황을 개인 메시지로 보내드렸습니다."
+        )
         return
 
     if text in ["/마니또", "/마니또확인"]:
@@ -6206,6 +6370,15 @@ def handle(event):
 
     if text in ["/가챠횟수", "/가챠사용횟수"]:
         push_or_reply_private_info(event, user_id, gacha_count_status_text(user_id), "📩 가챠 현황을 개인 메시지로 보내드렸습니다.")
+        return
+
+    if text in ["/누적친밀도", "/누적친밀도확인"]:
+        push_or_reply_private_info(
+            event,
+            user_id,
+            cumulative_affinity_status_text(user_id, user_name),
+            "📩 누적 친밀도를 개인 메시지로 보내드렸습니다."
+        )
         return
 
     if text in ["/친밀도", "/내친밀도"]:
