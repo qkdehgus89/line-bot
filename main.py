@@ -60,7 +60,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v65-restore-mission-command-blocks"
+BOT_VERSION = "active-id-v67-restore-all-command-handler"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -1268,6 +1268,49 @@ def user_guide_text():
 즐거운 S.N.S 생활 되세요 🌸"""
 
 
+
+def user_commands_text():
+    return """📖 유저 명령어
+
+[공개방]
+/출석
+/미션
+/미션수령
+/잔액
+/친밀도
+/누적친밀도
+/업적
+/코인순위
+/주간랭킹
+/프로필
+/프로필 닉네임
+/칭호
+/럭키드로우결과
+
+[꽃봇 1:1]
+/초보자가이드
+/명령어
+/마니또
+/마니또변경
+/내정보
+/행운포인트
+/가챠 하
+/가챠 중
+/가챠 상
+/가챠횟수
+/가챠시스템
+/가챠타입
+/코인가챠확률
+/조각보유
+/상점
+/내보유
+/내보유 미사용
+/내보유 사용
+/구매 상품명
+/사용 구매번호
+/럭키드로우구매"""
+
+
 def beginner_guide_text():
     return """📖 S.N.S 초보자 가이드
 
@@ -1529,6 +1572,55 @@ S.N.S에서는
 🔗 관리자
 
 에게 문의해주세요 😊"""
+
+
+
+def operator_commands_text():
+    return """🔗 운영진 명령어
+
+[시스템]
+/운영명령어
+/방정보
+/상태확인
+/DB상태
+/경고
+
+[유저관리]
+/전체유저
+/유저검색 닉네임
+/닉삭제 닉네임
+/닉삭제번호 번호
+/삭제확인
+/삭제취소
+
+[코인관리]
+/지급 닉네임 금액
+/차감 닉네임 금액
+/코인내역 닉네임
+
+[아이템관리]
+/상품추가 상품명 가격 설명
+/상품삭제 상품명
+/사용처리 구매번호
+/구매취소 구매번호
+/아이템지급 닉네임 상품명
+
+[족보관리]
+/족보입력
+/족보취소
+
+[주간관리]
+/주간랭킹
+/주간정산
+/주간초기화
+
+[럭키드로우]
+/럭키드로우정산
+
+[칭호관리]
+/칭호지급 닉네임 칭호명
+/칭호삭제 닉네임
+/칭호목록"""
 
 
 # =========================
@@ -2183,6 +2275,42 @@ def warning_text(date_str, source_id):
         "운영진 확인 대상입니다.",
     ]
 
+    return "\n".join(lines)
+
+
+
+def warning_text_for_staff(date_str, source_id):
+    rows = warning_list(date_str, source_id)
+    rows = sorted(rows, key=lambda r: (int(r["count"] or 0), str(r["user_name"])))
+
+    if not rows:
+        return (
+            "✅ 오늘의 경고 대상이 없습니다.\n\n"
+            "기준\n"
+            f"📌 {WARNING_LIMIT}마디 미만\n\n"
+            "현재 모든 인원이 기준을 충족했습니다."
+        )
+
+    lines = [
+        "⚠️ 오늘의 경고 대상",
+        "",
+        "기준",
+        f"📌 {WARNING_LIMIT}마디 미만",
+        "",
+        "━━━━━━━━━━",
+    ]
+
+    for row in rows:
+        lines.append(f"{row['user_name']} - {row['count']}마디")
+
+    lines += [
+        "━━━━━━━━━━",
+        "",
+        f"총 {len(rows)}명",
+        "",
+        "🚨 위험구간",
+        f"{WARNING_LIMIT}마디 미만 인원입니다.",
+    ]
     return "\n".join(lines)
 
 
@@ -6505,6 +6633,50 @@ def start_weekly_settlement_scheduler():
 
 
 
+
+# =========================
+# 운영 명령어 호환 함수
+# =========================
+def grant_user_title(user_id, user_name, title, created_by=None):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("UPDATE user_titles SET is_active = 0 WHERE user_id = ?", (user_id,))
+    cur.execute("""
+    INSERT INTO user_titles (user_id, user_name, title, is_active, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, 1, ?, ?, ?)
+    """, (user_id, user_name, title, created_by, now_str(), now_str()))
+    conn.commit()
+    conn.close()
+
+
+def remove_user_title(user_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("UPDATE user_titles SET is_active = 0, updated_at = ? WHERE user_id = ?", (now_str(), user_id))
+    conn.commit()
+    conn.close()
+
+
+def user_title_list_text():
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT user_name, title, created_at
+    FROM user_titles
+    WHERE is_active = 1
+    ORDER BY created_at DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    lines = ["👑 칭호 목록", ""]
+    if not rows:
+        lines.append("활성 칭호가 없습니다.")
+    else:
+        for row in rows:
+            lines.append(f"{row['user_name']} - {row['title']}")
+    return "\n".join(lines)
+
 @app.route("/", methods=["GET"])
 def home():
     return "LINE MADI COUNTER BOT RUNNING"
@@ -6622,198 +6794,369 @@ def handle(event):
     except Exception as e:
         print("SNS_LUCKY_AUTO_ERROR:", e)
 
+
     # =========================
-    # 누구나 사용 가능한 명령어
+    # 운영진 명령어
     # =========================
-    if text == "/방정보":
-        reply(
-            event.reply_token,
-            f"방정보\n\n"
-            f"SOURCE_ID:\n{source_id}\n\n"
-            f"USER_ID:\n{user_id or 'NO_USER_ID'}\n\n"
-            f"닉네임:\n{user_name}\n\n"
-            f"관리자방 여부:\n{source_id in ADMIN_SOURCE_IDS}\n\n"
-            f"관리자 권한 여부:\n{is_staff(user_id) if user_id else False}\n\n"
-            f"버전:\n{BOT_VERSION}"
-        )
+    if text == "/운영명령어":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply_many(event.reply_token, split_text_messages(operator_commands_text()))
         return
 
-    if text == "/버전":
-        reply(event.reply_token, f"봇 버전\n\n{BOT_VERSION}")
+    if text == "/방정보":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply(
+            event.reply_token,
+            "🏠 방 정보\n\n"
+            f"SOURCE_ID: {source_id}\n"
+            f"COUNT_SOURCE_ID: {COUNT_SOURCE_ID}\n"
+            f"ADMIN_SOURCE_IDS: {', '.join(sorted(ADMIN_SOURCE_IDS)) if ADMIN_SOURCE_IDS else '-'}\n"
+            f"BOT_VERSION: {BOT_VERSION}"
+        )
         return
 
     if text == "/상태확인":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        log_row, count_row, all_rows = collection_status(COUNT_SOURCE_ID, date_str)
         reply(
             event.reply_token,
-            f"봇 상태 확인\n\n"
-            f"버전:\n{BOT_VERSION}\n\n"
-            f"현재 SOURCE_ID:\n{source_id}\n\n"
-            f"등록된 관리자방 수:\n{len(ADMIN_SOURCE_IDS)}\n"
-            f"현재 방 관리자방 여부:\n{source_id in ADMIN_SOURCE_IDS}\n\n"
-            f"현재 USER_ID:\n{user_id or 'NO_USER_ID'}\n"
-            f"관리자/운영자 권한 여부:\n{is_staff(user_id)}\n\n"
-            f"메인방 여부:\n{source_id == COUNT_SOURCE_ID}"
+            "📊 수집 상태 확인\n\n"
+            f"기준일: {date_str}\n"
+            f"기준방: {COUNT_SOURCE_ID}\n\n"
+            f"채팅 로그: {log_row['total_logs'] if log_row else 0}건\n"
+            f"활동 유저: {log_row['active_users'] if log_row else 0}명\n"
+            f"집계 유저: {count_row['counted_users'] if count_row else 0}명\n"
+            f"전체 마디: {count_row['total_madi'] if count_row else 0}"
         )
         return
 
-    if text == "/내정보":
-        push_or_reply_private_info(event, user_id, my_info_text(user_id, user_name), "📩 내정보를 개인 메시지로 보내드렸습니다.")
-        return
-
-    if text == "/잔액":
-        reply(event.reply_token, f"💰 {user_name}님의 보유 {CURRENCY_NAME}\n\n{coin_text(get_balance(user_id))}")
-        return
-
-    if text == "/칭호":
-        reply(event.reply_token, title_text(user_id, user_name))
-        return
-
-    if text.startswith("/프로필"):
-        keyword = text.replace("/프로필", "", 1).strip()
-        target, err = get_user_row_by_keyword_or_self(keyword, user_id, user_name)
-        if err:
-            reply(event.reply_token, err)
-            return
-        reply(event.reply_token, profile_text(target["user_id"], target["user_name"]))
-        return
-
-    if text == "/도움말":
-        reply(event.reply_token, "일반 명령어: /명령어\n운영 명령어: /운영명령어")
-        return
-
-    if False and text in ["/안내서", "/이용안내", "/봇안내", "/꽃봇안내", "/설명서"]:
-        guide = user_guide_text()
-        if is_private_chat(event):
-            reply_many(event.reply_token, split_text_messages(guide))
-        else:
-            ok = push_private_message(user_id, guide)
-            if ok:
-                reply(event.reply_token, "📩 꽃봇 이용 안내서를 개인 메시지로 보내드렸습니다.")
-            else:
-                reply(
-                    event.reply_token,
-                    "📩 개인 메시지 전송에 실패했습니다.\n\n"
-                    "꽃봇을 친구추가한 뒤 다시 /안내서 를 입력해주세요."
-                )
-        return
-
-    if text == "/초보자가이드":
-        guide = beginner_guide_text()
-        if is_private_chat(event):
-            reply_many(event.reply_token, split_text_messages(guide))
-        else:
-            ok = push_private_message(user_id, guide)
-            if ok:
-                reply(event.reply_token, "📩 초보자 가이드를 개인 메시지로 보내드렸습니다.")
-            else:
-                reply(
-                    event.reply_token,
-                    "📩 개인 메시지 전송에 실패했습니다.\n\n"
-                    "꽃봇을 친구추가한 뒤 다시 /초보자가이드 를 입력해주세요."
-                )
-        return
-
-    if text == "/명령어":
-        command_text = """📌 S.N.S 사용 명령어
-
-━━━━━━━━━━
-👥 공개대화방
-━━━━━━━━━━
-/출석
-/미션
-/미션수령
-
-/잔액
-/친밀도
-/누적친밀도
-
-/코인순위
-/주간랭킹
-
-/프로필
-/프로필 닉네임
-
-/칭호
-
-/럭키드로우결과
-
-━━━━━━━━━━
-🤖 꽃봇 1:1 전용
-━━━━━━━━━━
-/초보자가이드
-/명령어
-
-/내정보
-
-/업적
-
-/마니또
-/마니또변경
-/행운포인트
-
-/가챠 하
-/가챠 중
-/가챠 상
-
-/가챠횟수
-/가챠시스템
-/가챠타입
-/코인가챠확률
-/조각보유
-
-/상점
-/내보유
-/내보유 미사용
-/내보유 사용
-
-/구매 상품명
-/사용 구매번호
-
-/럭키드로우구매
-
-※ 1:1 전용 명령어를 공개방에서 입력하면 결과는 개인메시지로 전송됩니다."""
-        push_or_reply_private_info(event, user_id, command_text, "📩 명령어 목록을 개인 메시지로 보내드렸습니다.")
-        return
-
-    if text == "/족보":
-        jokbo_output = genealogy_text_with_coins()
-        reply_many(event.reply_token, split_text_messages(jokbo_output))
-        return
-
-    if text.startswith("/족보입력") or text.startswith("/족보저장"):
-        if source_id not in ADMIN_SOURCE_IDS or not is_staff(user_id):
+    if text == "/DB상태":
+        if not is_staff(user_id):
             reply(event.reply_token, operator_only_warning())
             return
+        conn = db()
+        cur = conn.cursor()
+        counts = []
+        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "mission_claims", "manitto_assignments", "affinity_scores"]:
+            try:
+                cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
+                counts.append(f"{table}: {cur.fetchone()['cnt']}")
+            except Exception:
+                counts.append(f"{table}: 확인 실패")
+        conn.close()
+        reply(event.reply_token, "🗄️ DB 상태\n\n" + "\n".join(counts))
+        return
 
-        if text.startswith("/족보입력"):
-            content = text.replace("/족보입력", "", 1).strip()
-        else:
-            content = text.replace("/족보저장", "", 1).strip()
-
-        if not content:
-            JOKBO_PENDING[user_id] = {"source_id": source_id, "started_at": now_str()}
-            reply(
-                event.reply_token,
-                "📒 족보 입력 대기중\n\n"
-                "이제 다음 메시지에 현재 족보 전체를 그대로 붙여넣어 주세요.\n\n"
-                "※ /족보입력 명령어를 다시 붙이지 않아도 됩니다.\n"
-                "※ 실수로 명령어가 앞에 붙어도 자동 제거됩니다.\n"
-                "※ 기존 족보에 붙어있는 💰코인 표기는 자동 무시됩니다.\n\n"
-                "취소: /족보취소"
-            )
+    if text == "/경고":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
             return
+        reply_many(event.reply_token, split_text_messages(warning_text_for_staff(date_str, COUNT_SOURCE_ID)))
+        return
 
-        ok, msg = save_genealogy_content(content, user_name)
-        JOKBO_PENDING.pop(user_id, None)
-        reply(event.reply_token, msg)
+    if text == "/전체유저":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply_many(event.reply_token, split_text_messages(all_registered_users_text()))
+        return
+
+    if text.startswith("/유저검색 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        keyword = text.replace("/유저검색", "", 1).strip()
+        rows = user_debug(keyword)
+        if not rows:
+            reply(event.reply_token, "검색 결과가 없습니다.")
+            return
+        lines = ["🔍 유저검색", ""]
+        for row in rows:
+            status = "활성" if int(row["is_active"] or 0) == 1 else "비활성"
+            lines.append(
+                f"{row['user_name']} / {status}\n"
+                f"코인: {coin_text(row['balance'])}\n"
+                f"총마디: {row['total_count']} / 활동일: {row['active_days']}\n"
+                f"최근로그: {row['last_log'] or '-'}"
+            )
+            lines.append("")
+        reply_many(event.reply_token, split_text_messages("\n".join(lines)))
+        return
+
+    if text.startswith("/닉삭제"):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        keyword = text.replace("/닉삭제", "", 1).strip()
+        if not keyword:
+            reply(event.reply_token, "사용법: /닉삭제 닉네임")
+            return
+        rows = find_users(keyword, limit=10)
+        if not rows:
+            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+            return
+        if len(rows) > 1:
+            DELETE_PENDING[user_id] = {"mode": "soft_delete", "candidates": rows}
+            lines = ["검색 결과가 여러 명입니다.", ""]
+            for i, row in enumerate(rows, 1):
+                lines.append(f"{i}. {row['user_name']}")
+            lines += ["", "삭제할 번호를 /닉삭제번호 번호 로 입력해주세요."]
+            reply(event.reply_token, "\n".join(lines))
+            return
+        changed, name = set_user_active_by_id_with_name(rows[0]["user_id"], 0)
+        reply(event.reply_token, f"✅ 닉삭제 완료\n\n대상: {name}")
+        return
+
+    if text.startswith("/닉삭제번호"):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        pending = DELETE_PENDING.get(user_id)
+        if not pending:
+            reply(event.reply_token, "진행 중인 닉삭제 후보가 없습니다.")
+            return
+        try:
+            idx = int(text.split()[1]) - 1
+            target = pending["candidates"][idx]
+        except Exception:
+            reply(event.reply_token, "번호를 확인해주세요.")
+            return
+        changed, name = set_user_active_by_id_with_name(target["user_id"], 0)
+        DELETE_PENDING.pop(user_id, None)
+        reply(event.reply_token, f"✅ 닉삭제 완료\n\n대상: {name}")
+        return
+
+    if text in ["/삭제취소", "/삭제확인"]:
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        if text == "/삭제취소":
+            DELETE_PENDING.pop(user_id, None)
+            reply(event.reply_token, "삭제 대기를 취소했습니다.")
+        else:
+            reply(event.reply_token, "현재 버전은 /닉삭제번호 방식으로 확정합니다.")
+        return
+
+    if text.startswith("/지급 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        parts = text.split()
+        if len(parts) < 3:
+            reply(event.reply_token, "사용법: /지급 닉네임 금액")
+            return
+        target = find_user(parts[1])
+        if not target:
+            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+            return
+        try:
+            amount = coin_to_points(parts[2])
+        except Exception as e:
+            reply(event.reply_token, str(e))
+            return
+        balance = change_money(target["user_id"], target["user_name"], amount, "운영진 지급", user_id, user_name)
+        reply(event.reply_token, f"✅ 지급 완료\n\n대상: {target['user_name']}\n금액: {coin_text(amount)}\n잔액: {coin_text(balance)}")
+        return
+
+    if text.startswith("/차감 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        parts = text.split()
+        if len(parts) < 3:
+            reply(event.reply_token, "사용법: /차감 닉네임 금액")
+            return
+        target = find_user(parts[1])
+        if not target:
+            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+            return
+        try:
+            amount = coin_to_points(parts[2])
+        except Exception as e:
+            reply(event.reply_token, str(e))
+            return
+        balance = change_money(target["user_id"], target["user_name"], -amount, "운영진 차감", user_id, user_name)
+        reply(event.reply_token, f"✅ 차감 완료\n\n대상: {target['user_name']}\n금액: -{coin_text(amount)}\n잔액: {coin_text(balance)}")
+        return
+
+    if text.startswith("/코인내역"):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        parts = text.split(maxsplit=1)
+        keyword = parts[1].strip() if len(parts) > 1 else user_name
+        target = find_user(keyword)
+        if not target:
+            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+            return
+        rows = currency_history(target["user_id"], limit=10)
+        lines = [f"💰 코인내역: {target['user_name']}", ""]
+        if not rows:
+            lines.append("내역이 없습니다.")
+        else:
+            for row in rows:
+                sign = "+" if int(row["amount"]) > 0 else ""
+                lines.append(f"{row['created_at']} / {sign}{coin_text(row['amount'])} / {row['reason'] or '-'}")
+        reply_many(event.reply_token, split_text_messages("\n".join(lines)))
+        return
+
+    if text.startswith("/상품추가 ") or text.startswith("/상품등록 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        raw = text.split(maxsplit=3)
+        if len(raw) < 4:
+            reply(event.reply_token, "사용법: /상품추가 상품명 가격 설명")
+            return
+        _, item_name, price_text, desc = raw
+        try:
+            price = coin_to_points(price_text)
+        except Exception as e:
+            reply(event.reply_token, str(e))
+            return
+        add_shop_item(item_name, price, desc)
+        reply(event.reply_token, f"✅ 상품 추가 완료\n\n{item_name} / {coin_text(price)}")
+        return
+
+    if text.startswith("/상품삭제 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        item_name = text.replace("/상품삭제", "", 1).strip()
+        changed = remove_shop_item(item_name)
+        reply(event.reply_token, "✅ 상품 삭제 완료" if changed else "상품을 찾을 수 없습니다.")
+        return
+
+    if text.startswith("/사용처리 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        try:
+            purchase_id = int(text.split()[1])
+        except Exception:
+            reply(event.reply_token, "사용법: /사용처리 구매번호")
+            return
+        ok, msg = staff_use_purchase(purchase_id, user_name)
+        reply_many(event.reply_token, split_text_messages(msg))
+        return
+
+    if text.startswith("/구매취소 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        try:
+            purchase_id = int(text.split()[1])
+        except Exception:
+            reply(event.reply_token, "사용법: /구매취소 구매번호")
+            return
+        ok, msg = cancel_purchase(purchase_id, user_name)
+        reply_many(event.reply_token, split_text_messages(msg))
+        return
+
+    if text.startswith("/아이템지급 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            reply(event.reply_token, "사용법: /아이템지급 닉네임 상품명")
+            return
+        target = find_user(parts[1])
+        if not target:
+            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+            return
+        purchase_id = add_reward_purchase(target["user_id"], target["user_name"], parts[2])
+        reply(event.reply_token, f"🎁 아이템 지급 완료\n\n대상: {target['user_name']}\n상품: {parts[2]}\n구매번호: {purchase_id}")
+        return
+
+    if text == "/족보입력":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        JOKBO_PENDING[user_id] = True
+        reply(event.reply_token, "족보 내용을 다음 메시지로 보내주세요.\n기존 코인은 무시하고 족보 내용으로 갱신됩니다.")
         return
 
     if text == "/족보취소":
-        if user_id in JOKBO_PENDING:
-            JOKBO_PENDING.pop(user_id, None)
-            reply(event.reply_token, "족보 입력을 취소했습니다.")
-        else:
-            reply(event.reply_token, "취소할 족보 입력이 없습니다.")
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        JOKBO_PENDING.pop(user_id, None)
+        reply(event.reply_token, "족보 입력을 취소했습니다.")
+        return
+
+    if text == "/주간정산":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply_many(event.reply_token, split_text_messages(weekly_settlement_text(COUNT_SOURCE_ID)))
+        return
+
+    if text == "/주간초기화":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply(event.reply_token, "주간초기화는 현재 안전을 위해 비활성화되어 있습니다.")
+        return
+
+    if text == "/럭키드로우정산":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply_many(event.reply_token, split_text_messages(settle_lucky_draw(user_id, user_name)))
+        return
+
+    if text.startswith("/칭호지급 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            reply(event.reply_token, "사용법: /칭호지급 닉네임 칭호명")
+            return
+        target = find_user(parts[1])
+        if not target:
+            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+            return
+        grant_user_title(target["user_id"], target["user_name"], parts[2], user_name)
+        reply(event.reply_token, f"👑 칭호 지급 완료\n\n대상: {target['user_name']}\n칭호: {parts[2]}")
+        return
+
+    if text.startswith("/칭호삭제 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        keyword = text.replace("/칭호삭제", "", 1).strip()
+        target = find_user(keyword)
+        if not target:
+            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+            return
+        remove_user_title(target["user_id"])
+        reply(event.reply_token, f"👑 칭호 삭제 완료\n\n대상: {target['user_name']}")
+        return
+
+    if text == "/칭호목록":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply_many(event.reply_token, split_text_messages(user_title_list_text()))
+        return
+
+    # =========================
+    # 유저 명령어
+    # =========================
+    if text in ["/초보자가이드", "/가이드"]:
+        push_or_reply_private_info(event, user_id, beginner_guide_text(), "📩 초보자 가이드를 개인 메시지로 보내드렸습니다.")
+        return
+
+    if text == "/명령어":
+        reply_many(event.reply_token, split_text_messages(user_commands_text()))
         return
 
     if text in ["/마니또", "/마니또확인"]:
@@ -6827,47 +7170,28 @@ def handle(event):
             reply(event.reply_token, "🎭 마니또 변경은 꽃봇 1:1 채팅에서만 가능합니다.")
         return
 
-    # =========================
-    # 기본 활동 명령어 복구
-    # =========================
     if text == "/출석":
         ok, balance = attendance_check(date_str, user_id, user_name)
         if ok:
-            streak, streak_paid = check_attendance_streak_reward(date_str, user_id, user_name)
+            try:
+                streak, streak_paid = check_attendance_streak_reward(date_str, user_id, user_name)
+            except Exception:
+                streak, streak_paid = 1, []
             extra = ""
             if streak_paid:
                 paid_lines = [f"{days}일 연속 출석 보상 {coin_text(reward)}" for days, reward in streak_paid]
                 extra = "\n\n🎁 연속출석 보상\n" + "\n".join(paid_lines)
-
-            reply(
-                event.reply_token,
-                f"✅ 출석 완료\n\n"
-                f"{user_name}님\n"
-                f"보상: {coin_text(5)}\n"
-                f"현재 보유: {coin_text(balance)}\n"
-                f"연속 출석: {streak}일"
-                f"{extra}"
-            )
+            reply(event.reply_token, f"✅ 출석 완료\n\n{user_name}님\n보상: {coin_text(5)}\n현재 보유: {coin_text(balance)}{extra}")
         else:
-            reply(
-                event.reply_token,
-                f"이미 오늘 출석했습니다.\n\n"
-                f"현재 보유: {coin_text(balance)}"
-            )
+            reply(event.reply_token, f"이미 오늘 출석했습니다.\n\n현재 보유: {coin_text(balance)}")
         return
 
     if text == "/미션":
         count, missions = mission_status(date_str, COUNT_SOURCE_ID, user_id)
-        lines = [
-            "🎯 오늘의 미션",
-            "",
-            f"현재 마디수: {count}",
-            "",
-        ]
+        lines = ["🎯 오늘의 미션", "", f"현재 마디수: {count}", ""]
         for mission in missions:
             status = "✅ 수령완료" if mission["received"] else ("🎁 수령가능" if mission["done"] else "❌ 진행중")
             lines.append(f"{status} {mission['required']}마디 → {coin_text(mission['reward'])}")
-
         lines += ["", "보상 수령", "/미션수령"]
         reply(event.reply_token, "\n".join(lines))
         return
@@ -6875,20 +7199,9 @@ def handle(event):
     if text == "/미션수령":
         total_reward, count, claimed_names = claim_missions(date_str, COUNT_SOURCE_ID, user_id, user_name)
         if total_reward <= 0:
-            reply(
-                event.reply_token,
-                "수령 가능한 미션 보상이 없습니다.\n\n"
-                f"현재 마디수: {count}\n"
-                "확인: /미션"
-            )
+            reply(event.reply_token, f"수령 가능한 미션 보상이 없습니다.\n\n현재 마디수: {count}\n확인: /미션")
         else:
-            reply(
-                event.reply_token,
-                "🎉 미션 보상 수령 완료\n\n"
-                f"달성 미션: {', '.join(claimed_names)}\n"
-                f"지급: {coin_text(total_reward)}\n"
-                f"현재 보유: {coin_text(get_balance(user_id))}"
-            )
+            reply(event.reply_token, f"🎉 미션 보상 수령 완료\n\n달성 미션: {', '.join(claimed_names)}\n지급: {coin_text(total_reward)}\n현재 보유: {coin_text(get_balance(user_id))}")
         return
 
     if text in ["/친밀도", "/내친밀도"]:
@@ -6896,12 +7209,11 @@ def handle(event):
         return
 
     if text in ["/누적친밀도", "/누적친밀도확인"]:
-        push_or_reply_private_info(
-            event,
-            user_id,
-            cumulative_affinity_status_text(user_id, user_name),
-            "📩 누적 친밀도를 개인 메시지로 보내드렸습니다."
-        )
+        push_or_reply_private_info(event, user_id, cumulative_affinity_status_text(user_id, user_name), "📩 누적 친밀도를 개인 메시지로 보내드렸습니다.")
+        return
+
+    if text == "/잔액":
+        reply(event.reply_token, f"💰 {user_name}님의 보유 코인\n\n{coin_text(get_balance(user_id))}")
         return
 
     if text == "/코인순위":
@@ -6909,12 +7221,15 @@ def handle(event):
         if not rows:
             reply(event.reply_token, "💰 코인 순위가 없습니다.")
             return
-
         lines = ["💰 코인 순위", ""]
         for i, row in enumerate(rows, 1):
             medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
             lines.append(f"{medal} {row['user_name']} - {coin_text(row['balance'])}")
         reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text == "/업적":
+        push_or_reply_private_info(event, user_id, achievement_status_text(user_id, user_name), "📩 업적 현황을 개인 메시지로 보내드렸습니다.")
         return
 
     if text == "/주간랭킹":
@@ -6923,7 +7238,6 @@ def handle(event):
         if not rows:
             reply(event.reply_token, f"🏆 이번 주 랭킹이 없습니다.\n기간: {week_start} ~ {week_end}")
             return
-
         lines = ["🏆 이번 주 마디수 랭킹", f"기간: {week_start} ~ {week_end}", ""]
         for i, row in enumerate(rows, 1):
             reward = weekly_reward_amount(i)
@@ -6936,161 +7250,115 @@ def handle(event):
         reply(event.reply_token, lucky_draw_result_text())
         return
 
-    private_gacha_commands = (
-        text == "/가챠시스템"
-        or text.startswith("/가챠타입")
-        or text.startswith("/가챠")
-        or text in ["/행운포인트", "/가챠포인트", "/가챠횟수", "/조각", "/조각보유", "/코인가챠확률"]
-    )
+    if text.startswith("/프로필"):
+        parts = text.split(maxsplit=1)
+        if len(parts) > 1:
+            target = find_user(parts[1].strip())
+            if not target:
+                reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+                return
+            reply_many(event.reply_token, split_text_messages(profile_text(target["user_id"], target["user_name"])))
+        else:
+            reply_many(event.reply_token, split_text_messages(profile_text(user_id, user_name)))
+        return
 
-    private_shop_commands = (
-        text == "/상점"
-        or text.startswith("/구매 ")
-        or text == "/내보유"
-        or text.startswith("/내보유 ")
-        or text.startswith("/사용 ")
-    )
+    if text == "/칭호":
+        reply_many(event.reply_token, split_text_messages(title_text(user_id, user_name)))
+        return
 
-    private_lucky_commands = (
-        text in ["/럭키드로우구매"]
-    )
+    # =========================
+    # 1:1 전용 명령어
+    # =========================
+    if text.startswith("/가챠 ") or text in ["/가챠시스템", "/가챠횟수", "/코인가챠확률", "/조각보유", "/상점", "/내보유", "/내보유 미사용", "/내보유 사용", "/행운포인트", "/럭키드로우구매"] or text.startswith("/가챠타입") or text.startswith("/구매 ") or text.startswith("/사용 "):
+        if not is_private_chat(event):
+            if text.startswith("/가챠") or text in ["/가챠시스템", "/가챠횟수", "/코인가챠확률", "/조각보유"] or text.startswith("/가챠타입"):
+                private_only_notice(event, user_id, gacha_private_guide_text(), "가챠")
+            elif text in ["/상점", "/내보유", "/내보유 미사용", "/내보유 사용"] or text.startswith("/구매 ") or text.startswith("/사용 "):
+                private_only_notice(event, user_id, shop_private_guide_text(), "상점")
+            else:
+                private_only_notice(event, user_id, "꽃봇 1:1 채팅에서 이용해주세요.", "개인 기능")
+            return
 
-    if not is_private_chat(event):
         if text.startswith("/가챠 "):
-            parts = text.split(maxsplit=1)
-            tier = parts[1].strip() if len(parts) > 1 else ""
+            tier = text.split(maxsplit=1)[1].strip()
             success, message = run_gacha(user_id, user_name, tier)
             if success:
                 grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, tier)
-            ok = push_private_message(user_id, message)
-            if ok:
-                reply(event.reply_token, "📩 가챠 결과를 개인 메시지로 보내드렸습니다.")
-            else:
-                reply(event.reply_token, "📩 개인 메시지 전송에 실패했습니다.\n\n꽃봇을 친구추가한 뒤 다시 입력해주세요.")
-            return
-        if private_gacha_commands:
-            private_only_notice(event, user_id, gacha_private_guide_text(), "가챠")
-            return
-        if private_shop_commands:
-            private_only_notice(event, user_id, shop_private_guide_text(), "상점")
-            return
-        if private_lucky_commands:
-            private_only_notice(
-                event,
-                user_id,
-                "🎟️ S.N.S 럭키드로우는 꽃봇 1:1 채팅에서만 구매 가능합니다.\n\n"
-                "구매: /럭키드로우구매\n"
-                "결과: /럭키드로우결과\n"
-                "가격: 1코인\n"
-                "추첨/발표: 매주 토요일 21:00 자동",
-                "럭키드로우"
-            )
+            reply_many(event.reply_token, split_text_messages(message))
             return
 
-
-    # =========================
-    # 1:1 전용 명령어 처리
-    # =========================
-    if text.startswith("/가챠 "):
-        parts = text.split(maxsplit=1)
-        tier = parts[1].strip() if len(parts) > 1 else ""
-        success, message = run_gacha(user_id, user_name, tier)
-        if success:
-            grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, tier)
-        reply_many(event.reply_token, split_text_messages(message))
-        return
-
-    if text == "/가챠시스템":
-        push_or_reply_private_info(event, user_id, gacha_system_text(), "📩 가챠 시스템 안내를 개인 메시지로 보내드렸습니다.")
-        return
-
-    if text == "/코인가챠확률":
-        push_or_reply_private_info(
-            event,
-            user_id,
-            "📊 코인가챠 확률 안내\n\n"
-            "코인가챠는 손해 확률 50.1% 기준으로 조정되어 있습니다.\n\n"
-            "상급 최고 보상은 25코인입니다.\n"
-            "자세한 보상 구조는 /가챠시스템 에서 확인해주세요.",
-            "📩 코인가챠 확률 안내를 개인 메시지로 보내드렸습니다."
-        )
-        return
-
-    if text.startswith("/가챠타입"):
-        parts = text.split()
-        if len(parts) == 1:
-            current_type = get_gacha_type(user_id)
-            reply(event.reply_token, f"🎰 현재 가챠타입\n\n{GACHA_TYPE_LABELS.get(current_type, current_type)}")
+        if text == "/가챠시스템":
+            reply_many(event.reply_token, split_text_messages(gacha_system_text()))
             return
 
-        requested = parts[1].strip()
-        mapping = {"코인": "coin", "조각": "piece", "랜덤": "random"}
-        if requested not in mapping:
-            reply(event.reply_token, "가챠타입은 코인/조각/랜덤 중 하나로 설정해주세요.\n\n예: /가챠타입 랜덤")
+        if text == "/가챠횟수":
+            reply(event.reply_token, weekly_gacha_count_text(user_id))
             return
 
-        set_gacha_type(user_id, user_name, mapping[requested])
-        reply(event.reply_token, f"🎰 가챠타입 변경 완료\n\n{GACHA_TYPE_LABELS[mapping[requested]]}")
-        return
-
-    if text == "/가챠횟수":
-        reply(event.reply_token, weekly_gacha_count_text(user_id))
-        return
-
-    if text in ["/행운포인트", "/가챠포인트"]:
-        reply(event.reply_token, gacha_pity_text(user_id, user_name))
-        return
-
-    if text in ["/조각", "/조각보유"]:
-        reply_many(event.reply_token, split_text_messages(gacha_piece_text(user_id)))
-        return
-
-    if text == "/상점":
-        reply_many(event.reply_token, split_text_messages(shop_text()))
-        return
-
-    if text.startswith("/구매 "):
-        item_name = text.replace("/구매", "", 1).strip()
-        ok, msg = buy_item(user_id, user_name, item_name)
-        reply_many(event.reply_token, split_text_messages(msg))
-        return
-
-    if text == "/내보유":
-        reply_many(event.reply_token, split_text_messages(user_purchases_text(user_id, "all")))
-        return
-
-    if text == "/내보유 미사용":
-        reply_many(event.reply_token, split_text_messages(user_purchases_text(user_id, "owned")))
-        return
-
-    if text == "/내보유 사용":
-        reply_many(event.reply_token, split_text_messages(user_purchases_text(user_id, "used")))
-        return
-
-    if text.startswith("/사용 "):
-        arg = text.replace("/사용", "", 1).strip()
-        try:
-            purchase_id = int(arg.split()[0])
-        except Exception:
-            reply(event.reply_token, "사용할 구매번호를 입력해주세요.\n\n예: /사용 12")
+        if text == "/코인가챠확률":
+            reply(event.reply_token, "📊 코인가챠 확률 안내\n\n손해 확률 50.1% 기준\n상급 최고 보상 25코인")
             return
-        ok, msg = use_purchase(purchase_id, user_id, user_name)
-        reply_many(event.reply_token, split_text_messages(msg))
-        return
 
-    if text == "/럭키드로우구매":
-        ok, msg = buy_lucky_draw_ticket(user_id, user_name)
-        reply_many(event.reply_token, split_text_messages(msg))
-        return
+        if text.startswith("/가챠타입"):
+            parts = text.split()
+            if len(parts) == 1:
+                current_type = get_gacha_type(user_id)
+                reply(event.reply_token, f"🎰 현재 가챠타입\n\n{GACHA_TYPE_LABELS.get(current_type, current_type)}")
+                return
+            mapping = {"코인": "coin", "조각": "piece", "랜덤": "random"}
+            requested = parts[1].strip()
+            if requested not in mapping:
+                reply(event.reply_token, "가챠타입은 코인/조각/랜덤 중 하나로 설정해주세요.\n\n예: /가챠타입 랜덤")
+                return
+            set_gacha_type(user_id, user_name, mapping[requested])
+            reply(event.reply_token, f"🎰 가챠타입 변경 완료\n\n{GACHA_TYPE_LABELS[mapping[requested]]}")
+            return
 
-    if text == "/업적":
-        push_or_reply_private_info(
-            event,
-            user_id,
-            achievement_status_text(user_id, user_name),
-            "📩 업적 현황을 개인 메시지로 보내드렸습니다."
-        )
-        return
+        if text in ["/행운포인트"]:
+            reply(event.reply_token, gacha_pity_text(user_id, user_name))
+            return
+
+        if text in ["/조각보유"]:
+            reply_many(event.reply_token, split_text_messages(gacha_piece_text(user_id)))
+            return
+
+        if text == "/상점":
+            reply_many(event.reply_token, split_text_messages(shop_text()))
+            return
+
+        if text.startswith("/구매 "):
+            item_name = text.replace("/구매", "", 1).strip()
+            ok, msg = buy_item(user_id, user_name, item_name)
+            reply_many(event.reply_token, split_text_messages(msg))
+            return
+
+        if text == "/내보유":
+            reply_many(event.reply_token, split_text_messages(user_purchases_text(user_id, "all")))
+            return
+
+        if text == "/내보유 미사용":
+            reply_many(event.reply_token, split_text_messages(user_purchases_text(user_id, "owned")))
+            return
+
+        if text == "/내보유 사용":
+            reply_many(event.reply_token, split_text_messages(user_purchases_text(user_id, "used")))
+            return
+
+        if text.startswith("/사용 "):
+            try:
+                purchase_id = int(text.replace("/사용", "", 1).strip().split()[0])
+            except Exception:
+                reply(event.reply_token, "사용할 구매번호를 입력해주세요.\n\n예: /사용 12")
+                return
+            ok, msg = use_purchase(purchase_id, user_id, user_name)
+            reply_many(event.reply_token, split_text_messages(msg))
+            return
+
+        if text == "/럭키드로우구매":
+            ok, msg = buy_lucky_draw_ticket(user_id, user_name)
+            reply_many(event.reply_token, split_text_messages(msg))
+            return
+
 
 
 # =========================
