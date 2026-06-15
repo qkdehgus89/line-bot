@@ -60,7 +60,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v63-manitto-v48-reward-only"
+BOT_VERSION = "active-id-v64-manitto-gold-active-target"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -178,6 +178,18 @@ def count_source_ids():
 
     return ids
 
+
+
+# 마니또 설정
+MANITTO_REQUIRED_SCORE = 30
+MANITTO_REROLL_LIMIT = 2
+MANITTO_GOLD_RATE = 0.10
+MANITTO_MIN_TARGET_BALANCE = 20  # 2코인
+MANITTO_ACTIVE_DAYS = 7
+MANITTO_NORMAL_REWARD_MIN = 15   # 1.5코인
+MANITTO_NORMAL_REWARD_MAX = 75   # 7.5코인
+MANITTO_GOLD_REWARD_MIN = 50     # 5코인
+MANITTO_GOLD_REWARD_MAX = 150    # 15코인
 
 # =========================
 # 시간
@@ -1050,7 +1062,7 @@ def user_guide_text():
 4등 이하 → 💰0.2코인
 
 🎭 마니또
-성공 시 💰1.5~7.5코인
+성공 시 랜덤 코인
 
 🎰 채팅 잭팟
 
@@ -1184,7 +1196,7 @@ def user_guide_text():
 /마니또변경
 
 주간 랜덤 배정
-성공 시 💰1.5~7.5코인 지급
+성공 시 랜덤 코인 지급
 
 ━━━━━━━━━━
 🏅 업적
@@ -1337,6 +1349,7 @@ S.N.S에서는
 /마니또
 
 이번 주 타겟 확인
+일반/황금 마니또 랜덤 배정
 
 ━━━━━━━━━━━━━━
 🤖 꽃봇 1:1 채팅 명령어
@@ -5156,27 +5169,408 @@ def process_affinity_message(source_id, user_id, user_name, text_value):
     return None
 
 
-def manitto_private_text(row):
-    title = "🌈 황금 마니또" if row["manitto_type"] == "golden" else "🎭 S.N.S 마니또"
-    score = get_affinity_score(row["hunter_user_id"], row["target_user_id"], row["week_start"])
-    status = "완료" if row["completed"] else "진행중"
-    reward_text = coin_text(row["reward"]) if row["reward"] else f"{coin_text(row['reward_min'])} ~ {coin_text(row['reward_max'])} 랜덤"
+
+
+# =========================
+# 마니또 로직 v64
+# =========================
+def get_current_manitto(user_id):
+    week_start, week_end = event_week_key()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT *
+    FROM manitto_assignments
+    WHERE week_start = ?
+      AND hunter_user_id = ?
+    """, (week_start, user_id))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def pick_manitto_type():
+    return "gold" if random.random() < MANITTO_GOLD_RATE else "normal"
+
+
+def manitto_reward_range(manitto_type):
+    if manitto_type == "gold":
+        return MANITTO_GOLD_REWARD_MIN, MANITTO_GOLD_REWARD_MAX
+    return MANITTO_NORMAL_REWARD_MIN, MANITTO_NORMAL_REWARD_MAX
+
+
+def manitto_target_candidates(hunter_user_id, exclude_ids=None, strict=True):
+    """
+    마니또 대상 후보.
+    strict=True:
+      - 활성 유저
+      - 본인 제외
+      - 2코인 이상
+      - 최근 7일 내 COUNT_SOURCE_ID 채팅 기록 존재
+    strict=False:
+      - 활성 유저 + 본인/제외대상 제외
+    """
+    exclude_ids = set(exclude_ids or [])
+    exclude_ids.add(hunter_user_id)
+
+    since_date = (datetime.now(KST) - timedelta(days=MANITTO_ACTIVE_DAYS)).strftime("%Y-%m-%d")
+
+    conn = db()
+    cur = conn.cursor()
+
+    params = []
+    exclude_sql = ""
+    if exclude_ids:
+        placeholders = ",".join("?" for _ in exclude_ids)
+        exclude_sql = f" AND u.user_id NOT IN ({placeholders})"
+        params.extend(list(exclude_ids))
+
+    if strict:
+        sql = f"""
+        SELECT
+            u.user_id,
+            u.user_name,
+            COALESCE(c.balance, 0) AS balance,
+            COALESCE(SUM(cnt.count), 0) AS recent_count
+        FROM users u
+        LEFT JOIN currency c ON c.user_id = u.user_id
+        LEFT JOIN counts cnt
+          ON cnt.user_id = u.user_id
+         AND cnt.source_id = ?
+         AND cnt.date >= ?
+        WHERE COALESCE(u.is_active, 1) = 1
+          {exclude_sql}
+        GROUP BY u.user_id
+        HAVING balance >= ?
+           AND recent_count > 0
+        ORDER BY RANDOM()
+        """
+        cur.execute(sql, [COUNT_SOURCE_ID, since_date] + params + [MANITTO_MIN_TARGET_BALANCE])
+    else:
+        sql = f"""
+        SELECT
+            u.user_id,
+            u.user_name,
+            COALESCE(c.balance, 0) AS balance,
+            0 AS recent_count
+        FROM users u
+        LEFT JOIN currency c ON c.user_id = u.user_id
+        WHERE COALESCE(u.is_active, 1) = 1
+          {exclude_sql}
+        ORDER BY RANDOM()
+        """
+        cur.execute(sql, params)
+
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def manitto_target_pick(hunter_user_id, exclude_ids=None):
+    """
+    1순위: 2코인 이상 + 최근 7일 활동
+    후보 부족 시 전체 활성유저로 완화
+    """
+    rows = manitto_target_candidates(hunter_user_id, exclude_ids, strict=True)
+    if rows:
+        return random.choice(rows)
+
+    rows = manitto_target_candidates(hunter_user_id, exclude_ids, strict=False)
+    if rows:
+        return random.choice(rows)
+
+    return None
+
+
+def assign_manitto_if_missing(user_id, user_name):
+    current = get_current_manitto(user_id)
+    if current:
+        return current
+
+    week_start, week_end = event_week_key()
+    target = manitto_target_pick(user_id)
+
+    if not target:
+        return None
+
+    manitto_type = pick_manitto_type()
+    reward_min, reward_max = manitto_reward_range(manitto_type)
+    reward = random.randint(reward_min, reward_max)
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT OR IGNORE INTO manitto_assignments (
+        week_start, week_end,
+        hunter_user_id, hunter_user_name,
+        target_user_id, target_user_name,
+        required_score, reward_min, reward_max, reward,
+        manitto_type, completed, reroll_count, previous_target_ids,
+        created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+    """, (
+        week_start, week_end,
+        user_id, user_name,
+        target["user_id"], target["user_name"],
+        MANITTO_REQUIRED_SCORE,
+        reward_min,
+        reward_max,
+        reward,
+        manitto_type,
+        target["user_id"],
+        now_str(),
+        now_str()
+    ))
+    conn.commit()
+    conn.close()
+
+    return get_current_manitto(user_id)
+
+
+def get_pair_weekly_affinity(user_a, user_b):
+    week_start, week_end = event_week_key()
+    a, b = pair_key(user_a, user_b)
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT score
+    FROM affinity_scores
+    WHERE week_start = ?
+      AND user_a = ?
+      AND user_b = ?
+    """, (week_start, a, b))
+    row = cur.fetchone()
+    conn.close()
+
+    return int(row["score"] or 0) if row else 0
+
+
+def manitto_status_text(user_id, user_name):
+    row = assign_manitto_if_missing(user_id, user_name)
+    if not row:
+        return "🎭 마니또를 배정할 대상이 부족합니다."
+
+    progress = get_pair_weekly_affinity(user_id, row["target_user_id"])
+    completed = int(row["completed"] or 0) == 1
+    reroll_count = int(row["reroll_count"] or 0) if "reroll_count" in row.keys() else 0
+    manitto_type = row["manitto_type"] or "normal"
+
+    if manitto_type == "gold":
+        title = "👑 황금 마니또"
+        reward_line = "❓ 고급 랜덤 보상"
+        extra = "\n황금 마니또는 일반 마니또보다 높은 보상을 지급합니다."
+    else:
+        title = "🎭 이번 주 마니또"
+        reward_line = "❓ 랜덤 코인"
+        extra = ""
+
+    if completed:
+        return (
+            f"{title}\n\n"
+            "✅ 미션 성공\n\n"
+            f"대상\n{row['target_user_name']}\n\n"
+            f"달성 친밀도\n{MANITTO_REQUIRED_SCORE} / {MANITTO_REQUIRED_SCORE}\n\n"
+            "🎁 보상은 이미 지급 완료되었습니다.\n\n"
+            "축하합니다 😊"
+        )
+
+    near = "\n\n🔥 거의 달성했습니다!" if progress >= MANITTO_REQUIRED_SCORE - 2 else ""
+
     return (
         f"{title}\n\n"
-        f"이번 주 대상\n{row['target_user_name']}\n\n"
-        f"조건\n메인방에서 대상과 친밀도 {row['required_score']} 달성\n\n"
-        f"현재 친밀도\n{score} / {row['required_score']}\n\n"
-        f"성공 보상\n{reward_text}\n\n"
-        f"상태\n{status}\n\n"
-        "※ 마니또 대상은 본인에게만 공개됩니다.\n"
-        "※ 같은 사람 연속 발화, 3분 초과 응답, 30초 내 반복 대화는 제외됩니다."
+        f"대상\n{row['target_user_name']}\n\n"
+        f"진행도\n{progress} / {MANITTO_REQUIRED_SCORE}\n\n"
+        f"🎁 성공 보상\n{reward_line}\n"
+        f"{extra}\n\n"
+        "━━━━━━━━━━\n\n"
+        f"대상과 친밀도 {MANITTO_REQUIRED_SCORE} 달성 시\n"
+        "자동으로 성공 처리됩니다.\n\n"
+        "🎲 대상 변경\n"
+        "/마니또변경\n\n"
+        f"남은 변경횟수\n{max(0, MANITTO_REROLL_LIMIT - reroll_count)} / {MANITTO_REROLL_LIMIT}"
+        f"{near}"
     )
 
-def send_manitto_dm(user_id, user_name):
-    row, err = ensure_weekly_manitto(user_id, user_name)
-    if err:
-        return err
-    return manitto_private_text(row)
+
+def reroll_manitto(user_id, user_name):
+    row = assign_manitto_if_missing(user_id, user_name)
+    if not row:
+        return "🎭 마니또를 변경할 대상이 부족합니다."
+
+    if int(row["completed"] or 0) == 1:
+        return "❌ 완료된 마니또는 변경할 수 없습니다."
+
+    reroll_count = int(row["reroll_count"] or 0) if "reroll_count" in row.keys() else 0
+    if reroll_count >= MANITTO_REROLL_LIMIT:
+        return (
+            "❌ 이번 주 변경 횟수를 모두 사용했습니다.\n\n"
+            f"사용 횟수\n{reroll_count} / {MANITTO_REROLL_LIMIT}"
+        )
+
+    previous_ids = set()
+    if "previous_target_ids" in row.keys() and row["previous_target_ids"]:
+        previous_ids.update(x for x in str(row["previous_target_ids"]).split(",") if x)
+
+    previous_ids.add(row["target_user_id"])
+    previous_ids.add(user_id)
+
+    target = manitto_target_pick(user_id, previous_ids)
+
+    # 후보가 너무 부족하면 현재 대상/본인만 제외하고 재시도
+    if not target:
+        target = manitto_target_pick(user_id, {user_id, row["target_user_id"]})
+
+    if not target:
+        return "🎭 변경 가능한 새 대상이 없습니다."
+
+    new_previous = ",".join(sorted(previous_ids - {user_id}))
+
+    # 변경 시 마니또 타입과 보상도 다시 랜덤
+    manitto_type = pick_manitto_type()
+    reward_min, reward_max = manitto_reward_range(manitto_type)
+    reward = random.randint(reward_min, reward_max)
+
+    conn = db()
+    cur = conn.cursor()
+    week_start, week_end = event_week_key()
+    cur.execute("""
+    UPDATE manitto_assignments
+    SET target_user_id = ?,
+        target_user_name = ?,
+        manitto_type = ?,
+        reward_min = ?,
+        reward_max = ?,
+        reward = ?,
+        reroll_count = COALESCE(reroll_count, 0) + 1,
+        previous_target_ids = ?,
+        updated_at = ?
+    WHERE week_start = ?
+      AND hunter_user_id = ?
+    """, (
+        target["user_id"],
+        target["user_name"],
+        manitto_type,
+        reward_min,
+        reward_max,
+        reward,
+        new_previous,
+        now_str(),
+        week_start,
+        user_id
+    ))
+    conn.commit()
+    conn.close()
+
+    title = "👑 황금 마니또" if manitto_type == "gold" else "🎭 마니또"
+
+    return (
+        f"{title} 변경 완료\n\n"
+        f"기존 대상\n{row['target_user_name']}\n\n"
+        "⬇️\n\n"
+        f"새로운 대상\n{target['user_name']}\n\n"
+        f"남은 변경 횟수\n{max(0, MANITTO_REROLL_LIMIT - reroll_count - 1)} / {MANITTO_REROLL_LIMIT}"
+    )
+
+
+def complete_manitto_if_ready(hunter_user_id, hunter_user_name, partner_user_id):
+    row = get_current_manitto(hunter_user_id)
+    if not row:
+        return None
+
+    if int(row["completed"] or 0) == 1:
+        return None
+
+    if row["target_user_id"] != partner_user_id:
+        return None
+
+    progress = get_pair_weekly_affinity(hunter_user_id, partner_user_id)
+    if progress < MANITTO_REQUIRED_SCORE:
+        return None
+
+    reward = int(row["reward"] or 0)
+    if reward <= 0:
+        manitto_type = row["manitto_type"] or "normal"
+        reward_min, reward_max = manitto_reward_range(manitto_type)
+        reward = random.randint(reward_min, reward_max)
+
+    conn = db()
+    cur = conn.cursor()
+    week_start, week_end = event_week_key()
+    cur.execute("""
+    UPDATE manitto_assignments
+    SET completed = 1,
+        completed_at = ?,
+        updated_at = ?
+    WHERE week_start = ?
+      AND hunter_user_id = ?
+      AND completed = 0
+    """, (now_str(), now_str(), week_start, hunter_user_id))
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+
+    if not changed:
+        return None
+
+    change_money(
+        hunter_user_id,
+        hunter_user_name,
+        reward,
+        f"마니또 성공: {row['target_user_name']}",
+        None,
+        "마니또"
+    )
+
+    try:
+        grant_achievement_once(
+            hunter_user_id,
+            hunter_user_name,
+            "first_manitto",
+            "🎭 첫 마니또",
+            5,
+            f"target={row['target_user_name']}"
+        )
+    except Exception as e:
+        print("MANITTO_ACHIEVEMENT_ERROR:", repr(e))
+
+    manitto_type = row["manitto_type"] or "normal"
+    if manitto_type == "gold":
+        dm_title = "👑 황금 마니또 성공!"
+        public_text = "👑 황금 마니또 성공!\n\n누군가가 황금 마니또를 달성했습니다!\n\n축하해주세요 🎉"
+    else:
+        dm_title = "🎭 마니또 미션 성공!"
+        public_text = "🎭 누군가의 마니또 미션이 성공했습니다!\n\n축하해주세요 😊"
+
+    dm_text = (
+        f"{dm_title}\n\n"
+        f"대상\n{row['target_user_name']}\n\n"
+        f"달성 친밀도\n{MANITTO_REQUIRED_SCORE} / {MANITTO_REQUIRED_SCORE}\n\n"
+        "🎁 랜덤 보상 획득!\n\n"
+        f"💰 +{coin_text(reward)}\n\n"
+        "축하합니다 😊"
+    )
+
+    try:
+        push_private_message(hunter_user_id, dm_text)
+    except Exception as e:
+        print("MANITTO_REWARD_DM_ERROR:", repr(e))
+
+    return public_text
+
+
+def send_manitto_reply(event, user_id, user_name):
+    if is_private_chat(event):
+        reply_many(event.reply_token, split_text_messages(manitto_status_text(user_id, user_name)))
+    else:
+        reply(
+            event.reply_token,
+            "🎭 마니또 정보는 꽃봇과 1:1 채팅에서 확인해주세요.\n\n"
+            "개인정보 보호를 위해\n"
+            "공개방에서는 표시되지 않습니다."
+        )
+
 
 # =========================
 # 마니또 / 친밀도
@@ -5203,54 +5597,6 @@ def parse_time_kst(value):
 def pair_key(user_id_1, user_id_2):
     return tuple(sorted([user_id_1, user_id_2]))
 
-
-def manitto_target_candidates(exclude_user_id, extra_exclude_user_ids=None):
-    """
-    마니또 타겟 선정 방식
-    - 활성 유저 전체 대상
-    - 본인 제외
-    - 현재 타겟/최근 변경 타겟 제외 가능
-    - 이번 주 같은 타겟으로 2회 이상 배정된 사람 제외
-    - 5코인 이상 보유 조건 없음
-    """
-    week_start, _ = event_week_key()
-    excluded = {str(exclude_user_id)}
-    for value in (extra_exclude_user_ids or []):
-        if value:
-            excluded.add(str(value))
-
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT
-        u.user_id,
-        u.user_name,
-        COALESCE(c.balance, 0) AS balance,
-        COALESCE(t.assigned_count, 0) AS assigned_count
-    FROM users u
-    LEFT JOIN currency c
-      ON c.user_id = u.user_id
-    LEFT JOIN (
-        SELECT target_user_id, COUNT(*) AS assigned_count
-        FROM manitto_assignments
-        WHERE week_start = ?
-        GROUP BY target_user_id
-    ) t
-      ON t.target_user_id = u.user_id
-    WHERE COALESCE(u.is_active, 1) = 1
-      AND u.user_id IS NOT NULL
-      AND u.user_id != ''
-      AND COALESCE(t.assigned_count, 0) < ?
-    ORDER BY RANDOM()
-    """, (week_start, MANITTO_TARGET_MAX_WEEKLY_ASSIGNED))
-    rows = cur.fetchall()
-    conn.close()
-
-    for row in rows:
-        if str(row["user_id"]) not in excluded:
-            return row
-
-    return None
 
 def ensure_weekly_manitto(user_id, user_name):
     week_start, week_end = event_week_key()
@@ -5442,44 +5788,6 @@ def manitto_status_text_from_row(row, user_id):
     )
 
 
-def send_manitto_reply(event, user_id, user_name):
-    """
-    /마니또 처리 재작업.
-
-    안정성 우선 정책:
-    - 꽃봇 1:1 채팅에서는 push_message를 사용하지 않고 reply로 바로 출력합니다.
-    - 공개방/그룹/룸에서는 대상 보호를 위해 마니또 정보를 공개하지 않습니다.
-    - 공개방에서 별도 DM push도 시도하지 않습니다.
-      LINE push 실패/친구추가 오판 문제가 반복되어, 사용자가 직접 1:1로 와서 조회하게 합니다.
-    """
-    if not user_id:
-        reply(
-            event.reply_token,
-            "🎭 마니또 조회 실패\n\n"
-            "USER_ID를 확인할 수 없습니다.\n"
-            "꽃봇을 친구추가한 뒤 1:1 채팅에서 다시 /마니또 를 입력해주세요."
-        )
-        return
-
-    if not is_private_chat(event):
-        reply(
-            event.reply_token,
-            "🎭 마니또는 꽃봇 1:1 채팅에서만 확인할 수 있습니다.\n\n"
-            "대상 보호를 위해 공개방에는 마니또 정보를 표시하지 않습니다.\n"
-            "꽃봇과 1:1 채팅에서 /마니또 를 입력해주세요."
-        )
-        return
-
-    row, err = ensure_weekly_manitto(user_id, user_name)
-    if err:
-        reply(event.reply_token, err)
-        return
-
-    reply_many(event.reply_token, split_text_messages(manitto_private_text(row)))
-
-
-# 구버전 호환용: 다른 곳에서 호출되면 push 없이 텍스트만 반환합니다.
-
 def send_manitto_reroll_reply(event, user_id, user_name):
     if not is_private_chat(event):
         reply(event.reply_token, "🎭 마니또 변경은 꽃봇 1:1 채팅에서만 가능합니다.")
@@ -5534,56 +5842,6 @@ def send_manitto_reroll_reply(event, user_id, user_name):
         f"남은 변경 횟수: {max(0, MANITTO_REROLL_LIMIT - reroll_count - 1)} / {MANITTO_REROLL_LIMIT}"
     )
 
-
-def complete_manitto_if_ready(hunter_user_id, hunter_user_name, other_user_id):
-    week_start, week_end = event_week_key()
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT * FROM manitto_assignments
-    WHERE week_start = ?
-      AND hunter_user_id = ?
-      AND target_user_id = ?
-      AND completed = 0
-    """, (week_start, hunter_user_id, other_user_id))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        return None
-
-    score = get_affinity_score(hunter_user_id, other_user_id, week_start)
-    if score < row["required_score"]:
-        return None
-
-    reward = random.randint(row["reward_min"], row["reward_max"])
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    UPDATE manitto_assignments
-    SET completed = 1,
-        reward = ?,
-        updated_at = ?,
-        completed_at = ?
-    WHERE week_start = ? AND hunter_user_id = ?
-    """, (reward, now_str(), now_str(), week_start, hunter_user_id))
-    conn.commit()
-    conn.close()
-
-    change_money(hunter_user_id, hunter_user_name, reward, f"마니또 성공: {row['target_user_name']}", None, "마니또시스템")
-    grant_achievement_once(hunter_user_id, hunter_user_name, "first_manitto", "🎭 첫 마니또", 5, f"target={row['target_user_name']}")
-
-    dm_text = (
-        "🎭 마니또 성공!\n\n"
-        f"대상: {row['target_user_name']}\n"
-        f"친밀도: {score} / {row['required_score']}\n"
-        f"보상: {coin_text(reward)}\n\n"
-        f"현재 잔액: {coin_text(get_balance(hunter_user_id))}"
-    )
-    try:
-        push_private_message(hunter_user_id, dm_text)
-    except Exception as e:
-        print("MANITTO_REWARD_DM_ERROR:", repr(e))
-    return f"🎭 누군가의 마니또 미션이 성공했습니다."
 
 
 # =========================
@@ -6574,658 +6832,10 @@ def handle(event):
         return
 
     if text == "/마니또변경":
-        send_manitto_reroll_reply(event, user_id, user_name)
-        return
-
-    if text in ["/가챠횟수", "/가챠사용횟수"]:
-        push_or_reply_private_info(event, user_id, gacha_count_status_text(user_id), "📩 가챠 현황을 개인 메시지로 보내드렸습니다.")
-        return
-
-    if text in ["/누적친밀도", "/누적친밀도확인"]:
-        push_or_reply_private_info(
-            event,
-            user_id,
-            cumulative_affinity_status_text(user_id, user_name),
-            "📩 누적 친밀도를 개인 메시지로 보내드렸습니다."
-        )
-        return
-
-    if text in ["/친밀도", "/내친밀도"]:
-        reply_many(event.reply_token, split_text_messages(affinity_status_text(user_id, user_name)))
-        return
-
-    if False and text in ["/친밀도랭킹", "/친밀도순위"]:
-        reply(event.reply_token, affinity_ranking_text())
-        return
-
-    if False and text in ["/현상금", "/현상금현황"]:
-        reply(event.reply_token, "현상금은 🎭 S.N.S 마니또로 개편되었습니다.\n확인: /마니또")
-        return
-
-    if text.startswith("/가챠타입"):
-        parts = text.split(maxsplit=1)
-
-        if len(parts) == 1:
-            current_type = get_gacha_type(user_id)
-            reply(
-                event.reply_token,
-                f"🎰 현재 가챠 타입\n\n"
-                f"{GACHA_TYPE_LABELS[current_type]}\n\n"
-                f"변경 방법\n"
-                f"/가챠타입 코인\n"
-                f"/가챠타입 조각\n"
-                f"/가챠타입 랜덤"
-            )
-            return
-
-        raw_type = parts[1].strip()
-
-        aliases = {
-            "코인": "coin",
-            "코인형": "coin",
-            "조각": "piece",
-            "조각형": "piece",
-            "랜덤": "random",
-            "랜덤형": "random",
-        }
-
-        if raw_type not in aliases:
-            reply(event.reply_token, "사용법\n\n/가챠타입 코인\n/가챠타입 조각\n/가챠타입 랜덤")
-            return
-
-        gacha_type = aliases[raw_type]
-        set_gacha_type(user_id, user_name, gacha_type)
-
-        reply(
-            event.reply_token,
-            f"✅ 가챠 타입 변경 완료\n\n"
-            f"현재 타입: {GACHA_TYPE_LABELS[gacha_type]}"
-        )
-        return
-
-    if text.startswith("/가챠"):
-        parts = text.split(maxsplit=1)
-
-        if len(parts) == 1:
-            reply(event.reply_token, "사용법\n\n/가챠 하\n/가챠 중\n/가챠 상\n\n자세한 안내: /가챠시스템")
-            return
-
-        tier = parts[1].strip()
-
-        success, message = run_gacha(user_id, user_name, tier)
-        if success:
-            grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, tier)
-        reply(event.reply_token, message)
-        return
-
-    if text in ["/행운포인트", "/가챠포인트"]:
-        pity_points = get_gacha_pity_point(user_id)
-        push_or_reply_private_info(event, user_id, f"🎁 가챠 행운포인트\n\n현재: {pity_points} / 10\n\n코인형 가챠 F등급 1회마다 1점 적립\n10점 달성 시 💰1코인 자동 지급", "📩 행운포인트를 개인 메시지로 보내드렸습니다.")
-        return
-
-    if text in ["/조각", "/조각보유"]:
-        rows = get_all_gacha_pieces(user_id)
-        if not rows:
-            push_or_reply_private_info(event, user_id, "보유한 조각이 없습니다.", "📩 조각 현황을 개인 메시지로 보내드렸습니다.")
-            return
-        lines = ["🧩 보유 조각", ""]
-        for row in rows:
-            info = PIECE_INFO.get(row["piece_key"])
-            if not info:
-                continue
-            lines.append(f"{info['label']} {row['count']} / {info['need']}")
-        push_or_reply_private_info(event, user_id, "\n".join(lines), "📩 조각 현황을 개인 메시지로 보내드렸습니다.")
-        return
-
-
-    if text == "/출석":
-        ok, balance = attendance_check(date_str, user_id, user_name)
-        if not ok:
-            reply(event.reply_token, f"이미 오늘 출석했습니다.\n현재 잔액: {coin_text(balance)}")
-            return
-
-        grant_achievement_once(user_id, user_name, "first_attendance", "✅ 첫 출석", 2, date_str)
-        streak, paid = check_attendance_streak_reward(date_str, user_id, user_name)
-        balance = get_balance(user_id)
-
-        lines = [
-            "✅ 출석 완료",
-            "",
-            f"+0.5{CURRENCY_NAME} 지급",
-            f"연속출석: {streak}일",
-        ]
-
-        if paid:
-            lines.append("")
-            lines.append("🎁 연속출석 보상")
-            for days, reward in paid:
-                lines.append(f"{days}일 달성 +{coin_text(reward)}")
-
-        lines.append("")
-        lines.append(f"현재 잔액: {coin_text(balance)}")
-
-        reply(event.reply_token, "\n".join(lines))
-        return
-
-    if text == "/미션":
-        count, missions = mission_status(date_str, COUNT_SOURCE_ID, user_id)
-        lines = [
-            "🎯 오늘의 미션",
-            f"오늘 마디수: {count}",
-            "",
-        ]
-
-        total_waiting = 0
-        for mission in missions:
-            mark = "✅" if mission["done"] else "❌"
-            received = " / 수령완료" if mission["received"] else ""
-            if mission["done"] and not mission["received"]:
-                total_waiting += mission["reward"]
-
-            lines.append(
-                f"{mark} {mission['required']}마디 달성 "
-                f"+{coin_text(mission['reward'])}{received}"
-            )
-
-        lines.append("")
-        lines.append(f"수령 가능: {coin_text(total_waiting)}")
-        lines.append("수령 방법: /미션수령")
-
-        reply(event.reply_token, "\n".join(lines))
-        return
-
-    if text == "/미션수령":
-        reward, count, claimed_names = claim_missions(date_str, COUNT_SOURCE_ID, user_id, user_name)
-        if reward <= 0:
-            reply(
-                event.reply_token,
-                f"수령 가능한 미션 보상이 없습니다.\n오늘 마디수: {count}\n확인: /미션"
-            )
-            return
-
-        balance = get_balance(user_id)
-        reply(
-            event.reply_token,
-            f"🎁 미션 보상 수령 완료\n\n"
-            f"달성: {', '.join(claimed_names)}\n"
-            f"지급: {coin_text(reward)}\n"
-            f"잔액: {coin_text(balance)}"
-        )
-        return
-
-
-
-    if False and text in ["/SNS럭키설명", "/럭키드로우설명"]:
-        reply(
-            event.reply_token,
-            "🎟️ S.N.S 럭키드로우\n\n"
-            "1인 1장만 구매 가능합니다.\n"
-            "가격: 1장 = 1코인\n"
-            "추첨/발표: 매주 토요일 21:00 자동 진행\n\n"
-            "구매자 중 1명을 랜덤 추첨하여\n"
-            "총 판매액의 80%를 지급합니다.\n"
-            "나머지 20%는 시스템 소각됩니다.\n\n"
-            "구매: /럭키드로우구매\n"
-            "결과 조회: /럭키드로우결과\n\n"
-            "※ 럭키드로우는 구매만 가능합니다.\n"
-            "※ 정산/발표는 토요일 21:00에 자동 진행됩니다."
-        )
-        return
-
-    if text == "/럭키드로우구매":
-        success, msg = buy_lucky_draw_ticket(user_id, user_name)
-        if success:
-            grant_achievement_once(user_id, user_name, "first_lucky", "🎟️ 첫 럭키드로우", 2, "S.N.S 럭키드로우")
-        reply(event.reply_token, msg)
-        return
-
-    if False and text in ["/SNS럭키현황", "/럭키드로우현황"]:
-        reply(event.reply_token, lucky_draw_status_text())
-        return
-
-    if text == "/럭키드로우결과":
-        reply(event.reply_token, lucky_draw_result_text())
-        return
-
-    if False and text in ["/SNS핀볼설명", "/핀볼설명"]:
-        reply(
-            event.reply_token,
-            "🎱 S.N.S 핀볼\n\n"
-            "치지직 시청자 참여 핀볼 느낌의 주간 이벤트입니다.\n"
-            "운영진 선정형 이벤트입니다.\n"
-            "유저 구매는 불가합니다.\n\n"
-            "운영진이 당첨 인원을 선정하면\n"
-            "운영진 선정 후 등록된 핀볼 수량 기준 지급풀을 당첨자에게 균등 지급합니다.\n"
-            "나머지 20%는 시스템 소각됩니다.\n\n"
-            "운영진 등록: /SNS핀볼등록 닉네임 수량\n"
-            "현황: /SNS핀볼현황"
-        )
-        return
-
-    if False and (text.startswith("/SNS핀볼구매") or text.startswith("/핀볼구매")):
-        reply(
-            event.reply_token,
-            "🎱 S.N.S 핀볼은 유저 구매형이 아닙니다.\n\n"
-            "운영진이 후보와 핀볼 수량을 직접 등록하고,\n"
-            "당첨자도 운영진이 직접 선정합니다.\n\n"
-            "현황: /SNS핀볼현황"
-        )
-        return
-
-    if False and text in ["/SNS핀볼현황", "/핀볼현황"]:
-        reply(event.reply_token, pinball_status_text())
-        return
-
-    if text == "/상점":
-        rows = list_shop_items()
-        if not rows:
-            reply(event.reply_token, "상점에 등록된 상품이 없습니다.")
-            return
-
-        lines = [
-            "✦ ⎯⎯🛒 코인 마켓 🛒⎯⎯ ✦",
-            "-코인으로 아이템 구입가능 (양도불가)",
-            "-이벤트 상품, 구입 아이템 환불 시 ➡️ 50% 환불",
-            "----------------------------",
-        ]
-
-        for row in rows:
-            lines.append(f"💠{row['name']} : 💰{points_to_coin(row['price'])}개")
-            if row["description"]:
-                for desc in str(row["description"]).split(" / "):
-                    lines.append(f"-{desc}")
-            lines.append("")
-
-        lines.append("구매 방법: /구매 상품명")
-        lines.append("보유 확인: /내보유")
-
-        push_or_reply_private_info(event, user_id, "\n".join(lines), "📩 상점 정보를 개인 메시지로 보내드렸습니다.")
-        return
-
-    if text.startswith("/구매 "):
-        item_name = text.replace("/구매", "", 1).strip()
-        success, msg = buy_item(user_id, user_name, item_name)
-        reply(event.reply_token, msg)
-        return
-
-    if text == "/내보유" or text.startswith("/내보유 "):
-        parts = text.split(maxsplit=1)
-        filter_mode = "all"
-
-        if len(parts) >= 2:
-            arg = parts[1].strip()
-            if arg in ["미사용", "보유", "owned"]:
-                filter_mode = "owned"
-            elif arg in ["사용", "사용완료", "used"]:
-                filter_mode = "used"
-            else:
-                push_or_reply_private_info(
-                    event,
-                    user_id,
-                    "사용법\n\n/내보유\n/내보유 미사용\n/내보유 사용",
-                    "📩 보유 상품 사용법을 개인 메시지로 보내드렸습니다."
-                )
-                return
-
-        push_or_reply_private_info(
-            event,
-            user_id,
-            user_purchases_text(user_id, filter_mode),
-            "📩 보유 상품 현황을 개인 메시지로 보내드렸습니다."
-        )
-        return
-
-    if text.startswith("/사용 "):
-        parts = text.split(maxsplit=2)
-        if len(parts) < 2 or not parts[1].isdigit():
-            reply(event.reply_token, "사용법\n\n/사용 구매번호")
-            return
-
-        note = parts[2] if len(parts) >= 3 else ""
-        success, msg = use_purchase(int(parts[1]), user_id, user_name, note)
-        reply(event.reply_token, msg)
-        return
-
-    if text == "/코인순위":
-        rows = currency_ranking()
-        if not rows:
-            reply(event.reply_token, f"{CURRENCY_NAME} 보유 데이터가 없습니다.")
-            return
-        lines = [f"🏆 {CURRENCY_NAME} 보유 순위", ""]
-        for i, row in enumerate(rows, 1):
-            lines.append(f"{i}. {row['user_name']} - {coin_text(row['balance'])}")
-        reply(event.reply_token, "\n".join(lines))
-        return
-
-    if text == "/주간랭킹":
-        week_start, week_end = week_range_for_today()
-        rows = weekly_ranking_rows(COUNT_SOURCE_ID, week_start, week_end, limit=10)
-        if not rows:
-            reply(event.reply_token, "이번 주 랭킹 데이터가 없습니다.")
-            return
-        lines = ["🏆 이번 주 마디수 랭킹", f"기간: {week_start} ~ {week_end}", ""]
-        for i, row in enumerate(rows, 1):
-            reward = weekly_reward_amount(i)
-            lines.append(f"{i}. {row['user_name']} - {row['total_count']}마디 / 보상 {coin_text(reward)}")
-        reply(event.reply_token, "\n".join(lines))
-        return
-
-    # 운영진방 아니면 관리자 명령어 무시
-    if source_id not in ADMIN_SOURCE_IDS:
-        return
-
-    # 관리자/운영자 아니면 무시
-    if not is_staff(user_id):
-        return
-
-    # =========================
-    # 도움말
-    # =========================
-    if text == "/운영명령어":
-        admin_text = """🛠 운영 명령어
-
-⚙️ 시스템
-/운영명령어
-/방정보
-/상태확인
-/DB상태
-/경고
-
-👥 유저관리
-/전체유저
-/유저검색 닉네임
-/닉삭제 닉네임
-/닉삭제번호 번호
-/삭제확인
-/삭제취소
-
-💰 코인관리
-/지급 닉네임 금액 사유
-/차감 닉네임 금액 사유
-/코인내역 닉네임
-
-🎁 아이템관리
-/상품추가 상품명 가격 설명
-/상품삭제 상품명
-/사용처리 구매번호 메모
-/구매취소 구매번호
-/아이템지급 닉네임 상품명
-
-📖 족보관리
-/족보입력
-/족보취소
-
-🏆 주간관리
-/주간랭킹
-/주간정산
-/주간초기화
-
-🎟 럭키드로우
-/럭키드로우정산
-
-👑 칭호관리
-/칭호지급 닉네임 칭호명
-/칭호삭제 닉네임
-/칭호목록"""
-        reply(event.reply_token, admin_text)
-        return
-
-    if text.startswith("/칭호지급 "):
-        parts = text.split(maxsplit=2)
-        if len(parts) < 3:
-            reply(event.reply_token, "사용법\n\n/칭호지급 닉네임 칭호명")
-            return
-        keyword = parts[1].strip()
-        title = parts[2].strip()
-        target, err = get_user_row_by_keyword_or_self(keyword)
-        if err:
-            reply(event.reply_token, err)
-            return
-        set_user_title(target["user_id"], target["user_name"], title, user_name)
-        reply(event.reply_token, f"👑 칭호 지급 완료\n\n대상: {target['user_name']}\n칭호: {title}")
-        return
-
-    if text.startswith("/칭호삭제 "):
-        keyword = text.replace("/칭호삭제", "", 1).strip()
-        if not keyword:
-            reply(event.reply_token, "사용법\n\n/칭호삭제 닉네임")
-            return
-        target, err = get_user_row_by_keyword_or_self(keyword)
-        if err:
-            reply(event.reply_token, err)
-            return
-        changed = clear_user_title(target["user_id"])
-        reply(event.reply_token, f"👑 칭호 삭제 완료\n\n대상: {target['user_name']}\n처리: {changed}건")
-        return
-
-    if text == "/칭호목록":
-        reply_many(event.reply_token, split_text_messages(title_list_text()))
-        return
-
-    if text.startswith("/아이템지급 "):
-        parts = text.split(maxsplit=2)
-        if len(parts) < 3:
-            reply(event.reply_token, "사용법\n\n/아이템지급 닉네임 상품명")
-            return
-        ok, msg = grant_item_to_user(parts[1].strip(), parts[2].strip(), user_name)
-        reply(event.reply_token, msg)
-        return
-
-    if False and text in ["/마니또목록", "/마니또현황전체"]:
-        reply(event.reply_token, manitto_admin_status_text())
-        return
-
-    if False and text in ["/친밀도랭킹", "/친밀도순위"]:
-        reply(event.reply_token, affinity_ranking_text())
-        return
-
-    if False and text in ["/현상금목록", "/현상금현황전체"]:
-        reply(event.reply_token, bounty_admin_status_text())
-        return
-
-    if text == "/럭키드로우정산":
-        reply(
-            event.reply_token,
-            "🎟️ 럭키드로우는 수동 정산하지 않습니다.\n\n"
-            "매주 토요일 21:00에 자동 정산/발표됩니다."
-        )
-        return
-
-    if False and (text.startswith("/SNS핀볼등록") or text.startswith("/핀볼등록")):
-        parts = text.split()
-        if len(parts) < 2:
-            reply(event.reply_token, "사용법\n\n/SNS핀볼등록 닉네임 수량\n예) /SNS핀볼등록 무화 3")
-            return
-        keyword = parts[1]
-        amount = parts[2] if len(parts) >= 3 else 1
-        ok, msg = add_pinball_ticket_by_staff(keyword, amount)
-        reply(event.reply_token, msg)
-        return
-
-    if False and (text.startswith("/SNS핀볼삭제") or text.startswith("/핀볼삭제")):
-        keyword = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
-        if not keyword:
-            reply(event.reply_token, "사용법\n\n/SNS핀볼삭제 닉네임")
-            return
-        ok, msg = remove_pinball_entry_by_staff(keyword)
-        reply(event.reply_token, msg)
-        return
-
-    if False and text in ["/SNS핀볼초기화", "/핀볼초기화"]:
-        ok, msg = clear_pinball_entries_by_staff()
-        reply(event.reply_token, msg)
-        return
-
-    if False and (text.startswith("/SNS핀볼정산") or text.startswith("/핀볼정산")):
-        parts = text.split()[1:]
-        ok, msg = settle_pinball_by_winners(parts, user_name)
-        reply(event.reply_token, msg)
-        return
-
-    # =========================
-    # 마디수 조회
-    # =========================
-    if False and text.startswith("/마디수"):
-        target_date = parse_date(text)
-        rows = ranking(target_date, COUNT_SOURCE_ID)
-        reply(event.reply_token, format_rows("📊 메인방 전체 마디수", target_date, rows))
-        return
-
-    if False and text.startswith("/순위"):
-        target_date = parse_date(text)
-        rows = ranking(target_date, COUNT_SOURCE_ID, limit=10)
-        reply(event.reply_token, format_rows("🏆 메인방 순위 TOP 10", target_date, rows))
-        return
-
-    if False and text.startswith("/전체순위"):
-        rows = total_ranking(COUNT_SOURCE_ID, limit=30)
-        reply(event.reply_token, format_total_rows("🏆 전체 누적 순위 TOP 30", rows))
-        return
-
-    if False and text == "/경고기준":
-        reply(
-            event.reply_token,
-            f"⚠️ 현재 마디수 경고 기준\n\n{WARNING_LIMIT}마디 미만"
-        )
-        return
-
-    if text == "/경고" or text.startswith("/경고 "):
-        target_date = parse_date(text)
-        reply_many(event.reply_token, split_text_messages(warning_text(target_date, COUNT_SOURCE_ID)))
-        return
-
-
-    if text == "/전체유저" or text.startswith("/전체유저 "):
-        users_output = all_registered_users_text()
-        reply_many(event.reply_token, split_text_messages(users_output, max_chars=4500, max_messages=5))
-        return
-
-
-    if False and text == "/유저동기화":
-        inserted, updated = sync_users_from_history()
-        reply(
-            event.reply_token,
-            f"🔄 유저 동기화 완료\n\n추가: {inserted}명\n갱신: {updated}건"
-        )
-        return
-
-    if False and text.startswith("/유저검색ID "):
-        target_user_id = text.replace("/유저검색ID", "", 1).strip()
-        user = get_user_by_id(target_user_id)
-
-        if not user:
-            reply(event.reply_token, f"USER_ID를 찾지 못했습니다.\n{target_user_id}")
-            return
-
-        active_label = "활성" if user["is_active"] else "퇴장처리됨"
-        reply(
-            event.reply_token,
-            f"🔎 유저검색ID 결과\n\n닉네임: {user['user_name']}\n상태: {active_label}\nUSER_ID:\n{user['user_id']}"
-        )
-        return
-
-    if False and text.startswith("/미션확인 "):
-        keyword = text.replace("/미션확인", "", 1).strip()
-        matches = find_users(keyword, limit=5)
-
-        if not matches:
-            reply(event.reply_token, f"대상을 찾을 수 없습니다.\n검색어: {keyword}\n\n/유저동기화 후 다시 시도해보세요.")
-            return
-
-        if len(matches) > 1:
-            lines = [f"검색 결과가 여러 명입니다: {keyword}", ""]
-            for i, row in enumerate(matches, 1):
-                active_label = "활성" if row["is_active"] else "퇴장처리됨"
-                lines.append(f"{i}. {row['user_name']} / {active_label}\n   USER_ID: {row['user_id']}")
-            reply(event.reply_token, "\n".join(lines))
-            return
-
-        target = matches[0]
-        count, missions = mission_status(date_str, COUNT_SOURCE_ID, target["user_id"])
-
-        lines = [
-            f"🎯 {target['user_name']} 미션 확인",
-            f"오늘 마디수: {count}",
-            "",
-        ]
-
-        for mission in missions:
-            mark = "✅" if mission["done"] else "❌"
-            received = " / 수령완료" if mission["received"] else ""
-            lines.append(f"{mark} {mission['required']}마디 +{coin_text(mission['reward'])}{received}")
-
-        reply(event.reply_token, "\n".join(lines))
-        return
-
-
-    if text.startswith("/유저검색"):
-        keyword = text.replace("/유저검색", "", 1).strip()
-        if not keyword:
-            reply(event.reply_token, "사용법\n\n/유저검색 닉네임")
-            return
-        reply(event.reply_token, admin_user_detail_text(keyword))
-        return
-
-    if text == "/주간랭킹":
-        week_start, week_end = week_range_for_today()
-        rows = weekly_ranking_rows(COUNT_SOURCE_ID, week_start, week_end, limit=10)
-
-        if not rows:
-            reply(event.reply_token, "이번 주 랭킹 데이터가 없습니다.")
-            return
-
-        lines = [
-            "🏆 이번 주 마디수 랭킹",
-            f"기간: {week_start} ~ {week_end}",
-            "",
-        ]
-
-        for i, row in enumerate(rows, 1):
-            reward = weekly_reward_amount(i)
-            lines.append(
-                f"{i}. {row['user_name']} - {row['total_count']}마디 "
-                f"/ 보상 {coin_text(reward)}"
-            )
-
-        reply(event.reply_token, "\n".join(lines))
-        return
-
-    if text == "/주간초기화":
-        week_start, week_end = week_range_for_today()
-
-        conn = db()
-        cur = conn.cursor()
-        cur.execute("""
-        DELETE FROM weekly_rewards
-        WHERE week_start = ?
-          AND week_end = ?
-        """, (week_start, week_end))
-        deleted = cur.rowcount
-        conn.commit()
-        conn.close()
-
-        reply(
-            event.reply_token,
-            f"🔄 이번 주 정산 초기화 완료\n\n삭제: {deleted}건\n기간: {week_start} ~ {week_end}"
-        )
-        return
-
-    if False and text == "/주간초기화 전체":
-        conn = db()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM weekly_rewards")
-        deleted = cur.rowcount
-        conn.commit()
-        conn.close()
-
-        reply(
-            event.reply_token,
-            f"⚠️ 전체 주간보상 이력 삭제 완료\n\n삭제: {deleted}건"
-        )
-        return
-
-    if text == "/주간정산":
-        reply_many(event.reply_token, split_text_messages(weekly_settlement_text(COUNT_SOURCE_ID)))
+        if is_private_chat(event):
+            reply_many(event.reply_token, split_text_messages(reroll_manitto(user_id, user_name)))
+        else:
+            reply(event.reply_token, "🎭 마니또 변경은 꽃봇 1:1 채팅에서만 가능합니다.")
         return
 
 
