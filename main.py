@@ -59,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v55-private-chat-detect-fix"
+BOT_VERSION = "active-id-v56-mission500-chatter-achievements"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -916,7 +916,7 @@ def user_guide_text():
 /미션
 /미션수령
 
-100 / 200 / 300마디 달성 시 코인 지급
+100 / 200 / 300 / 500마디 달성 시 코인 지급
 
 ━━━━━━━━━━
 🎰 가챠 시스템
@@ -1162,6 +1162,7 @@ S.N.S에서는
 200마디 → 0.1코인
 
 300마디 → 0.1코인
+500마디 → 0.2코인
 
 ──────
 
@@ -1256,6 +1257,12 @@ S.N.S에서는
 ✅ 채팅 잭팟
 
 ✅ 이벤트 참여
+
+✅ 💬 수다왕
+하루 500마디 달성
+
+✅ 👑 수다황제
+7일 연속 500마디 이상 달성
 
 ━━━━━━━━━━━━━━
 🎰 채팅 잭팟
@@ -2504,6 +2511,7 @@ MISSION_REWARDS = [
     ("daily_100", 100, 1),  # 100마디 = 0.1코인
     ("daily_200", 200, 1),  # 200마디 = 0.1코인
     ("daily_300", 300, 1),  # 300마디 = 0.1코인
+    ("daily_500", 500, 2),  # 500마디 = 0.2코인
 ]
 
 
@@ -4292,6 +4300,8 @@ ACHIEVEMENT_CATALOG = [
     ("first_pinball", "🎱 첫 핀볼", "S.N.S 핀볼 첫 참여", 2),
     ("bounty_complete", "🎯 첫 현상금", "현상금을 처음 완료", 5),
     ("first_manitto", "🎭 첫 마니또", "마니또를 처음 성공", 5),
+    ("daily_500_chatter", "💬 수다왕", "하루 500마디 달성", 10),
+    ("weekly_500_emperor", "👑 수다황제", "7일 연속 500마디 이상 달성", 50),
 ]
 
 
@@ -4358,6 +4368,82 @@ def achievement_status_text(user_id, user_name):
 
     return "\n".join(lines)
 
+
+
+
+def count_500_madi_streak(user_id, date_str, source_id):
+    """
+    date_str 기준 오늘 포함 연속 500마디 이상 달성일 계산.
+    counts 테이블의 일자별 마디수를 기준으로 합니다.
+    """
+    try:
+        base = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except Exception:
+        base = datetime.now(KST).date()
+
+    conn = db()
+    cur = conn.cursor()
+
+    streak = 0
+    day = base
+
+    while True:
+        d = day.strftime("%Y-%m-%d")
+        cur.execute("""
+        SELECT COALESCE(count, 0) AS count
+        FROM counts
+        WHERE date = ?
+          AND source_id = ?
+          AND user_id = ?
+        """, (d, source_id, user_id))
+        row = cur.fetchone()
+
+        if row and int(row["count"] or 0) >= 500:
+            streak += 1
+            day -= timedelta(days=1)
+        else:
+            break
+
+    conn.close()
+    return streak
+
+
+def check_chatter_achievements(date_str, source_id, user_id, user_name):
+    """
+    마디수 기반 업적 자동 지급.
+    - 💬 수다왕: 하루 500마디 달성, 최초 1회, 1코인
+    - 👑 수다황제: 7일 연속 500마디 이상, 최초 1회, 5코인
+    """
+    if source_id != COUNT_SOURCE_ID:
+        return []
+
+    current_count = get_user_count(date_str, source_id, user_id)
+    granted = []
+
+    if current_count >= 500:
+        if grant_achievement_once(
+            user_id,
+            user_name,
+            "daily_500_chatter",
+            "💬 수다왕",
+            10,
+            f"date={date_str};count={current_count}"
+        ):
+            granted.append("💬 수다왕")
+
+        streak = count_500_madi_streak(user_id, date_str, source_id)
+        if streak >= 7:
+            if grant_achievement_once(
+                user_id,
+                user_name,
+                "weekly_500_emperor",
+                "👑 수다황제",
+                50,
+                f"date={date_str};streak={streak};count={current_count}"
+            ):
+                granted.append("👑 수다황제")
+
+    return granted
 
 def grant_blacksmith_if_first(user_id, user_name, piece_key):
     info = PIECE_INFO.get(piece_key)
@@ -6107,6 +6193,7 @@ def handle(event):
             check_hidden_1000_reward(date_str, source_id, user_id, user_name)
             check_hidden_2000_reward(date_str, source_id, user_id, user_name)
             check_daily_chat_jackpot_rewards(date_str, source_id, user_id, user_name)
+            check_chatter_achievements(date_str, source_id, user_id, user_name)
         except Exception as e:
             print("HIDDEN_REWARD_ERROR:", e)
 
