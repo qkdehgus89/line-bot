@@ -59,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v47-private-chat-reply-fix"
+BOT_VERSION = "active-id-v48-manitto-private-only-reply"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -4782,21 +4782,11 @@ def get_affinity_score(user_id_1, user_id_2, week_start=None):
 
 
 def push_private_message(user_id, text_value):
-    """
-    그룹/공개방에서 개인 메시지로 보낼 때 사용합니다.
-    긴 메시지는 LINE 제한에 걸리지 않도록 최대 5개로 분할 전송합니다.
-    """
     try:
         from linebot.v3.messaging import PushMessageRequest, TextMessage
-
-        chunks = split_text_messages(str(text_value or ""), max_chars=4500, max_messages=5)
-        messages = [TextMessage(text=chunk[:4900]) for chunk in chunks if str(chunk).strip()]
-        if not messages:
-            messages = [TextMessage(text="내용이 없습니다.")]
-
         with ApiClient(config) as client:
             api = MessagingApi(client)
-            api.push_message(PushMessageRequest(to=user_id, messages=messages[:5]))
+            api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=text_value)]))
         return True
     except Exception as e:
         print("PRIVATE_PUSH_ERROR:", e)
@@ -4871,32 +4861,48 @@ def manitto_private_text(row):
     )
 
 
-def send_manitto_dm(event, user_id, user_name):
+def send_manitto_reply(event, user_id, user_name):
     """
-    /마니또 처리.
-    - 봇 1:1 채팅에서는 push가 아니라 reply로 바로 출력합니다.
-    - 공개방에서는 DM push 후 공개방에는 안내 문구만 출력합니다.
+    /마니또 처리 재작업.
+
+    안정성 우선 정책:
+    - 꽃봇 1:1 채팅에서는 push_message를 사용하지 않고 reply로 바로 출력합니다.
+    - 공개방/그룹/룸에서는 대상 보호를 위해 마니또 정보를 공개하지 않습니다.
+    - 공개방에서 별도 DM push도 시도하지 않습니다.
+      LINE push 실패/친구추가 오판 문제가 반복되어, 사용자가 직접 1:1로 와서 조회하게 합니다.
     """
+    if not user_id:
+        reply(
+            event.reply_token,
+            "🎭 마니또 조회 실패\n\n"
+            "USER_ID를 확인할 수 없습니다.\n"
+            "꽃봇을 친구추가한 뒤 1:1 채팅에서 다시 /마니또 를 입력해주세요."
+        )
+        return
+
+    if not is_private_chat(event):
+        reply(
+            event.reply_token,
+            "🎭 마니또는 꽃봇 1:1 채팅에서만 확인할 수 있습니다.\n\n"
+            "대상 보호를 위해 공개방에는 마니또 정보를 표시하지 않습니다.\n"
+            "꽃봇과 1:1 채팅에서 /마니또 를 입력해주세요."
+        )
+        return
+
+    row, err = ensure_weekly_manitto(user_id, user_name)
+    if err:
+        reply(event.reply_token, err)
+        return
+
+    reply_many(event.reply_token, split_text_messages(manitto_private_text(row)))
+
+
+# 구버전 호환용: 다른 곳에서 호출되면 push 없이 텍스트만 반환합니다.
+def send_manitto_dm(user_id, user_name):
     row, err = ensure_weekly_manitto(user_id, user_name)
     if err:
         return err
-
-    text_value = manitto_private_text(row)
-
-    if is_private_chat(event):
-        reply_many(event.reply_token, split_text_messages(text_value))
-        return None
-
-    ok = push_private_message(user_id, text_value)
-    if ok:
-        return "🎭 마니또 정보를 개인 메시지로 보내드렸습니다."
-
-    return (
-        "🎭 개인 메시지 전송에 실패했습니다.\n\n"
-        "꽃봇을 친구추가한 뒤 다시 /마니또 를 입력해주세요.\n"
-        "대상 보호를 위해 공방에는 마니또 정보를 공개하지 않습니다."
-    )
-
+    return manitto_private_text(row)
 
 def complete_manitto_if_ready(hunter_user_id, hunter_user_name, other_user_id):
     week_start, week_end = event_week_key()
@@ -6031,9 +6037,7 @@ def handle(event):
         return
 
     if text in ["/마니또", "/마니또확인"]:
-        result = send_manitto_dm(event, user_id, user_name)
-        if result:
-            reply(event.reply_token, result)
+        send_manitto_reply(event, user_id, user_name)
         return
 
     if text in ["/가챠횟수", "/가챠사용횟수"]:
