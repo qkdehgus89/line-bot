@@ -139,6 +139,7 @@ def is_operator_command(text):
         "/주간초기화",
         "/럭키드로우정산",
         "/칭호목록",
+        "/경고",
     }
 
     prefix_commands = [
@@ -596,6 +597,8 @@ def init_db():
         reward INTEGER,
         manitto_type TEXT NOT NULL DEFAULT 'normal',
         completed INTEGER NOT NULL DEFAULT 0,
+        reroll_count INTEGER NOT NULL DEFAULT 0,
+        reroll_history TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         completed_at TEXT,
@@ -646,6 +649,16 @@ def init_db():
     ]:
         if col not in purchase_cols:
             cur.execute(f"ALTER TABLE purchases ADD COLUMN {col} {col_type}")
+
+    cur.execute("PRAGMA table_info(manitto_assignments)")
+    manitto_cols = {row["name"] for row in cur.fetchall()}
+
+    for col, col_type, default_value in [
+        ("reroll_count", "INTEGER", "0"),
+        ("reroll_history", "TEXT", "NULL"),
+    ]:
+        if col not in manitto_cols:
+            cur.execute(f"ALTER TABLE manitto_assignments ADD COLUMN {col} {col_type} DEFAULT {default_value}")
 
 
     # 기존 정수 코인 DB를 0.1 단위 포인트 시스템으로 1회 변환
@@ -956,6 +969,7 @@ def user_guide_text():
 
 확인
 /마니또
+/마니또변경
 
 주간 랜덤 배정
 성공 시 💰1.5~7.5코인 지급
@@ -1871,6 +1885,43 @@ def warning_list(date_str, source_id):
         if row["count"] < WARNING_LIMIT:
             result.append(row)
     return result
+
+
+def warning_text(date_str, source_id):
+    rows = warning_list(date_str, source_id)
+    rows = sorted(rows, key=lambda r: (int(r["count"] or 0), str(r["user_name"])))
+
+    lines = [
+        "⚠️ 오늘의 경고 대상",
+        "",
+        "기준",
+        f"📌 {WARNING_LIMIT}마디 미만",
+        "",
+        "━━━━━━━━━━",
+    ]
+
+    if not rows:
+        return (
+            "✅ 오늘의 경고 대상이 없습니다.\n\n"
+            "기준\n"
+            f"📌 {WARNING_LIMIT}마디 미만\n\n"
+            "현재 모든 인원이 기준을 충족했습니다."
+        )
+
+    for row in rows:
+        lines.append(f"{row['user_name']} - {row['count']}마디")
+
+    lines += [
+        "━━━━━━━━━━",
+        "",
+        f"총 {len(rows)}명",
+        "",
+        "🚨 위험구간",
+        f"{WARNING_LIMIT}마디 미만 인원입니다.",
+        "운영진 확인 대상입니다.",
+    ]
+
+    return "\n".join(lines)
 
 
 # =========================
@@ -4664,6 +4715,7 @@ MANITTO_REQUIRED_SCORE = 30
 MANITTO_REWARD_MIN = 15   # 1.5코인
 MANITTO_REWARD_MAX = 75   # 7.5코인
 MANITTO_TARGET_MAX_WEEKLY_ASSIGNED = 2  # 이번 주 같은 타겟 최대 배정 횟수
+MANITTO_REROLL_LIMIT = 2  # 주간 마니또 변경 가능 횟수
 GOLDEN_MANITTO_RATE = 5  # 5%
 
 
@@ -4678,15 +4730,20 @@ def pair_key(user_id_1, user_id_2):
     return tuple(sorted([user_id_1, user_id_2]))
 
 
-def manitto_target_candidates(exclude_user_id):
+def manitto_target_candidates(exclude_user_id, extra_exclude_user_ids=None):
     """
     마니또 타겟 선정 방식
     - 활성 유저 전체 대상
     - 본인 제외
-    - 이번 주 이미 타겟으로 2회 이상 배정된 사람 제외
-    - 기존 5코인 이상 보유 조건 제거
+    - 현재 타겟/최근 변경 타겟 제외 가능
+    - 이번 주 같은 타겟으로 2회 이상 배정된 사람 제외
+    - 5코인 이상 보유 조건 없음
     """
     week_start, _ = event_week_key()
+    excluded = {str(exclude_user_id)}
+    for value in (extra_exclude_user_ids or []):
+        if value:
+            excluded.add(str(value))
 
     conn = db()
     cur = conn.cursor()
@@ -4709,15 +4766,17 @@ def manitto_target_candidates(exclude_user_id):
     WHERE COALESCE(u.is_active, 1) = 1
       AND u.user_id IS NOT NULL
       AND u.user_id != ''
-      AND u.user_id != ?
       AND COALESCE(t.assigned_count, 0) < ?
     ORDER BY RANDOM()
-    LIMIT 1
-    """, (week_start, exclude_user_id, MANITTO_TARGET_MAX_WEEKLY_ASSIGNED))
-    row = cur.fetchone()
+    """, (week_start, MANITTO_TARGET_MAX_WEEKLY_ASSIGNED))
+    rows = cur.fetchall()
     conn.close()
-    return row
 
+    for row in rows:
+        if str(row["user_id"]) not in excluded:
+            return row
+
+    return None
 
 def ensure_weekly_manitto(user_id, user_name):
     week_start, week_end = event_week_key()
@@ -4844,11 +4903,20 @@ def shop_private_guide_text():
     )
 
 
+def row_value(row, key, default=None):
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+
 def manitto_private_text(row):
     title = "🌈 황금 마니또" if row["manitto_type"] == "golden" else "🎭 S.N.S 마니또"
     score = get_affinity_score(row["hunter_user_id"], row["target_user_id"], row["week_start"])
     status = "완료" if row["completed"] else "진행중"
     reward_text = coin_text(row["reward"]) if row["reward"] else f"{coin_text(row['reward_min'])} ~ {coin_text(row['reward_max'])} 랜덤"
+    reroll_count = int(row_value(row, "reroll_count", 0) or 0)
+    remain_reroll = max(0, MANITTO_REROLL_LIMIT - reroll_count)
     return (
         f"{title}\n\n"
         f"이번 주 대상\n{row['target_user_name']}\n\n"
@@ -4856,10 +4924,101 @@ def manitto_private_text(row):
         f"현재 친밀도\n{score} / {row['required_score']}\n\n"
         f"성공 보상\n{reward_text}\n\n"
         f"상태\n{status}\n\n"
+        f"남은 변경\n{remain_reroll} / {MANITTO_REROLL_LIMIT}\n\n"
+        "변경 명령어\n/마니또변경\n\n"
         "※ 마니또 대상은 본인에게만 공개됩니다.\n"
+        "※ 변경은 주당 최대 2회, 완료 전까지만 가능합니다.\n"
         "※ 같은 사람 연속 발화, 3분 초과 응답, 30초 내 반복 대화는 제외됩니다."
     )
 
+
+def reroll_weekly_manitto(user_id, user_name):
+    """
+    /마니또변경
+    - 꽃봇 1:1에서만 사용
+    - 주당 2회까지 가능
+    - 완료된 마니또는 변경 불가
+    - 현재 대상 및 이번 주 변경 이력 대상은 제외
+    - 5코인 이상 조건 없음
+    """
+    week_start, week_end = event_week_key()
+
+    row, err = ensure_weekly_manitto(user_id, user_name)
+    if err:
+        return False, err
+
+    if int(row["completed"] or 0) == 1:
+        return False, "❌ 완료된 마니또는 변경할 수 없습니다."
+
+    reroll_count = int(row_value(row, "reroll_count", 0) or 0)
+    if reroll_count >= MANITTO_REROLL_LIMIT:
+        return False, (
+            "❌ 이번 주 변경 횟수를 모두 사용했습니다.\n\n"
+            f"사용 횟수\n{reroll_count} / {MANITTO_REROLL_LIMIT}"
+        )
+
+    history_raw = str(row_value(row, "reroll_history", "") or "")
+    history_ids = [x for x in history_raw.split(",") if x]
+    exclude_ids = [row["target_user_id"]] + history_ids
+
+    target = manitto_target_candidates(user_id, extra_exclude_user_ids=exclude_ids)
+    if not target:
+        return False, "마니또 변경 대상을 찾을 수 없습니다. 활성 유저가 부족하거나 이번 주 배정 제한에 걸렸습니다."
+
+    old_target_name = row["target_user_name"]
+    new_history = ",".join((history_ids + [row["target_user_id"]])[-5:])
+    new_count = reroll_count + 1
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    UPDATE manitto_assignments
+    SET target_user_id = ?,
+        target_user_name = ?,
+        reroll_count = ?,
+        reroll_history = ?,
+        updated_at = ?
+    WHERE week_start = ?
+      AND hunter_user_id = ?
+    """, (
+        target["user_id"],
+        target["user_name"],
+        new_count,
+        new_history,
+        now_str(),
+        week_start,
+        user_id,
+    ))
+    conn.commit()
+    conn.close()
+
+    return True, (
+        "🎭 마니또 변경 완료\n\n"
+        "기존 대상\n"
+        f"{old_target_name}\n\n"
+        "⬇️\n\n"
+        "새로운 대상\n"
+        f"{target['user_name']}\n\n"
+        "남은 변경 횟수\n"
+        f"{max(0, MANITTO_REROLL_LIMIT - new_count)} / {MANITTO_REROLL_LIMIT}"
+    )
+
+
+def send_manitto_reroll_reply(event, user_id, user_name):
+    if not user_id:
+        reply(event.reply_token, "🎭 마니또 변경 실패\n\nUSER_ID를 확인할 수 없습니다.")
+        return
+
+    if not is_private_chat(event):
+        reply(
+            event.reply_token,
+            "🎭 마니또 변경은 꽃봇 1:1 채팅에서만 사용할 수 있습니다.\n\n"
+            "꽃봇과 1:1 채팅에서 /마니또변경 을 입력해주세요."
+        )
+        return
+
+    ok, msg = reroll_weekly_manitto(user_id, user_name)
+    reply_many(event.reply_token, split_text_messages(msg))
 
 def send_manitto_reply(event, user_id, user_name):
     """
@@ -5892,6 +6051,7 @@ def handle(event):
 /내정보
 
 /마니또
+/마니또변경
 /행운포인트
 
 /가챠 하
@@ -6038,6 +6198,10 @@ def handle(event):
 
     if text in ["/마니또", "/마니또확인"]:
         send_manitto_reply(event, user_id, user_name)
+        return
+
+    if text == "/마니또변경":
+        send_manitto_reroll_reply(event, user_id, user_name)
         return
 
     if text in ["/가챠횟수", "/가챠사용횟수"]:
@@ -6383,6 +6547,7 @@ def handle(event):
 /방정보
 /상태확인
 /DB상태
+/경고
 
 👥 유저관리
 /전체유저
@@ -6542,38 +6707,11 @@ def handle(event):
         )
         return
 
-    if False and text.startswith("/경고"):
+    if text == "/경고" or text.startswith("/경고 "):
         target_date = parse_date(text)
-        rows = warning_list(target_date, COUNT_SOURCE_ID)
-
-        lines = [
-            "🚨 경고 대상",
-            f"날짜: {target_date}",
-            f"남자 기준: {MALE_LIMIT} 미만",
-            f"여자 기준: {FEMALE_LIMIT} 미만",
-            "",
-        ]
-
-        if not rows:
-            lines.append("경고 대상 없음")
-        else:
-            for i, row in enumerate(rows, 1):
-                gender = row["gender"]
-                if gender == "male":
-                    limit = MALE_LIMIT
-                elif gender == "female":
-                    limit = FEMALE_LIMIT
-                else:
-                    limit = "성별 미설정"
-
-                lines.append(
-                    f"{i}. {gender_icon(gender)} "
-                    f"{row['user_name']} - {row['count']} "
-                    f"/ 기준 {limit}"
-                )
-
-        reply(event.reply_token, "\n".join(lines))
+        reply_many(event.reply_token, split_text_messages(warning_text(target_date, COUNT_SOURCE_ID)))
         return
+
 
     if text == "/전체유저" or text.startswith("/전체유저 "):
         users_output = all_registered_users_text()
