@@ -60,7 +60,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v59-missing-function-fix"
+BOT_VERSION = "active-id-v60-manitto-affinity-command-fix"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -5208,6 +5208,208 @@ def grant_jagiya_achievement_if_ready(user_id_1, user_name_1, user_id_2, user_na
     return None
 
 
+
+
+# =========================
+# 마니또/친밀도 활성화 보정
+# =========================
+def affinity_status_text(user_id, user_name):
+    week_start, week_end = event_week_key()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT user_a, user_b, user_a_name, user_b_name, score
+    FROM affinity_scores
+    WHERE week_start = ? AND (user_a = ? OR user_b = ?)
+    ORDER BY score DESC, updated_at DESC
+    LIMIT 10
+    """, (week_start, user_id, user_id))
+    rows = cur.fetchall()
+    conn.close()
+
+    lines = ["💞 이번 주 친밀도", f"기간: {week_start} ~ {week_end}", ""]
+    if not rows:
+        lines.append("이번 주 친밀도 기록이 없습니다.")
+    else:
+        for i, row in enumerate(rows, 1):
+            other_name = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
+            lines.append(f"{i}. {other_name} - {row['score']}")
+
+    lines += ["", "누적 친밀도 확인: /누적친밀도"]
+    return "\n".join(lines)
+
+
+def cumulative_affinity_status_text(user_id, user_name):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT user_a, user_b, user_a_name, user_b_name, total_score, updated_at
+    FROM affinity_cumulative_scores
+    WHERE user_a = ? OR user_b = ?
+    ORDER BY total_score DESC, updated_at DESC
+    LIMIT 20
+    """, (user_id, user_id))
+    rows = cur.fetchall()
+    conn.close()
+
+    lines = ["🌱 누적 친밀도", f"대상: {user_name}", ""]
+    if not rows:
+        lines.append("누적 친밀도 기록이 없습니다.")
+    else:
+        for i, row in enumerate(rows, 1):
+            other_name = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
+            total = int(row["total_score"] or 0)
+            mark = " 💕" if total >= AFFINITY_CUMULATIVE_JAGIYA_SCORE else ""
+            lines.append(f"{i}. {other_name} - {total}{mark}")
+
+    lines += [
+        "",
+        "💕 자기야 업적",
+        f"상대와 누적 친밀도 {AFFINITY_CUMULATIVE_JAGIYA_SCORE} 달성 시",
+        f"각 {coin_text(AFFINITY_CUMULATIVE_JAGIYA_REWARD)} 지급",
+    ]
+    return "\n".join(lines)
+
+
+def manitto_status_text_from_row(row, user_id):
+    progress = get_affinity_score(user_id, row["target_user_id"], row["week_start"])
+    completed = int(row["completed"] or 0) == 1
+    status = "완료" if completed else "진행중"
+    reroll_count = int(row["reroll_count"] or 0) if "reroll_count" in row.keys() else 0
+    reward = int(row["reward"] or 0) if "reward" in row.keys() else 0
+    if reward <= 0:
+        reward = random.randint(int(row["reward_min"] or MANITTO_REWARD_MIN), int(row["reward_max"] or MANITTO_REWARD_MAX))
+    return (
+        "🎭 이번 주 마니또\n\n"
+        f"대상: {row['target_user_name']}\n"
+        f"상태: {status}\n"
+        f"진행도: {progress} / {row['required_score']}\n"
+        f"보상: {coin_text(reward)}\n\n"
+        f"남은 변경: {max(0, MANITTO_REROLL_LIMIT - reroll_count)} / {MANITTO_REROLL_LIMIT}\n"
+        "변경: /마니또변경"
+    )
+
+
+def send_manitto_reply(event, user_id, user_name):
+    row, err = ensure_weekly_manitto(user_id, user_name)
+    if err:
+        msg = err
+    else:
+        msg = manitto_status_text_from_row(row, user_id)
+
+    if is_private_chat(event):
+        reply_many(event.reply_token, split_text_messages(msg))
+    else:
+        reply(event.reply_token, "🎭 마니또는 꽃봇 1:1 채팅에서 확인해주세요.\n\n개인정보 보호를 위해 공개방에는 표시하지 않습니다.")
+
+
+def send_manitto_reroll_reply(event, user_id, user_name):
+    if not is_private_chat(event):
+        reply(event.reply_token, "🎭 마니또 변경은 꽃봇 1:1 채팅에서만 가능합니다.")
+        return
+
+    row, err = ensure_weekly_manitto(user_id, user_name)
+    if err:
+        reply(event.reply_token, err)
+        return
+    if int(row["completed"] or 0) == 1:
+        reply(event.reply_token, "❌ 완료된 마니또는 변경할 수 없습니다.")
+        return
+
+    reroll_count = int(row["reroll_count"] or 0) if "reroll_count" in row.keys() else 0
+    if reroll_count >= MANITTO_REROLL_LIMIT:
+        reply(event.reply_token, f"❌ 이번 주 변경 횟수를 모두 사용했습니다.\n\n사용 횟수: {reroll_count} / {MANITTO_REROLL_LIMIT}")
+        return
+
+    exclude = {user_id, row["target_user_id"]}
+    history = row["reroll_history"] if "reroll_history" in row.keys() else None
+    if history:
+        exclude.update(x for x in str(history).split(',') if x)
+
+    target = manitto_target_candidates(user_id, exclude)
+    if not target:
+        target = manitto_target_candidates(user_id, {user_id, row["target_user_id"]})
+    if not target:
+        reply(event.reply_token, "🎭 변경 가능한 새 대상이 없습니다.")
+        return
+
+    new_history = list(exclude - {user_id})
+    week_start, _ = event_week_key()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    UPDATE manitto_assignments
+    SET target_user_id = ?,
+        target_user_name = ?,
+        reroll_count = COALESCE(reroll_count, 0) + 1,
+        reroll_history = ?,
+        updated_at = ?
+    WHERE week_start = ? AND hunter_user_id = ?
+    """, (target["user_id"], target["user_name"], ",".join(new_history), now_str(), week_start, user_id))
+    conn.commit()
+    conn.close()
+
+    reply(
+        event.reply_token,
+        "🎭 마니또 변경 완료\n\n"
+        f"기존 대상: {row['target_user_name']}\n"
+        f"새로운 대상: {target['user_name']}\n\n"
+        f"남은 변경 횟수: {max(0, MANITTO_REROLL_LIMIT - reroll_count - 1)} / {MANITTO_REROLL_LIMIT}"
+    )
+
+
+def complete_manitto_if_ready(hunter_user_id, hunter_user_name, partner_user_id):
+    week_start, _ = event_week_key()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT * FROM manitto_assignments
+    WHERE week_start = ? AND hunter_user_id = ?
+    """, (week_start, hunter_user_id))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row or int(row["completed"] or 0) == 1:
+        return None
+    if row["target_user_id"] != partner_user_id:
+        return None
+
+    progress = get_affinity_score(hunter_user_id, partner_user_id, week_start)
+    required = int(row["required_score"] or MANITTO_REQUIRED_SCORE)
+    if progress < required:
+        return None
+
+    reward = int(row["reward"] or 0)
+    if reward <= 0:
+        reward = random.randint(int(row["reward_min"] or MANITTO_REWARD_MIN), int(row["reward_max"] or MANITTO_REWARD_MAX))
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    UPDATE manitto_assignments
+    SET completed = 1,
+        reward = ?,
+        completed_at = ?,
+        updated_at = ?
+    WHERE week_start = ? AND hunter_user_id = ? AND completed = 0
+    """, (reward, now_str(), now_str(), week_start, hunter_user_id))
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+    if not changed:
+        return None
+
+    change_money(hunter_user_id, hunter_user_name, reward, f"마니또 성공: {row['target_user_name']}", None, "마니또")
+    grant_achievement_once(hunter_user_id, hunter_user_name, "first_manitto", "🎭 첫 마니또", 5, f"target={row['target_user_name']}")
+
+    return (
+        "🎭 마니또 성공!\n\n"
+        f"{hunter_user_name}님의 마니또 대상\n"
+        f"{row['target_user_name']}님과 친밀도 {progress} 달성\n\n"
+        f"보상: {coin_text(reward)}"
+    )
+
+
 # =========================
 # 족보 / 코인 표시
 # =========================
@@ -5905,7 +6107,7 @@ def handle(event):
     try:
         affinity_msg = process_affinity_message(source_id, user_id, user_name, text)
         if affinity_msg:
-            reply(event.reply_token, affinity_msg)
+            reply_many(event.reply_token, split_text_messages(affinity_msg))
             return
     except Exception as e:
         print("AFFINITY_PROCESS_ERROR:", e)
