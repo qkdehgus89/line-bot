@@ -60,7 +60,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v64-manitto-gold-active-target"
+BOT_VERSION = "active-id-v65-restore-mission-command-blocks"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -987,7 +987,27 @@ def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 �
         )
 
 
-def private_only_notice(feature_name="해당 기능"):
+def private_only_notice(*args):
+    """
+    공개방에서 1:1 전용 기능을 눌렀을 때 안내.
+    호환:
+      private_only_notice("가챠")
+      private_only_notice(event, user_id, text_value, "가챠")
+    """
+    if len(args) >= 4:
+        event, user_id, text_value, feature_name = args[0], args[1], args[2], args[3]
+        ok = push_private_message(user_id, text_value) if user_id else False
+        if ok:
+            reply(event.reply_token, f"📩 {feature_name} 안내를 개인 메시지로 보내드렸습니다.")
+        else:
+            reply(
+                event.reply_token,
+                f"📩 {feature_name} 안내 전송에 실패했습니다.\n\n"
+                "꽃봇을 친구추가한 뒤 다시 입력해주세요."
+            )
+        return None
+
+    feature_name = args[0] if args else "해당 기능"
     return (
         f"📩 {feature_name}은 꽃봇 1:1 채팅에서 이용해주세요.\n\n"
         "공개방에는 개인정보 보호를 위해 자세한 내용을 표시하지 않습니다."
@@ -5171,6 +5191,57 @@ def process_affinity_message(source_id, user_id, user_name, text_value):
 
 
 
+
+# =========================
+# 표시 함수 호환 보정
+# =========================
+def weekly_gacha_count_text(user_id):
+    return gacha_count_status_text(user_id)
+
+
+def gacha_pity_text(user_id, user_name):
+    point = get_gacha_pity_point(user_id)
+    return (
+        "🍀 행운포인트\n\n"
+        f"{user_name}님\n"
+        f"현재 포인트: {point} / 10\n\n"
+        "코인가챠 F등급 획득 시 +1\n"
+        "10포인트 달성 시 1코인 자동 지급"
+    )
+
+
+def gacha_piece_text(user_id):
+    rows = get_all_gacha_pieces(user_id)
+    lines = ["🧩 조각 보유 현황", ""]
+    if not rows:
+        lines.append("보유 중인 조각이 없습니다.")
+    else:
+        piece_map = {row["piece_key"]: row["count"] for row in rows}
+        for key, info in PIECE_INFO.items():
+            count = int(piece_map.get(key, 0) or 0)
+            lines.append(f"{info['label']} {count} / {info['need']}")
+    return "\n".join(lines)
+
+
+def shop_text():
+    rows = list_shop_items()
+    lines = ["🛒 상점", ""]
+    if not rows:
+        lines.append("현재 판매 중인 상품이 없습니다.")
+    else:
+        for row in rows:
+            desc = f"\n{row['description']}" if row["description"] else ""
+            lines.append(f"{row['name']} - {coin_text(row['price'])}{desc}")
+            lines.append("")
+    lines += [
+        "구매 방법",
+        "/구매 상품명",
+        "",
+        "보유 확인",
+        "/내보유",
+    ]
+    return "\n".join(lines)
+
 # =========================
 # 마니또 로직 v64
 # =========================
@@ -6745,6 +6816,126 @@ def handle(event):
             reply(event.reply_token, "취소할 족보 입력이 없습니다.")
         return
 
+    if text in ["/마니또", "/마니또확인"]:
+        send_manitto_reply(event, user_id, user_name)
+        return
+
+    if text == "/마니또변경":
+        if is_private_chat(event):
+            reply_many(event.reply_token, split_text_messages(reroll_manitto(user_id, user_name)))
+        else:
+            reply(event.reply_token, "🎭 마니또 변경은 꽃봇 1:1 채팅에서만 가능합니다.")
+        return
+
+    # =========================
+    # 기본 활동 명령어 복구
+    # =========================
+    if text == "/출석":
+        ok, balance = attendance_check(date_str, user_id, user_name)
+        if ok:
+            streak, streak_paid = check_attendance_streak_reward(date_str, user_id, user_name)
+            extra = ""
+            if streak_paid:
+                paid_lines = [f"{days}일 연속 출석 보상 {coin_text(reward)}" for days, reward in streak_paid]
+                extra = "\n\n🎁 연속출석 보상\n" + "\n".join(paid_lines)
+
+            reply(
+                event.reply_token,
+                f"✅ 출석 완료\n\n"
+                f"{user_name}님\n"
+                f"보상: {coin_text(5)}\n"
+                f"현재 보유: {coin_text(balance)}\n"
+                f"연속 출석: {streak}일"
+                f"{extra}"
+            )
+        else:
+            reply(
+                event.reply_token,
+                f"이미 오늘 출석했습니다.\n\n"
+                f"현재 보유: {coin_text(balance)}"
+            )
+        return
+
+    if text == "/미션":
+        count, missions = mission_status(date_str, COUNT_SOURCE_ID, user_id)
+        lines = [
+            "🎯 오늘의 미션",
+            "",
+            f"현재 마디수: {count}",
+            "",
+        ]
+        for mission in missions:
+            status = "✅ 수령완료" if mission["received"] else ("🎁 수령가능" if mission["done"] else "❌ 진행중")
+            lines.append(f"{status} {mission['required']}마디 → {coin_text(mission['reward'])}")
+
+        lines += ["", "보상 수령", "/미션수령"]
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text == "/미션수령":
+        total_reward, count, claimed_names = claim_missions(date_str, COUNT_SOURCE_ID, user_id, user_name)
+        if total_reward <= 0:
+            reply(
+                event.reply_token,
+                "수령 가능한 미션 보상이 없습니다.\n\n"
+                f"현재 마디수: {count}\n"
+                "확인: /미션"
+            )
+        else:
+            reply(
+                event.reply_token,
+                "🎉 미션 보상 수령 완료\n\n"
+                f"달성 미션: {', '.join(claimed_names)}\n"
+                f"지급: {coin_text(total_reward)}\n"
+                f"현재 보유: {coin_text(get_balance(user_id))}"
+            )
+        return
+
+    if text in ["/친밀도", "/내친밀도"]:
+        reply_many(event.reply_token, split_text_messages(affinity_status_text(user_id, user_name)))
+        return
+
+    if text in ["/누적친밀도", "/누적친밀도확인"]:
+        push_or_reply_private_info(
+            event,
+            user_id,
+            cumulative_affinity_status_text(user_id, user_name),
+            "📩 누적 친밀도를 개인 메시지로 보내드렸습니다."
+        )
+        return
+
+    if text == "/코인순위":
+        rows = currency_ranking(limit=10)
+        if not rows:
+            reply(event.reply_token, "💰 코인 순위가 없습니다.")
+            return
+
+        lines = ["💰 코인 순위", ""]
+        for i, row in enumerate(rows, 1):
+            medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+            lines.append(f"{medal} {row['user_name']} - {coin_text(row['balance'])}")
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text == "/주간랭킹":
+        week_start, week_end = week_range_for_today()
+        rows = weekly_ranking_rows(COUNT_SOURCE_ID, week_start, week_end, limit=10)
+        if not rows:
+            reply(event.reply_token, f"🏆 이번 주 랭킹이 없습니다.\n기간: {week_start} ~ {week_end}")
+            return
+
+        lines = ["🏆 이번 주 마디수 랭킹", f"기간: {week_start} ~ {week_end}", ""]
+        for i, row in enumerate(rows, 1):
+            reward = weekly_reward_amount(i)
+            reward_text = f" / 보상 {coin_text(reward)}" if reward > 0 else ""
+            lines.append(f"{i}. {row['user_name']} - {row['total_count']}마디{reward_text}")
+        reply(event.reply_token, "\n".join(lines))
+        return
+
+    if text == "/럭키드로우결과":
+        reply(event.reply_token, lucky_draw_result_text())
+        return
+
     private_gacha_commands = (
         text == "/가챠시스템"
         or text.startswith("/가챠타입")
@@ -6784,20 +6975,30 @@ def handle(event):
             private_only_notice(event, user_id, shop_private_guide_text(), "상점")
             return
         if private_lucky_commands:
-            if text == "/럭키드로우결과":
-                reply(event.reply_token, lucky_draw_result_text())
-            else:
-                private_only_notice(
-                    event,
-                    user_id,
-                    "🎟️ S.N.S 럭키드로우는 봇 개인채팅에서만 구매 가능합니다.\n\n"
-                    "구매: /럭키드로우구매\n"
-                    "결과: /럭키드로우결과\n"
-                    "가격: 1코인\n"
-                    "추첨/발표: 매주 토요일 21:00 자동",
-                    "럭키드로우"
-                )
+            private_only_notice(
+                event,
+                user_id,
+                "🎟️ S.N.S 럭키드로우는 꽃봇 1:1 채팅에서만 구매 가능합니다.\n\n"
+                "구매: /럭키드로우구매\n"
+                "결과: /럭키드로우결과\n"
+                "가격: 1코인\n"
+                "추첨/발표: 매주 토요일 21:00 자동",
+                "럭키드로우"
+            )
             return
+
+
+    # =========================
+    # 1:1 전용 명령어 처리
+    # =========================
+    if text.startswith("/가챠 "):
+        parts = text.split(maxsplit=1)
+        tier = parts[1].strip() if len(parts) > 1 else ""
+        success, message = run_gacha(user_id, user_name, tier)
+        if success:
+            grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, tier)
+        reply_many(event.reply_token, split_text_messages(message))
+        return
 
     if text == "/가챠시스템":
         push_or_reply_private_info(event, user_id, gacha_system_text(), "📩 가챠 시스템 안내를 개인 메시지로 보내드렸습니다.")
@@ -6808,15 +7009,79 @@ def handle(event):
             event,
             user_id,
             "📊 코인가챠 확률 안내\n\n"
-            "하급/중급/상급 모두 기본 구조는 다음과 같습니다.\n\n"
-            "손해 구간: 약 40%\n"
-            "본전 구간: 약 30%\n"
-            "이득 구간: 약 30%\n\n"
-            "※ 등급별 실제 보상은 /가챠시스템 에서 확인할 수 있습니다.",
+            "코인가챠는 손해 확률 50.1% 기준으로 조정되어 있습니다.\n\n"
+            "상급 최고 보상은 25코인입니다.\n"
+            "자세한 보상 구조는 /가챠시스템 에서 확인해주세요.",
             "📩 코인가챠 확률 안내를 개인 메시지로 보내드렸습니다."
         )
         return
 
+    if text.startswith("/가챠타입"):
+        parts = text.split()
+        if len(parts) == 1:
+            current_type = get_gacha_type(user_id)
+            reply(event.reply_token, f"🎰 현재 가챠타입\n\n{GACHA_TYPE_LABELS.get(current_type, current_type)}")
+            return
+
+        requested = parts[1].strip()
+        mapping = {"코인": "coin", "조각": "piece", "랜덤": "random"}
+        if requested not in mapping:
+            reply(event.reply_token, "가챠타입은 코인/조각/랜덤 중 하나로 설정해주세요.\n\n예: /가챠타입 랜덤")
+            return
+
+        set_gacha_type(user_id, user_name, mapping[requested])
+        reply(event.reply_token, f"🎰 가챠타입 변경 완료\n\n{GACHA_TYPE_LABELS[mapping[requested]]}")
+        return
+
+    if text == "/가챠횟수":
+        reply(event.reply_token, weekly_gacha_count_text(user_id))
+        return
+
+    if text in ["/행운포인트", "/가챠포인트"]:
+        reply(event.reply_token, gacha_pity_text(user_id, user_name))
+        return
+
+    if text in ["/조각", "/조각보유"]:
+        reply_many(event.reply_token, split_text_messages(gacha_piece_text(user_id)))
+        return
+
+    if text == "/상점":
+        reply_many(event.reply_token, split_text_messages(shop_text()))
+        return
+
+    if text.startswith("/구매 "):
+        item_name = text.replace("/구매", "", 1).strip()
+        ok, msg = buy_item(user_id, user_name, item_name)
+        reply_many(event.reply_token, split_text_messages(msg))
+        return
+
+    if text == "/내보유":
+        reply_many(event.reply_token, split_text_messages(user_purchases_text(user_id, "all")))
+        return
+
+    if text == "/내보유 미사용":
+        reply_many(event.reply_token, split_text_messages(user_purchases_text(user_id, "owned")))
+        return
+
+    if text == "/내보유 사용":
+        reply_many(event.reply_token, split_text_messages(user_purchases_text(user_id, "used")))
+        return
+
+    if text.startswith("/사용 "):
+        arg = text.replace("/사용", "", 1).strip()
+        try:
+            purchase_id = int(arg.split()[0])
+        except Exception:
+            reply(event.reply_token, "사용할 구매번호를 입력해주세요.\n\n예: /사용 12")
+            return
+        ok, msg = use_purchase(purchase_id, user_id, user_name)
+        reply_many(event.reply_token, split_text_messages(msg))
+        return
+
+    if text == "/럭키드로우구매":
+        ok, msg = buy_lucky_draw_ticket(user_id, user_name)
+        reply_many(event.reply_token, split_text_messages(msg))
+        return
 
     if text == "/업적":
         push_or_reply_private_info(
@@ -6826,19 +7091,6 @@ def handle(event):
             "📩 업적 현황을 개인 메시지로 보내드렸습니다."
         )
         return
-
-    if text in ["/마니또", "/마니또확인"]:
-        send_manitto_reply(event, user_id, user_name)
-        return
-
-    if text == "/마니또변경":
-        if is_private_chat(event):
-            reply_many(event.reply_token, split_text_messages(reroll_manitto(user_id, user_name)))
-        else:
-            reply(event.reply_token, "🎭 마니또 변경은 꽃봇 1:1 채팅에서만 가능합니다.")
-        return
-
-
 
 
 # =========================
