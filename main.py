@@ -60,7 +60,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v58-dm-push-cumulative-weekly-2350"
+BOT_VERSION = "active-id-v59-missing-function-fix"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -819,6 +819,26 @@ def reply_many(reply_token, texts):
             )
         )
 
+
+
+def is_private_chat(event):
+    """
+    LINE 1:1 채팅 판별.
+    group_id/room_id가 없고 user_id가 있으면 1:1로 판단합니다.
+    """
+    source = getattr(event, "source", None)
+    if source is None:
+        return False
+
+    source_type = str(getattr(source, "type", "") or "").lower()
+    if source_type == "user" or source_type.endswith(".user"):
+        return True
+
+    if getattr(source, "group_id", None) or getattr(source, "room_id", None):
+        return False
+
+    user_id = getattr(source, "user_id", None)
+    return bool(user_id and str(user_id).strip() not in ("", "NO_USER_ID", "None"))
 
 
 def push_private_message(user_id, text_value):
@@ -4886,6 +4906,125 @@ def jagiya_achievement_notice(user_name, other_name):
         "누적 친밀도 500을 달성했습니다.\n\n"
         "보상: 💰3코인"
     )
+
+def process_affinity_message(source_id, user_id, user_name, text_value):
+    if source_id != COUNT_SOURCE_ID or not user_id or not text_value:
+        return None
+    if str(text_value).startswith('/'):
+        return None
+
+    now_dt = datetime.now(KST)
+    week_start, week_end = event_week_key()
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT user_id, user_name, last_at FROM chat_last_speakers WHERE source_id = ?", (source_id,))
+    last = cur.fetchone()
+
+    cur.execute("""
+    INSERT INTO chat_last_speakers (source_id, user_id, user_name, last_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(source_id)
+    DO UPDATE SET user_id = excluded.user_id,
+                  user_name = excluded.user_name,
+                  last_at = excluded.last_at
+    """, (source_id, user_id, user_name, now_str()))
+
+    if not last or last["user_id"] == user_id:
+        conn.commit()
+        conn.close()
+        return None
+
+    last_dt = parse_time_kst(last["last_at"])
+    if not last_dt or (now_dt - last_dt).total_seconds() > AFFINITY_REPLY_WINDOW_SECONDS:
+        conn.commit()
+        conn.close()
+        return None
+
+    a, b = pair_key(user_id, last["user_id"])
+    cur.execute("""
+    SELECT last_at FROM affinity_pair_cooldowns
+    WHERE source_id = ? AND week_start = ? AND user_a = ? AND user_b = ?
+    """, (source_id, week_start, a, b))
+    cooldown = cur.fetchone()
+    if cooldown:
+        cooldown_dt = parse_time_kst(cooldown["last_at"])
+        if cooldown_dt and (now_dt - cooldown_dt).total_seconds() < AFFINITY_PAIR_COOLDOWN_SECONDS:
+            conn.commit()
+            conn.close()
+            return None
+
+    if a == user_id:
+        a_name, b_name = user_name, last["user_name"]
+    else:
+        a_name, b_name = last["user_name"], user_name
+
+    cur.execute("""
+    INSERT INTO affinity_scores (week_start, user_a, user_b, user_a_name, user_b_name, score, updated_at)
+    VALUES (?, ?, ?, ?, ?, 1, ?)
+    ON CONFLICT(week_start, user_a, user_b)
+    DO UPDATE SET score = score + 1,
+                  user_a_name = excluded.user_a_name,
+                  user_b_name = excluded.user_b_name,
+                  updated_at = excluded.updated_at
+    """, (week_start, a, b, a_name, b_name, now_str()))
+
+    cur.execute("""
+    INSERT INTO affinity_cumulative_scores (user_a, user_b, user_a_name, user_b_name, total_score, updated_at)
+    VALUES (?, ?, ?, ?, 1, ?)
+    ON CONFLICT(user_a, user_b)
+    DO UPDATE SET total_score = total_score + 1,
+                  user_a_name = excluded.user_a_name,
+                  user_b_name = excluded.user_b_name,
+                  updated_at = excluded.updated_at
+    """, (a, b, a_name, b_name, now_str()))
+
+    cur.execute("""
+    SELECT total_score
+    FROM affinity_cumulative_scores
+    WHERE user_a = ? AND user_b = ?
+    """, (a, b))
+    cumulative_row = cur.fetchone()
+    cumulative_score = int(cumulative_row["total_score"] or 0) if cumulative_row else 0
+
+    cur.execute("""
+    INSERT INTO affinity_pair_cooldowns (source_id, week_start, user_a, user_b, last_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(source_id, week_start, user_a, user_b)
+    DO UPDATE SET last_at = excluded.last_at
+    """, (source_id, week_start, a, b, now_str()))
+
+    conn.commit()
+    conn.close()
+
+    messages = []
+
+    try:
+        jagiya_msg = grant_jagiya_achievement_if_ready(
+            user_id, user_name,
+            last["user_id"], last["user_name"],
+            cumulative_score
+        )
+        if jagiya_msg:
+            messages.append(jagiya_msg)
+    except Exception as e:
+        print("JAGIYA_ACHIEVEMENT_ERROR:", repr(e))
+
+    try:
+        msg1 = complete_manitto_if_ready(user_id, user_name, last["user_id"])
+        if msg1:
+            messages.append(msg1)
+
+        msg2 = complete_manitto_if_ready(last["user_id"], last["user_name"], user_id)
+        if msg2:
+            messages.append(msg2)
+    except Exception as e:
+        print("MANITTO_COMPLETE_CHECK_ERROR:", repr(e))
+
+    if messages:
+        return "\n".join(dict.fromkeys(messages))
+    return None
+
 
 # =========================
 # 마니또 / 친밀도
