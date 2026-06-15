@@ -59,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v53-coin-gacha-balance-fix"
+BOT_VERSION = "active-id-v54-cumulative-affinity-reply-fix"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -818,6 +818,49 @@ def reply_many(reply_token, texts):
             )
         )
 
+
+
+def push_private_messages(user_id, texts):
+    messages = [TextMessage(text=str(t)[:4900]) for t in texts if str(t).strip()]
+    if not messages:
+        messages = [TextMessage(text="내용이 없습니다.")]
+
+    with ApiClient(config) as client:
+        api = MessagingApi(client)
+        # LINE push는 한 번에 최대 5개 메시지까지 가능
+        from linebot.v3.messaging import PushMessageRequest
+        api.push_message(
+            PushMessageRequest(
+                to=user_id,
+                messages=messages[:5]
+            )
+        )
+
+
+def push_or_reply_private_info(event, user_id, text, public_notice="📩 개인 메시지로 전송했습니다."):
+    """
+    공개방에서는 개인 메시지 push를 시도하고 안내만 공개방에 출력합니다.
+    꽃봇 1:1 채팅에서는 push_message를 쓰지 않고 현재 대화에 바로 reply 합니다.
+    """
+    source_type = getattr(event.source, "type", "")
+
+    # 1:1 채팅에서는 자기 자신에게 push하지 않고 바로 답장
+    if source_type == "user":
+        reply_many(event.reply_token, split_text_messages(text))
+        return
+
+    # 그룹/룸에서는 DM push 후 공개방 안내
+    try:
+        push_private_messages(user_id, split_text_messages(text))
+        reply(event.reply_token, public_notice)
+    except Exception as e:
+        print("PRIVATE_INFO_PUSH_ERROR:", e)
+        reply(
+            event.reply_token,
+            "📩 개인 메시지 전송에 실패했습니다.\n\n"
+            "꽃봇을 친구추가한 뒤 다시 입력해주세요.\n\n"
+            "※ 공개방에는 개인정보를 표시하지 않습니다."
+        )
 
 
 def user_guide_text():
