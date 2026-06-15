@@ -16,6 +16,7 @@ from linebot.v3.messaging import (
     Configuration,
     MessagingApi,
     ReplyMessageRequest,
+    PushMessageRequest,
     TextMessage,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
@@ -59,7 +60,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v56-mission500-chatter-achievements"
+BOT_VERSION = "active-id-v58-dm-push-cumulative-weekly-2350"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -820,46 +821,52 @@ def reply_many(reply_token, texts):
 
 
 
-def push_private_messages(user_id, texts):
-    messages = [TextMessage(text=str(t)[:4900]) for t in texts if str(t).strip()]
-    if not messages:
-        messages = [TextMessage(text="내용이 없습니다.")]
+def push_private_message(user_id, text_value):
+    """
+    유저 1:1 또는 방으로 PushMessage를 보냅니다.
+    성공 True / 실패 False
+    """
+    try:
+        messages = [TextMessage(text=str(t)[:4900]) for t in split_text_messages(text_value)]
+        if not messages:
+            messages = [TextMessage(text="내용이 없습니다.")]
 
-    with ApiClient(config) as client:
-        api = MessagingApi(client)
-        # LINE push는 한 번에 최대 5개 메시지까지 가능
-        from linebot.v3.messaging import PushMessageRequest
-        api.push_message(
-            PushMessageRequest(
-                to=user_id,
-                messages=messages[:5]
+        with ApiClient(config) as client:
+            api = MessagingApi(client)
+            api.push_message(
+                PushMessageRequest(
+                    to=user_id,
+                    messages=messages[:5]
+                )
             )
-        )
+        return True
+    except Exception as e:
+        print("PUSH_PRIVATE_MESSAGE_ERROR:", repr(e))
+        return False
 
 
-def push_or_reply_private_info(event, user_id, text, public_notice="📩 개인 메시지로 전송했습니다."):
+def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 개인 메시지로 전송했습니다."):
     """
-    공개방에서는 개인 메시지 push를 시도하고 안내만 공개방에 출력합니다.
-    꽃봇 1:1 채팅에서는 push_message를 쓰지 않고 현재 대화에 바로 reply 합니다.
+    1:1 채팅에서는 현재 대화에 바로 reply.
+    공개방/그룹/룸에서는 유저에게 1:1 Push 후 공개방에는 안내만 출력.
     """
-    source_type = getattr(event.source, "type", "")
-
-    # 1:1 채팅에서는 자기 자신에게 push하지 않고 바로 답장
-    if source_type == "user":
-        reply_many(event.reply_token, split_text_messages(text))
+    if is_private_chat(event):
+        reply_many(event.reply_token, split_text_messages(text_value))
         return
 
-    # 그룹/룸에서는 DM push 후 공개방 안내
-    try:
-        push_private_messages(user_id, split_text_messages(text))
+    if not user_id:
+        reply(event.reply_token, "개인 메시지를 보내려면 USER_ID가 필요합니다.\n방에서 채팅 1회 후 다시 입력해주세요.")
+        return
+
+    ok = push_private_message(user_id, text_value)
+    if ok:
         reply(event.reply_token, public_notice)
-    except Exception as e:
-        print("PRIVATE_INFO_PUSH_ERROR:", e)
+    else:
         reply(
             event.reply_token,
             "📩 개인 메시지 전송에 실패했습니다.\n\n"
             "꽃봇을 친구추가한 뒤 다시 입력해주세요.\n\n"
-            "※ 공개방에는 개인정보를 표시하지 않습니다."
+            "※ 이미 친구추가가 되어 있다면 운영진에게 알려주세요."
         )
 
 
@@ -1163,6 +1170,15 @@ S.N.S에서는
 
 300마디 → 0.1코인
 500마디 → 0.2코인
+
+──────
+
+📌 친밀도
+
+/친밀도
+/누적친밀도
+
+주간/누적 친밀도 확인
 
 ──────
 
@@ -5053,537 +5069,6 @@ def grant_jagiya_achievement_if_ready(user_id_1, user_name_1, user_id_2, user_na
     return None
 
 
-def push_private_message(user_id, text_value):
-    try:
-        from linebot.v3.messaging import PushMessageRequest, TextMessage
-        with ApiClient(config) as client:
-            api = MessagingApi(client)
-            api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=text_value)]))
-        return True
-    except Exception as e:
-        print("PRIVATE_PUSH_ERROR:", e)
-        return False
-
-
-def is_private_chat(event):
-    """
-    LINE 1:1 채팅 판별.
-    일부 환경에서 event.source.type 이 문자열 "user"가 아니라 enum/다른 표현으로 들어와
-    1:1 채팅을 공개방으로 오판하는 문제가 있어 더 넓게 판별합니다.
-    """
-    source = getattr(event, "source", None)
-    if source is None:
-        return False
-
-    source_type = str(getattr(source, "type", "") or "").lower()
-
-    # 정상 케이스
-    if source_type == "user" or source_type.endswith(".user") or "user" in source_type:
-        return True
-
-    # 그룹/룸 ID가 있으면 공개방
-    group_id = getattr(source, "group_id", None)
-    room_id = getattr(source, "room_id", None)
-    if group_id or room_id:
-        return False
-
-    # group_id/room_id가 없고 user_id가 있으면 1:1로 간주
-    user_id = getattr(source, "user_id", None)
-    if user_id and str(user_id).strip() not in ("", "NO_USER_ID", "None"):
-        return True
-
-    return False
-
-
-def private_only_notice(event, user_id, guide_text, title="개인 기능"):
-    if not user_id:
-        reply(event.reply_token, "개인 메시지를 보내려면 USER_ID가 필요합니다.\n방에서 채팅 1회 후 다시 입력해주세요.")
-        return
-
-    ok = push_private_message(user_id, guide_text)
-    if ok:
-        reply(event.reply_token, f"📩 {title} 안내를 봇 1:1 개인창으로 보냈습니다.")
-    else:
-        reply(
-            event.reply_token,
-            f"📩 {title}은 봇 1:1 개인창에서 이용해주세요.\n\n"
-            "개인 메시지 전송에 실패했습니다.\n"
-            "봇을 친구추가한 뒤 다시 입력해주세요."
-        )
-
-
-def gacha_private_guide_text():
-    return (
-        "🎰 가챠는 봇 개인채팅에서만 이용 가능합니다.\n\n"
-        "운영시간\n"
-        "매주 토요일 00:00 ~ 21:00\n\n"
-        "사용 가능 명령어\n"
-        "/가챠 하\n"
-        "/가챠 중\n"
-        "/가챠 상\n\n"
-        "/가챠타입 코인\n"
-        "/가챠타입 조각\n"
-        "/가챠타입 랜덤\n\n"
-        "/조각보유\n"
-        "/행운포인트\n\n"
-        "자세한 안내: /가챠시스템"
-    )
-
-
-def shop_private_guide_text():
-    return (
-        "🛒 상점 기능은 봇 개인채팅에서만 이용 가능합니다.\n\n"
-        "사용 가능 명령어\n"
-        "/상점\n"
-        "/구매 상품명\n"
-        "/내보유\n"
-        "/사용 구매번호\n\n"
-        "코인 보유 확인: /잔액"
-    )
-
-
-def row_value(row, key, default=None):
-    try:
-        return row[key]
-    except Exception:
-        return default
-
-
-def manitto_private_text(row):
-    title = "🌈 황금 마니또" if row["manitto_type"] == "golden" else "🎭 S.N.S 마니또"
-    score = get_affinity_score(row["hunter_user_id"], row["target_user_id"], row["week_start"])
-    status = "완료" if row["completed"] else "진행중"
-    reward_text = coin_text(row["reward"]) if row["reward"] else f"{coin_text(row['reward_min'])} ~ {coin_text(row['reward_max'])} 랜덤"
-    reroll_count = int(row_value(row, "reroll_count", 0) or 0)
-    remain_reroll = max(0, MANITTO_REROLL_LIMIT - reroll_count)
-    return (
-        f"{title}\n\n"
-        f"이번 주 대상\n{row['target_user_name']}\n\n"
-        f"조건\n메인방에서 대상과 친밀도 {row['required_score']} 달성\n\n"
-        f"현재 친밀도\n{score} / {row['required_score']}\n\n"
-        f"성공 보상\n{reward_text}\n\n"
-        f"상태\n{status}\n\n"
-        f"남은 변경\n{remain_reroll} / {MANITTO_REROLL_LIMIT}\n\n"
-        "변경 명령어\n/마니또변경\n\n"
-        "※ 마니또 대상은 본인에게만 공개됩니다.\n"
-        "※ 변경은 주당 최대 2회, 완료 전까지만 가능합니다.\n"
-        "※ 같은 사람 연속 발화, 3분 초과 응답, 30초 내 반복 대화는 제외됩니다."
-    )
-
-
-def reroll_weekly_manitto(user_id, user_name):
-    """
-    /마니또변경
-    - 꽃봇 1:1에서만 사용
-    - 주당 2회까지 가능
-    - 완료된 마니또는 변경 불가
-    - 현재 대상 및 이번 주 변경 이력 대상은 제외
-    - 5코인 이상 조건 없음
-    """
-    week_start, week_end = event_week_key()
-
-    row, err = ensure_weekly_manitto(user_id, user_name)
-    if err:
-        return False, err
-
-    if int(row["completed"] or 0) == 1:
-        return False, "❌ 완료된 마니또는 변경할 수 없습니다."
-
-    reroll_count = int(row_value(row, "reroll_count", 0) or 0)
-    if reroll_count >= MANITTO_REROLL_LIMIT:
-        return False, (
-            "❌ 이번 주 변경 횟수를 모두 사용했습니다.\n\n"
-            f"사용 횟수\n{reroll_count} / {MANITTO_REROLL_LIMIT}"
-        )
-
-    history_raw = str(row_value(row, "reroll_history", "") or "")
-    history_ids = [x for x in history_raw.split(",") if x]
-    exclude_ids = [row["target_user_id"]] + history_ids
-
-    target = manitto_target_candidates(user_id, extra_exclude_user_ids=exclude_ids)
-    if not target:
-        return False, "마니또 변경 대상을 찾을 수 없습니다. 활성 유저가 부족하거나 이번 주 배정 제한에 걸렸습니다."
-
-    old_target_name = row["target_user_name"]
-    new_history = ",".join((history_ids + [row["target_user_id"]])[-5:])
-    new_count = reroll_count + 1
-
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    UPDATE manitto_assignments
-    SET target_user_id = ?,
-        target_user_name = ?,
-        reroll_count = ?,
-        reroll_history = ?,
-        updated_at = ?
-    WHERE week_start = ?
-      AND hunter_user_id = ?
-    """, (
-        target["user_id"],
-        target["user_name"],
-        new_count,
-        new_history,
-        now_str(),
-        week_start,
-        user_id,
-    ))
-    conn.commit()
-    conn.close()
-
-    return True, (
-        "🎭 마니또 변경 완료\n\n"
-        "기존 대상\n"
-        f"{old_target_name}\n\n"
-        "⬇️\n\n"
-        "새로운 대상\n"
-        f"{target['user_name']}\n\n"
-        "남은 변경 횟수\n"
-        f"{max(0, MANITTO_REROLL_LIMIT - new_count)} / {MANITTO_REROLL_LIMIT}"
-    )
-
-
-def send_manitto_reroll_reply(event, user_id, user_name):
-    if not user_id:
-        reply(event.reply_token, "🎭 마니또 변경 실패\n\nUSER_ID를 확인할 수 없습니다.")
-        return
-
-    if not is_private_chat(event):
-        reply(
-            event.reply_token,
-            "🎭 마니또 변경은 꽃봇 1:1 채팅에서만 사용할 수 있습니다.\n\n"
-            "꽃봇과 1:1 채팅에서 /마니또변경 을 입력해주세요."
-        )
-        return
-
-    ok, msg = reroll_weekly_manitto(user_id, user_name)
-    reply_many(event.reply_token, split_text_messages(msg))
-
-def send_manitto_reply(event, user_id, user_name):
-    """
-    /마니또 처리 재작업.
-
-    안정성 우선 정책:
-    - 꽃봇 1:1 채팅에서는 push_message를 사용하지 않고 reply로 바로 출력합니다.
-    - 공개방/그룹/룸에서는 대상 보호를 위해 마니또 정보를 공개하지 않습니다.
-    - 공개방에서 별도 DM push도 시도하지 않습니다.
-      LINE push 실패/친구추가 오판 문제가 반복되어, 사용자가 직접 1:1로 와서 조회하게 합니다.
-    """
-    if not user_id:
-        reply(
-            event.reply_token,
-            "🎭 마니또 조회 실패\n\n"
-            "USER_ID를 확인할 수 없습니다.\n"
-            "1:1 채팅에서도 계속 발생하면 LINE Webhook userId 수신 문제입니다."
-        )
-        return
-
-    if not is_private_chat(event):
-        reply(
-            event.reply_token,
-            "🎭 마니또는 꽃봇 1:1 채팅에서만 확인할 수 있습니다.\n\n"
-            "대상 보호를 위해 공개방에는 마니또 정보를 표시하지 않습니다.\n"
-            "꽃봇과 1:1 채팅에서 /마니또 를 입력해주세요."
-        )
-        return
-
-    row, err = ensure_weekly_manitto(user_id, user_name)
-    if err:
-        reply(event.reply_token, err)
-        return
-
-    reply_many(event.reply_token, split_text_messages(manitto_private_text(row)))
-
-
-# 구버전 호환용: 다른 곳에서 호출되면 push 없이 텍스트만 반환합니다.
-def send_manitto_dm(user_id, user_name):
-    row, err = ensure_weekly_manitto(user_id, user_name)
-    if err:
-        return err
-    return manitto_private_text(row)
-
-def complete_manitto_if_ready(hunter_user_id, hunter_user_name, other_user_id):
-    week_start, week_end = event_week_key()
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT * FROM manitto_assignments
-    WHERE week_start = ?
-      AND hunter_user_id = ?
-      AND target_user_id = ?
-      AND completed = 0
-    """, (week_start, hunter_user_id, other_user_id))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        return None
-
-    score = get_affinity_score(hunter_user_id, other_user_id, week_start)
-    if score < row["required_score"]:
-        return None
-
-    reward = random.randint(row["reward_min"], row["reward_max"])
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    UPDATE manitto_assignments
-    SET completed = 1,
-        reward = ?,
-        updated_at = ?,
-        completed_at = ?
-    WHERE week_start = ? AND hunter_user_id = ?
-    """, (reward, now_str(), now_str(), week_start, hunter_user_id))
-    conn.commit()
-    conn.close()
-
-    change_money(hunter_user_id, hunter_user_name, reward, f"마니또 성공: {row['target_user_name']}", None, "마니또시스템")
-    grant_achievement_once(hunter_user_id, hunter_user_name, "first_manitto", "🎭 첫 마니또", 5, f"target={row['target_user_name']}")
-
-    dm_text = (
-        "🎭 마니또 성공!\n\n"
-        f"대상: {row['target_user_name']}\n"
-        f"친밀도: {score} / {row['required_score']}\n"
-        f"보상: {coin_text(reward)}\n\n"
-        f"현재 잔액: {coin_text(get_balance(hunter_user_id))}"
-    )
-    push_private_message(hunter_user_id, dm_text)
-    return f"🎭 누군가의 마니또 미션이 성공했습니다."
-
-
-def process_affinity_message(source_id, user_id, user_name, text_value):
-    if source_id != COUNT_SOURCE_ID or not user_id or not text_value:
-        return None
-    if text_value.startswith('/'):
-        return None
-
-    now_dt = datetime.now(KST)
-    week_start, week_end = event_week_key()
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute("SELECT user_id, user_name, last_at FROM chat_last_speakers WHERE source_id = ?", (source_id,))
-    last = cur.fetchone()
-
-    cur.execute("""
-    INSERT INTO chat_last_speakers (source_id, user_id, user_name, last_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(source_id)
-    DO UPDATE SET user_id = excluded.user_id,
-                  user_name = excluded.user_name,
-                  last_at = excluded.last_at
-    """, (source_id, user_id, user_name, now_str()))
-
-    if not last or last["user_id"] == user_id:
-        conn.commit()
-        conn.close()
-        return None
-
-    last_dt = parse_time_kst(last["last_at"])
-    if not last_dt or (now_dt - last_dt).total_seconds() > AFFINITY_REPLY_WINDOW_SECONDS:
-        conn.commit()
-        conn.close()
-        return None
-
-    a, b = pair_key(user_id, last["user_id"])
-    cur.execute("""
-    SELECT last_at FROM affinity_pair_cooldowns
-    WHERE source_id = ? AND week_start = ? AND user_a = ? AND user_b = ?
-    """, (source_id, week_start, a, b))
-    cooldown = cur.fetchone()
-    if cooldown:
-        cooldown_dt = parse_time_kst(cooldown["last_at"])
-        if cooldown_dt and (now_dt - cooldown_dt).total_seconds() < AFFINITY_PAIR_COOLDOWN_SECONDS:
-            conn.commit()
-            conn.close()
-            return None
-
-    if a == user_id:
-        a_name, b_name = user_name, last["user_name"]
-    else:
-        a_name, b_name = last["user_name"], user_name
-
-    cur.execute("""
-    INSERT INTO affinity_scores (week_start, user_a, user_b, user_a_name, user_b_name, score, updated_at)
-    VALUES (?, ?, ?, ?, ?, 1, ?)
-    ON CONFLICT(week_start, user_a, user_b)
-    DO UPDATE SET score = score + 1,
-                  user_a_name = excluded.user_a_name,
-                  user_b_name = excluded.user_b_name,
-                  updated_at = excluded.updated_at
-    """, (week_start, a, b, a_name, b_name, now_str()))
-
-    cur.execute("""
-    INSERT INTO affinity_cumulative_scores (user_a, user_b, user_a_name, user_b_name, total_score, updated_at)
-    VALUES (?, ?, ?, ?, 1, ?)
-    ON CONFLICT(user_a, user_b)
-    DO UPDATE SET total_score = total_score + 1,
-                  user_a_name = excluded.user_a_name,
-                  user_b_name = excluded.user_b_name,
-                  updated_at = excluded.updated_at
-    """, (a, b, a_name, b_name, now_str()))
-
-    cur.execute("""
-    SELECT total_score
-    FROM affinity_cumulative_scores
-    WHERE user_a = ? AND user_b = ?
-    """, (a, b))
-    cumulative_row = cur.fetchone()
-    cumulative_score = int(cumulative_row["total_score"] or 0) if cumulative_row else 0
-
-    cur.execute("""
-    INSERT INTO affinity_pair_cooldowns (source_id, week_start, user_a, user_b, last_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(source_id, week_start, user_a, user_b)
-    DO UPDATE SET last_at = excluded.last_at
-    """, (source_id, week_start, a, b, now_str()))
-
-    conn.commit()
-    conn.close()
-
-    messages = []
-    jagiya_msg = grant_jagiya_achievement_if_ready(user_id, user_name, last["user_id"], last["user_name"], cumulative_score)
-    if jagiya_msg:
-        messages.append(jagiya_msg)
-
-    msg1 = complete_manitto_if_ready(user_id, user_name, last["user_id"])
-    if msg1:
-        messages.append(msg1)
-    msg2 = complete_manitto_if_ready(last["user_id"], last["user_name"], user_id)
-    if msg2:
-        messages.append(msg2)
-
-    if messages:
-        return "\n".join(dict.fromkeys(messages))
-    return None
-
-
-def affinity_status_text(user_id, user_name):
-    """
-    /친밀도
-    이번 주 친밀도만 표시합니다.
-    누적 친밀도는 /누적친밀도 에서 따로 확인합니다.
-    """
-    week_start, week_end = event_week_key()
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT user_a, user_b, user_a_name, user_b_name, score
-    FROM affinity_scores
-    WHERE week_start = ? AND (user_a = ? OR user_b = ?)
-    ORDER BY score DESC, updated_at DESC
-    LIMIT 10
-    """, (week_start, user_id, user_id))
-    weekly_rows = cur.fetchall()
-    conn.close()
-
-    lines = ["💞 이번 주 친밀도", f"기간: {week_start} ~ {week_end}", ""]
-
-    if not weekly_rows:
-        lines.append("이번 주 친밀도 기록이 없습니다.")
-    else:
-        for i, row in enumerate(weekly_rows, 1):
-            other_name = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
-            lines.append(f"{i}. {other_name} - {row['score']}")
-
-    lines += [
-        "",
-        "누적 친밀도 확인",
-        "/누적친밀도",
-        "",
-        "※ 3분 이내 서로 번갈아 대화하면 친밀도가 오릅니다.",
-    ]
-    return "\n".join(lines)
-
-
-def cumulative_affinity_status_text(user_id, user_name):
-    """
-    /누적친밀도
-    누적 친밀도만 따로 표시합니다.
-    """
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT user_a, user_b, user_a_name, user_b_name, total_score, updated_at
-    FROM affinity_cumulative_scores
-    WHERE user_a = ? OR user_b = ?
-    ORDER BY total_score DESC, updated_at DESC
-    LIMIT 20
-    """, (user_id, user_id))
-    rows = cur.fetchall()
-    conn.close()
-
-    lines = ["🌱 누적 친밀도", f"대상: {user_name}", ""]
-
-    if not rows:
-        lines.append("누적 친밀도 기록이 없습니다.")
-    else:
-        for i, row in enumerate(rows, 1):
-            other_name = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
-            total = int(row["total_score"] or 0)
-            mark = " 💕" if total >= AFFINITY_CUMULATIVE_JAGIYA_SCORE else ""
-            lines.append(f"{i}. {other_name} - {total}{mark}")
-
-    lines += [
-        "",
-        "💕 자기야 업적",
-        f"상대와 누적 친밀도 {AFFINITY_CUMULATIVE_JAGIYA_SCORE} 달성 시",
-        f"각 {coin_text(AFFINITY_CUMULATIVE_JAGIYA_REWARD)} 지급",
-        "",
-        "※ 업적 목록에는 상대 닉네임이 표시되지 않습니다.",
-        "※ 달성 알림에만 함께 달성한 상대가 표시됩니다.",
-    ]
-    return "\n".join(lines)
-
-
-def affinity_ranking_text(limit=20):
-    week_start, week_end = event_week_key()
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT user_a_name, user_b_name, score
-    FROM affinity_scores
-    WHERE week_start = ?
-    ORDER BY score DESC, updated_at DESC
-    LIMIT ?
-    """, (week_start, limit))
-    rows = cur.fetchall()
-    conn.close()
-
-    lines = ["💞 친밀도 랭킹", f"기간: {week_start} ~ {week_end}", ""]
-    if not rows:
-        lines.append("이번 주 친밀도 기록이 없습니다.")
-    else:
-        for i, row in enumerate(rows, 1):
-            lines.append(f"{i}. {row['user_a_name']} ↔ {row['user_b_name']} - {row['score']}")
-    return format_long_lines("", lines).strip()
-
-
-def manitto_admin_status_text():
-    week_start, week_end = event_week_key()
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT hunter_user_name, target_user_name, required_score, reward, reward_min, reward_max, completed, manitto_type
-    FROM manitto_assignments
-    WHERE week_start = ?
-    ORDER BY completed DESC, hunter_user_name ASC
-    LIMIT 80
-    """, (week_start,))
-    rows = cur.fetchall()
-    conn.close()
-
-    lines = ["🎭 마니또 운영 현황", f"기간: {week_start} ~ {week_end}", ""]
-    if not rows:
-        lines.append("아직 발급된 마니또가 없습니다.")
-    else:
-        for i, row in enumerate(rows, 1):
-            mark = "✅" if row["completed"] else "진행"
-            kind = "황금" if row["manitto_type"] == "golden" else "일반"
-            reward = coin_text(row["reward"]) if row["reward"] else f"{coin_text(row['reward_min'])}~{coin_text(row['reward_max'])}"
-            lines.append(f"{i}. {row['hunter_user_name']} → {row['target_user_name']} / {kind} / 목표 {row['required_score']} / {reward} / {mark}")
-    return format_long_lines("", lines).strip()
-
-
 # =========================
 # 족보 / 코인 표시
 # =========================
@@ -5807,32 +5292,6 @@ def format_total_rows(title, rows):
 # =========================
 # 개인 메시지 / 내정보 통합
 # =========================
-def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 결과를 개인 메시지로 보내드렸습니다."):
-    """
-    공개방에서는 DM으로 보내고 한 줄만 안내합니다.
-    꽃봇 1:1 채팅에서는 push_message를 쓰지 않고 현재 대화에 바로 reply 합니다.
-    """
-    # 1:1 채팅이면 무조건 reply. 친구추가/Push 여부와 무관하게 바로 출력.
-    if is_private_chat(event):
-        reply_many(event.reply_token, split_text_messages(text_value))
-        return
-
-    if not user_id:
-        reply(event.reply_token, "개인 메시지를 보내려면 USER_ID가 필요합니다.\n방에서 채팅 1회 후 다시 입력해주세요.")
-        return
-
-    ok = push_private_message(user_id, text_value)
-    if ok:
-        reply(event.reply_token, public_notice)
-    else:
-        reply(
-            event.reply_token,
-            "📩 개인 메시지 전송에 실패했습니다.\n\n"
-            "꽃봇을 친구추가한 뒤 다시 입력해주세요.\n\n"
-            "※ 이미 1:1 채팅 중인데 이 문구가 보이면 운영진에게 알려주세요."
-        )
-
-
 def my_info_text(user_id, user_name):
     balance = get_balance(user_id)
     pity = get_gacha_pity_point(user_id)
@@ -6128,6 +5587,79 @@ def grant_item_to_user(keyword, item_name, staff_name):
 # =========================
 # WEBHOOK
 # =========================
+
+# =========================
+# 자동 주간정산 스케줄러
+# =========================
+def run_weekly_settlement_auto():
+    """
+    매주 일요일 23:50(KST)에 주간정산을 1회 자동 실행합니다.
+    system_flags로 중복 실행을 방지합니다.
+    """
+    date_str = today()
+    flag_key = f"auto_weekly_settlement:{date_str}"
+
+    try:
+        if get_system_flag(flag_key):
+            return
+    except Exception as e:
+        print("AUTO_WEEKLY_FLAG_READ_ERROR:", repr(e))
+        return
+
+    try:
+        result_text = None
+
+        if "weekly_settlement_text" in globals():
+            result_text = weekly_settlement_text(COUNT_SOURCE_ID)
+        elif "weekly_settlement" in globals():
+            result_text = weekly_settlement(COUNT_SOURCE_ID)
+        elif "settle_weekly_rewards" in globals():
+            result_text = settle_weekly_rewards(COUNT_SOURCE_ID)
+        elif "weekly_reward_settlement" in globals():
+            result_text = weekly_reward_settlement(COUNT_SOURCE_ID)
+        else:
+            result_text = "⚠️ 자동 주간정산 실패\n\n주간정산 함수를 찾지 못했습니다."
+
+        set_system_flag(flag_key, "done")
+
+        notify_text = "🏆 자동 주간정산 완료\n\n" + str(result_text)
+        if ADMIN_SOURCE_IDS:
+            for sid in ADMIN_SOURCE_IDS:
+                push_private_message(sid, notify_text)
+        elif ADMIN_SOURCE_ID:
+            push_private_message(ADMIN_SOURCE_ID, notify_text)
+
+        print("AUTO_WEEKLY_SETTLEMENT_DONE:", date_str)
+
+    except Exception as e:
+        print("AUTO_WEEKLY_SETTLEMENT_ERROR:", repr(e))
+
+
+def weekly_settlement_scheduler_loop():
+    """
+    KST 기준 매주 일요일 23:50에 자동 주간정산.
+    """
+    while True:
+        try:
+            now = datetime.now(KST)
+            if now.weekday() == 6 and now.hour == 23 and now.minute == 50:
+                run_weekly_settlement_auto()
+                time.sleep(70)
+            else:
+                time.sleep(20)
+        except Exception as e:
+            print("WEEKLY_SETTLEMENT_SCHEDULER_ERROR:", repr(e))
+            time.sleep(60)
+
+
+def start_weekly_settlement_scheduler():
+    t = threading.Thread(target=weekly_settlement_scheduler_loop, daemon=True)
+    t.start()
+
+
+start_weekly_settlement_scheduler()
+
+
 @app.route("/", methods=["GET"])
 def home():
     return "LINE MADI COUNTER BOT RUNNING"
@@ -6348,6 +5880,7 @@ def handle(event):
 
 /잔액
 /친밀도
+/누적친밀도
 
 /코인순위
 /주간랭킹
@@ -6368,7 +5901,6 @@ def handle(event):
 /내정보
 
 /업적
-/누적친밀도
 
 /마니또
 /마니또변경
