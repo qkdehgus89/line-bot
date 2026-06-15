@@ -59,7 +59,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "70"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "50"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "active-id-v54-cumulative-affinity-reply-fix"
+BOT_VERSION = "active-id-v55-private-chat-detect-fix"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -4980,7 +4980,33 @@ def push_private_message(user_id, text_value):
 
 
 def is_private_chat(event):
-    return getattr(event.source, "type", None) == "user"
+    """
+    LINE 1:1 채팅 판별.
+    일부 환경에서 event.source.type 이 문자열 "user"가 아니라 enum/다른 표현으로 들어와
+    1:1 채팅을 공개방으로 오판하는 문제가 있어 더 넓게 판별합니다.
+    """
+    source = getattr(event, "source", None)
+    if source is None:
+        return False
+
+    source_type = str(getattr(source, "type", "") or "").lower()
+
+    # 정상 케이스
+    if source_type == "user" or source_type.endswith(".user") or "user" in source_type:
+        return True
+
+    # 그룹/룸 ID가 있으면 공개방
+    group_id = getattr(source, "group_id", None)
+    room_id = getattr(source, "room_id", None)
+    if group_id or room_id:
+        return False
+
+    # group_id/room_id가 없고 user_id가 있으면 1:1로 간주
+    user_id = getattr(source, "user_id", None)
+    if user_id and str(user_id).strip() not in ("", "NO_USER_ID", "None"):
+        return True
+
+    return False
 
 
 def private_only_notice(event, user_id, guide_text, title="개인 기능"):
@@ -5162,7 +5188,7 @@ def send_manitto_reply(event, user_id, user_name):
             event.reply_token,
             "🎭 마니또 조회 실패\n\n"
             "USER_ID를 확인할 수 없습니다.\n"
-            "꽃봇을 친구추가한 뒤 1:1 채팅에서 다시 /마니또 를 입력해주세요."
+            "1:1 채팅에서도 계속 발생하면 LINE Webhook userId 수신 문제입니다."
         )
         return
 
@@ -5696,7 +5722,11 @@ def format_total_rows(title, rows):
 # 개인 메시지 / 내정보 통합
 # =========================
 def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 결과를 개인 메시지로 보내드렸습니다."):
-    """공개방에서는 DM으로 보내고 한 줄만 안내, 1:1에서는 그대로 출력."""
+    """
+    공개방에서는 DM으로 보내고 한 줄만 안내합니다.
+    꽃봇 1:1 채팅에서는 push_message를 쓰지 않고 현재 대화에 바로 reply 합니다.
+    """
+    # 1:1 채팅이면 무조건 reply. 친구추가/Push 여부와 무관하게 바로 출력.
     if is_private_chat(event):
         reply_many(event.reply_token, split_text_messages(text_value))
         return
@@ -5712,7 +5742,8 @@ def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 �
         reply(
             event.reply_token,
             "📩 개인 메시지 전송에 실패했습니다.\n\n"
-            "꽃봇을 친구추가한 뒤 다시 입력해주세요."
+            "꽃봇을 친구추가한 뒤 다시 입력해주세요.\n\n"
+            "※ 이미 1:1 채팅 중인데 이 문구가 보이면 운영진에게 알려주세요."
         )
 
 
