@@ -61,7 +61,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "10"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "10"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "sns-flowerbot-v10-final"
+BOT_VERSION = "sns-flowerbot-v10.4"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -119,6 +119,10 @@ def is_staff(user_id):
     return user_id in ADMIN_USER_IDS or user_id in OPERATOR_USER_IDS
 
 
+def is_admin_room(source_id):
+    return bool(source_id and source_id in ADMIN_SOURCE_IDS)
+
+
 def is_operator_command(text):
     """
     운영진 전용 명령어를 일반 유저가 입력했을 때
@@ -128,18 +132,18 @@ def is_operator_command(text):
         return False
 
     exact_commands = {
-        "/운영명령어", "/방정보", "/상태확인", "/DB상태", "/전체유저",
-        "/족보입력", "/족보취소", "/족보", "/경고", "/완전삭제",
+        "/운영명령어", "/방정보", "/DB상태", "/전체유저",
+        "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
-        "/마니또초기화", "/마니또목록", "/마니또현황전체", "/조각정리", "/버전",
+        "/조각정리", "/버전",
     }
 
     prefix_commands = [
         "/유저검색 ", "/유저상세 ", "/닉삭제", "/닉삭제번호",
-        "/지급 ", "/차감 ", "/코인내역", "/삭제복구",
+        "/지급 ", "/차감 ", "/코인내역 ", "/삭제복구",
         "/상품추가 ", "/상품등록 ", "/상품삭제 ",
-        "/사용처리 ", "/구매취소 ", "/아이템지급 ",
-        "/친밀도조정 ", "/친밀도초기화",
+        "/사용 ", "/사용처리 ", "/구매취소 ", "/아이템지급 ",
+        "/DM테스트 ",
     ]
 
     return text in exact_commands or any(text.startswith(prefix) for prefix in prefix_commands)
@@ -920,9 +924,14 @@ def is_private_chat(event):
 
 def push_private_message(user_id, text_value):
     """
-    유저 1:1 또는 방으로 PushMessage를 보냅니다.
+    USER_ID(U...)로만 개인 DM PushMessage를 보냅니다.
     성공 True / 실패 False
     """
+    user_id = str(user_id or "").strip()
+    if not user_id.startswith("U"):
+        print("[DM_FAIL] INVALID_USER_ID", user_id)
+        return False
+
     try:
         messages = [TextMessage(text=str(t)[:4900]) for t in split_text_messages(text_value)]
         if not messages:
@@ -936,9 +945,10 @@ def push_private_message(user_id, text_value):
                     messages=messages[:5]
                 )
             )
+        print("[DM_OK]", user_id)
         return True
     except Exception as e:
-        print("PUSH_PRIVATE_MESSAGE_ERROR:", repr(e))
+        print("[DM_FAIL]", user_id, repr(e))
         return False
 
 
@@ -1044,7 +1054,7 @@ def user_commands_text():
 📖 정보
 ━━━━━━━━━━
 /명령어
-/초보자가이드
+/가이드
 
 ━━━━━━━━━━
 🎯 활동
@@ -1060,6 +1070,7 @@ def user_commands_text():
 💰 재화
 ━━━━━━━━━━
 /내보유
+/잔액
 /코인랭킹
 /코인내역
 
@@ -1111,7 +1122,7 @@ def user_commands_text():
 /럭키드로우결과"""
 
 def beginner_guide_text():
-    return """📖 S.N.S 초보자 가이드
+    return """📖 S.N.S 가이드
 
 환영합니다 😀
 
@@ -1214,17 +1225,15 @@ def operator_commands_text():
 /족보
 
 ━━━━━━━━━━
-🎭 마니또
+🛒 상점/아이템 관리
 ━━━━━━━━━━
-/마니또초기화
-/마니또목록
-/마니또현황전체
-
-━━━━━━━━━━
-❤️ 친밀도
-━━━━━━━━━━
-/친밀도조정
-/친밀도초기화
+/상품등록 상품명 가격 설명
+/상품추가 상품명 가격 설명
+/상품삭제 상품명
+/아이템지급 닉네임 상품명
+/사용 구매번호
+/사용처리 구매번호
+/구매취소 구매번호
 
 ━━━━━━━━━━
 🎟 럭키드로우
@@ -1236,11 +1245,14 @@ def operator_commands_text():
 ━━━━━━━━━━
 ⚙️ 시스템
 ━━━━━━━━━━
+/방정보
 /DB상태
 /수집상태
 /최근로그
 /수집누락
+/경고
 /조각정리
+/DM테스트 닉네임
 /버전"""
 
 # =========================
@@ -4575,9 +4587,8 @@ def format_hard_delete_warning(target):
         "- 출석 / 미션 / 업적\n"
         "- 가챠 / 조각 / 행운포인트\n"
         "- 주간랭킹 / 이벤트 / 마니또 / 친밀도 기록\n\n"
-        "복구할 수 없습니다.\n\n"
-        "진행: /완전삭제확인\n"
-        "취소: /완전삭제취소"
+        "현재 최종 삭제 흐름은 /닉삭제 → /닉삭제번호 → /완전삭제 입니다.\n"
+        "완전삭제 시 삭제유저 DB로 이동하며 /삭제복구 로 복구할 수 있습니다."
     )
 
 
@@ -6434,20 +6445,19 @@ def handle(event):
         reply(event.reply_token, operator_only_warning())
         return
 
+    if is_operator_command(text) and is_staff(user_id) and text not in ("/방정보", "/버전") and source_id not in ADMIN_SOURCE_IDS:
+        reply(event.reply_token, "⛔ 운영방에서만 사용 가능합니다.")
+        return
+
     # /족보입력 이후 다음 메시지를 족보 본문으로 저장
     if user_id in JOKBO_PENDING:
-        if text == "/족보취소":
-            JOKBO_PENDING.pop(user_id, None)
-            reply(event.reply_token, "족보 입력을 취소했습니다.")
-            return
-
         if source_id not in ADMIN_SOURCE_IDS or not is_staff(user_id):
             JOKBO_PENDING.pop(user_id, None)
             reply(event.reply_token, operator_only_warning())
             return
 
         # 명령어를 잘못 입력한 경우 족보로 저장하지 않음
-        if text.startswith("/") and "S.N.S" not in text and "족보" not in text:
+        if text.startswith("/"):
             JOKBO_PENDING.pop(user_id, None)
             reply(event.reply_token, "족보 입력을 취소했습니다. 다시 입력하려면 /족보입력 을 사용해주세요.")
             return
@@ -6490,27 +6500,49 @@ def handle(event):
             event.reply_token,
             "🏠 방 정보\n\n"
             f"SOURCE_ID: {source_id}\n"
-            f"COUNT_SOURCE_ID: {COUNT_SOURCE_ID}\n"
-            f"ADMIN_SOURCE_IDS: {', '.join(sorted(ADMIN_SOURCE_IDS)) if ADMIN_SOURCE_IDS else '-'}\n"
+            f"USER_ID: {user_id or '-'}\n"
+            f"USER_NAME: {user_name}\n\n"
+            f"ADMIN_SOURCE_ID: {ADMIN_SOURCE_ID or '-'}\n"
+            f"COUNT_SOURCE_ID: {COUNT_SOURCE_ID or '-'}\n"
+            f"ADMIN_SOURCE_IDS: {', '.join(sorted(ADMIN_SOURCE_IDS)) if ADMIN_SOURCE_IDS else '-'}\n\n"
+            f"운영방 여부: {'✅ YES' if source_id in ADMIN_SOURCE_IDS else '❌ NO'}\n"
+            f"운영자 여부: {'✅ YES' if is_staff(user_id) else '❌ NO'}\n"
             f"BOT_VERSION: {BOT_VERSION}"
         )
         return
 
-    if text == "/상태확인":
+    if text == "/버전":
+        reply(
+            event.reply_token,
+            "🤖 S.N.S 꽃봇\n\n"
+            f"버전: {BOT_VERSION}\n"
+            "빌드: v10.4\n"
+            "환경변수: ADMIN_SOURCE_ID / COUNT_SOURCE_ID / ADMIN_USER_IDS / OPERATOR_USER_IDS"
+        )
+        return
+
+    if text.startswith("/DM테스트 "):
         if not is_staff(user_id):
             reply(event.reply_token, operator_only_warning())
             return
-        log_row, count_row, all_rows = collection_status(COUNT_SOURCE_ID, date_str)
-        reply(
-            event.reply_token,
-            "📊 수집 상태 확인\n\n"
-            f"기준일: {date_str}\n"
-            f"기준방: {COUNT_SOURCE_ID}\n\n"
-            f"채팅 로그: {log_row['total_logs'] if log_row else 0}건\n"
-            f"활동 유저: {log_row['active_users'] if log_row else 0}명\n"
-            f"집계 유저: {count_row['counted_users'] if count_row else 0}명\n"
-            f"전체 마디: {count_row['total_madi'] if count_row else 0}"
-        )
+        if source_id not in ADMIN_SOURCE_IDS:
+            reply(event.reply_token, "⛔ 운영방에서만 사용 가능합니다.")
+            return
+        keyword = text.replace("/DM테스트", "", 1).strip()
+        target = find_user(keyword)
+        if not target:
+            reply(event.reply_token, f"❌ 유저를 찾을 수 없습니다.\n검색어: {keyword}")
+            return
+        target_user_id = str(target["user_id"] or "").strip()
+        target_name = target["user_name"]
+        if not target_user_id.startswith("U"):
+            reply(event.reply_token, f"❌ USER_ID가 올바르지 않습니다.\n대상: {target_name}\nUSER_ID: {target_user_id}")
+            return
+        ok = push_private_message(target_user_id, "📩 DM 테스트 메시지입니다.\n이 메시지가 보이면 DM 전송은 정상입니다.")
+        if ok:
+            reply(event.reply_token, f"✅ DM 테스트 성공\n대상: {target_name}\nUSER_ID: {target_user_id}")
+        else:
+            reply(event.reply_token, f"❌ DM 테스트 실패\n대상: {target_name}\nUSER_ID: {target_user_id}\nRailway 로그의 [DM_FAIL] 내용을 확인해주세요.")
         return
 
     if text == "/DB상태":
@@ -6528,6 +6560,57 @@ def handle(event):
                 counts.append(f"{table}: 확인 실패")
         conn.close()
         reply(event.reply_token, "🗄️ DB 상태\n\n" + "\n".join(counts))
+        return
+
+    if text == "/수집상태":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        log_row, count_row, all_rows = collection_status(COUNT_SOURCE_ID, date_str)
+        reply(
+            event.reply_token,
+            "📊 수집상태\n\n"
+            f"기준일: {date_str}\n"
+            f"기준방: {COUNT_SOURCE_ID}\n\n"
+            f"채팅 로그: {log_row['total_logs'] if log_row else 0}건\n"
+            f"활동 유저: {log_row['active_users'] if log_row else 0}명\n"
+            f"집계 유저: {count_row['counted_users'] if count_row else 0}명\n"
+            f"전체 마디: {count_row['total_madi'] if count_row else 0}"
+        )
+        return
+
+    if text == "/최근로그":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        rows = recent_chat_logs(COUNT_SOURCE_ID, limit=20)
+        if not rows:
+            reply(event.reply_token, "최근 로그가 없습니다.")
+            return
+        lines = ["🧾 최근 로그", ""]
+        for row in rows:
+            lines.append(f"{row['created_at']} / {row['user_name']} / {row['text'] or '-'}")
+        reply_many(event.reply_token, split_text_messages("\n".join(lines)))
+        return
+
+    if text == "/수집누락":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        users_no_count, logs_no_count, counts_no_user = collection_missing(COUNT_SOURCE_ID, date_str)
+        lines = ["🧩 수집누락", f"기준일: {date_str}", ""]
+        lines.append(f"users 등록 / 오늘 counts 없음: {len(users_no_count)}명")
+        for row in users_no_count[:20]:
+            lines.append(f"- {row['user_name']}")
+        lines.append("")
+        lines.append(f"chat_logs 있음 / counts 없음: {len(logs_no_count)}명")
+        for row in logs_no_count[:20]:
+            lines.append(f"- {row['user_name']} / 로그 {row['logs']}건")
+        lines.append("")
+        lines.append(f"counts 있음 / users 없음: {len(counts_no_user)}명")
+        for row in counts_no_user[:20]:
+            lines.append(f"- {row['user_name']} / {row['count']}마디")
+        reply_many(event.reply_token, split_text_messages("\n".join(lines)))
         return
 
     if text == "/경고":
@@ -6564,6 +6647,14 @@ def handle(event):
             )
             lines.append("")
         reply_many(event.reply_token, split_text_messages("\n".join(lines)))
+        return
+
+    if text.startswith("/유저상세 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        keyword = text.replace("/유저상세", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(admin_user_detail_text(keyword)))
         return
 
     if text.startswith("/닉삭제"):
@@ -6700,12 +6791,26 @@ def handle(event):
         reply(event.reply_token, f"✅ 차감 완료\n\n대상: {target['user_name']}\n금액: -{coin_text(amount)}\n잔액: {coin_text(balance)}")
         return
 
-    if text.startswith("/코인내역"):
+    if text == "/코인내역":
+        rows = currency_history(user_id, limit=10)
+        lines = [f"💰 내 코인내역: {user_name}", ""]
+        if not rows:
+            lines.append("내역이 없습니다.")
+        else:
+            for row in rows:
+                sign = "+" if int(row["amount"]) > 0 else ""
+                lines.append(f"{row['created_at']} / {sign}{coin_text(row['amount'])} / {row['reason'] or '-'}")
+        lines.append("")
+        lines.append(f"현재 보유: {coin_text(get_balance(user_id))}")
+        push_or_reply_private_info(event, user_id, "\n".join(lines), "📩 코인내역을 개인 메시지로 보내드렸습니다.")
+        return
+
+    if text.startswith("/코인내역 "):
         if not is_staff(user_id):
             reply(event.reply_token, operator_only_warning())
             return
         parts = text.split(maxsplit=1)
-        keyword = parts[1].strip() if len(parts) > 1 else user_name
+        keyword = parts[1].strip()
         target = find_user(keyword)
         if not target:
             reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
@@ -6718,6 +6823,8 @@ def handle(event):
             for row in rows:
                 sign = "+" if int(row["amount"]) > 0 else ""
                 lines.append(f"{row['created_at']} / {sign}{coin_text(row['amount'])} / {row['reason'] or '-'}")
+        lines.append("")
+        lines.append(f"현재 보유: {coin_text(get_balance(target['user_id']))}")
         reply_many(event.reply_token, split_text_messages("\n".join(lines)))
         return
 
@@ -6746,6 +6853,19 @@ def handle(event):
         item_name = text.replace("/상품삭제", "", 1).strip()
         changed = remove_shop_item(item_name)
         reply(event.reply_token, "✅ 상품 삭제 완료" if changed else "상품을 찾을 수 없습니다.")
+        return
+
+    if text.startswith("/사용 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        try:
+            purchase_id = int(text.split()[1])
+        except Exception:
+            reply(event.reply_token, "사용법: /사용 구매번호")
+            return
+        ok, msg = staff_use_purchase(purchase_id, user_name)
+        reply_many(event.reply_token, split_text_messages(msg))
         return
 
     if text.startswith("/사용처리 "):
@@ -6798,12 +6918,11 @@ def handle(event):
         reply(event.reply_token, "족보 내용을 다음 메시지로 보내주세요.\n기존 코인은 무시하고 족보 내용으로 갱신됩니다.")
         return
 
-    if text == "/족보취소":
+    if text == "/족보":
         if not is_staff(user_id):
             reply(event.reply_token, operator_only_warning())
             return
-        JOKBO_PENDING.pop(user_id, None)
-        reply(event.reply_token, "족보 입력을 취소했습니다.")
+        reply_many(event.reply_token, split_text_messages(genealogy_text_with_coins()))
         return
 
     if text == "/럭키정산":
@@ -6842,12 +6961,59 @@ def handle(event):
     # =========================
     # 유저 명령어
     # =========================
-    if text in ["/초보자가이드", "/가이드"]:
-        push_or_reply_private_info(event, user_id, beginner_guide_text(), "📩 초보자 가이드를 개인 메시지로 보내드렸습니다.")
+    if text == "/가이드":
+        # 가이드는 개인정보가 아니므로 DM 실패 시 공개창에 본문을 표시합니다.
+        if is_private_chat(event):
+            reply_many(event.reply_token, split_text_messages(beginner_guide_text()))
+        else:
+            ok = push_private_message(user_id, beginner_guide_text()) if user_id else False
+            if ok:
+                reply(event.reply_token, "📩 가이드를 개인 메시지로 보내드렸습니다.")
+            else:
+                reply_many(event.reply_token, split_text_messages(beginner_guide_text()))
         return
 
     if text == "/명령어":
         reply_many(event.reply_token, split_text_messages(user_commands_text()))
+        return
+
+    if text == "/마디수":
+        rows = ranking(date_str, COUNT_SOURCE_ID, limit=30)
+        my_count = 0
+        for row in rows:
+            if row["user_id"] == user_id:
+                my_count = int(row["count"] or 0)
+                break
+        lines = ["📊 오늘의 마디수", f"기준일: {date_str}", "", f"내 마디수: {my_count}", ""]
+        for i, row in enumerate(rows[:10], 1):
+            lines.append(f"{i}. {row['user_name']} - {row['count']}마디")
+        reply_many(event.reply_token, split_text_messages("\n".join(lines)))
+        return
+
+    if text == "/전체순위":
+        rows = total_ranking(COUNT_SOURCE_ID, limit=20)
+        if not rows:
+            reply(event.reply_token, "전체순위 데이터가 없습니다.")
+            return
+        lines = ["🏆 전체 마디수 순위", ""]
+        for i, row in enumerate(rows, 1):
+            lines.append(f"{i}. {row['user_name']} - {row['count']}마디")
+        reply_many(event.reply_token, split_text_messages("\n".join(lines)))
+        return
+
+    if text == "/친밀도랭킹":
+        push_or_reply_private_info(event, user_id, affinity_ranking_text(limit=10), "📩 친밀도 랭킹을 개인 메시지로 보내드렸습니다.")
+        return
+
+    if text == "/마니또보상":
+        reply(
+            event.reply_token,
+            "🎭 마니또 보상 안내\n\n"
+            "일반 마니또: 1.5 ~ 6코인\n"
+            "황금 마니또: 6 ~ 15코인\n\n"
+            "친밀도 낮음: 보상 보너스 최대 +50%\n"
+            "친밀도 높음: 목표 횟수 최대 30회"
+        )
         return
 
     if text in ["/마니또", "/마니또확인"]:
@@ -6896,14 +7062,14 @@ def handle(event):
         return
 
     if text == "/친밀도" or text.startswith("/친밀도 "):
-        reply_many(event.reply_token, split_text_messages(affinity_status_text(user_id, user_name)))
+        push_or_reply_private_info(event, user_id, affinity_status_text(user_id, user_name), "📩 친밀도 정보를 개인 메시지로 보내드렸습니다.")
         return
 
     if text in ["/잔액", "/내보유"]:
-        reply(event.reply_token, f"💰 {user_name}님의 보유 코인\n\n{coin_text(get_balance(user_id))}")
+        push_or_reply_private_info(event, user_id, f"💰 {user_name}님의 보유 코인\n\n{coin_text(get_balance(user_id))}", "📩 보유 정보를 개인 메시지로 보내드렸습니다.")
         return
 
-    if text in ["/코인순위", "/코인랭킹"]:
+    if text == "/코인랭킹":
         rows = currency_ranking(limit=10)
         if not rows:
             reply(event.reply_token, "💰 코인 순위가 없습니다.")
@@ -6940,11 +7106,11 @@ def handle(event):
     # =========================
     # 1:1 전용 명령어
     # =========================
-    if text.startswith("/가챠 ") or text in ["/가챠", "/가챠시스템", "/가챠횟수", "/상가챠", "/중가챠", "/하가챠", "/조각가챠", "/조각", "/대장장이", "/상점", "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과"] or text.startswith("/구매 ") or text.startswith("/사용 "):
+    if text in ["/가챠", "/가챠시스템", "/가챠횟수", "/상가챠", "/중가챠", "/하가챠", "/조각가챠", "/조각", "/대장장이", "/상점", "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과"] or text.startswith("/구매 "):
         if not is_private_chat(event):
             if text.startswith("/가챠") or text in ["/상가챠", "/중가챠", "/하가챠", "/조각가챠", "/조각", "/대장장이", "/가챠시스템", "/가챠횟수"]:
                 private_only_notice(event, user_id, gacha_private_guide_text(), "가챠")
-            elif text in ["/상점"] or text.startswith("/구매 ") or text.startswith("/사용 "):
+            elif text in ["/상점"] or text.startswith("/구매 "):
                 private_only_notice(event, user_id, shop_private_guide_text(), "상점")
             else:
                 private_only_notice(event, user_id, "꽃봇 1:1 채팅에서 이용해주세요.", "개인 기능")
@@ -6977,14 +7143,6 @@ def handle(event):
             reply_many(event.reply_token, split_text_messages(blacksmith_exchange(user_id, user_name)))
             return
 
-        if text.startswith("/가챠 "):
-            tier = text.split(maxsplit=1)[1].strip()
-            success, message = run_gacha(user_id, user_name, tier)
-            if success:
-                grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, tier)
-            reply_many(event.reply_token, split_text_messages(message))
-            return
-
         if text == "/가챠시스템":
             reply_many(event.reply_token, split_text_messages(gacha_system_text()))
             return
@@ -7000,16 +7158,6 @@ def handle(event):
         if text.startswith("/구매 "):
             item_name = text.replace("/구매", "", 1).strip()
             ok, msg = buy_item(user_id, user_name, item_name)
-            reply_many(event.reply_token, split_text_messages(msg))
-            return
-
-        if text.startswith("/사용 "):
-            try:
-                purchase_id = int(text.replace("/사용", "", 1).strip().split()[0])
-            except Exception:
-                reply(event.reply_token, "사용할 구매번호를 입력해주세요.\n\n예: /사용 12")
-                return
-            ok, msg = use_purchase(purchase_id, user_id, user_name)
             reply_many(event.reply_token, split_text_messages(msg))
             return
 
