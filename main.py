@@ -331,6 +331,7 @@ def init_db():
         category TEXT NOT NULL,
         message TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        release_after_log_id INTEGER,
         delivered_at TEXT
     )
     """)
@@ -340,6 +341,8 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
         user_name TEXT NOT NULL,
+        requester_user_id TEXT,
+        requester_user_name TEXT,
         question TEXT NOT NULL,
         category TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
@@ -676,6 +679,22 @@ def init_db():
         if col not in manitto_cols:
             cur.execute(f"ALTER TABLE manitto_assignments ADD COLUMN {col} {col_type} DEFAULT {default_value}")
 
+    cur.execute("PRAGMA table_info(public_announcements)")
+    public_announcement_cols = {row["name"] for row in cur.fetchall()}
+
+    if "release_after_log_id" not in public_announcement_cols:
+        cur.execute("ALTER TABLE public_announcements ADD COLUMN release_after_log_id INTEGER")
+
+    cur.execute("PRAGMA table_info(truth_game_sessions)")
+    truth_game_cols = {row["name"] for row in cur.fetchall()}
+
+    for col, col_type in [
+        ("requester_user_id", "TEXT"),
+        ("requester_user_name", "TEXT"),
+    ]:
+        if col not in truth_game_cols:
+            cur.execute(f"ALTER TABLE truth_game_sessions ADD COLUMN {col} {col_type}")
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS deleted_users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -975,7 +994,7 @@ def push_private_message(user_id, text_value, return_error=False):
     return (False, error_summary) if return_error else False
 
 
-def queue_public_announcement(source_id, text_value, category="general"):
+def queue_public_announcement(source_id, text_value, category="general", release_after_log_id=None):
     source_id = str(source_id or "").strip()
     if not source_id:
         return False
@@ -984,9 +1003,10 @@ def queue_public_announcement(source_id, text_value, category="general"):
         conn = db()
         cur = conn.cursor()
         cur.execute("""
-        INSERT INTO public_announcements (source_id, category, message, created_at)
-        VALUES (?, ?, ?, ?)
-        """, (source_id, category, str(text_value), now_str()))
+        INSERT INTO public_announcements (
+            source_id, category, message, created_at, release_after_log_id
+        ) VALUES (?, ?, ?, ?, ?)
+        """, (source_id, category, str(text_value), now_str(), release_after_log_id))
         conn.commit()
         conn.close()
         return True
@@ -995,7 +1015,7 @@ def queue_public_announcement(source_id, text_value, category="general"):
         return False
 
 
-def pop_public_announcements(source_id, limit=5):
+def pop_public_announcements(source_id, current_log_id=None, limit=5):
     source_id = str(source_id or "").strip()
     if not source_id:
         return []
@@ -1008,9 +1028,13 @@ def pop_public_announcements(source_id, limit=5):
         FROM public_announcements
         WHERE source_id = ?
           AND delivered_at IS NULL
+          AND (
+              release_after_log_id IS NULL
+              OR release_after_log_id <= ?
+          )
         ORDER BY id ASC
         LIMIT ?
-        """, (source_id, limit))
+        """, (source_id, int(current_log_id or 0), limit))
         rows = cur.fetchall()
         if not rows:
             conn.close()
@@ -1190,7 +1214,8 @@ def user_commands_text():
 🎭 진실게임
 ━━━━━━━━━━
 /진실게임
-/진실질문
+/진실게임 순한맛 닉네임
+/진실질문 썸맛 닉네임
 /진실답변 내용
 /진실패스
 /진실목록
@@ -1612,8 +1637,23 @@ def save_chat_log(date_str, source_id, user_id, user_name, message_type, text_va
     INSERT INTO chat_logs (date, source_id, user_id, user_name, message_type, text, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (date_str, source_id, user_id, user_name, message_type, text_value, now_str()))
+    log_id = cur.lastrowid
     conn.commit()
     conn.close()
+    return log_id
+
+
+def latest_chat_log_id(source_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT COALESCE(MAX(id), 0) AS log_id
+    FROM chat_logs
+    WHERE source_id = ?
+    """, (source_id,))
+    row = cur.fetchone()
+    conn.close()
+    return int(row["log_id"] or 0) if row else 0
 
 
 def collection_status(source_id, date_str):
@@ -4358,6 +4398,7 @@ MENTION_SUFFIXES = (
 
 TRUTH_GAME_COST = 2       # 0.2코인
 TRUTH_GAME_PASS_COST = 1  # 0.1코인
+TRUTH_GAME_DIFFICULTIES = ("순한맛", "썸맛", "매운맛", "위험맛")
 TRUTH_GAME_QUESTIONS = [
     ("순한맛", "요즘 공창에서 제일 반가운 사람은?"),
     ("순한맛", "더 친해지고 싶은 사람은?"),
@@ -4812,18 +4853,85 @@ def get_pending_truth_game(user_id):
     return row
 
 
-def truth_game_start(user_id, user_name):
+def truth_game_setup_text():
+    return (
+        "🎭 진실게임 설정\n\n"
+        "난이도와 상대를 선택해주세요.\n\n"
+        "사용법\n"
+        "/진실게임 난이도 닉네임\n\n"
+        "예시\n"
+        "/진실게임 순한맛 미트\n"
+        "/진실게임 썸맛 꼬북\n"
+        "/진실게임 매운맛 밍구\n"
+        "/진실게임 위험맛 무화\n\n"
+        f"난이도: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
+    )
+
+
+def parse_truth_game_args(raw_args):
+    raw_args = str(raw_args or "").strip()
+    if not raw_args:
+        return None, None, truth_game_setup_text()
+
+    parts = raw_args.split()
+    difficulty = None
+
+    if parts and parts[0] in TRUTH_GAME_DIFFICULTIES:
+        difficulty = parts.pop(0)
+    elif parts and parts[-1] in TRUTH_GAME_DIFFICULTIES:
+        difficulty = parts.pop()
+
+    if not difficulty:
+        return None, None, (
+            "🎭 진실게임 설정\n\n"
+            "난이도를 먼저 선택해주세요.\n\n"
+            "사용법\n"
+            "/진실게임 난이도 닉네임\n\n"
+            f"난이도: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
+        )
+
+    target_keyword = " ".join(parts).strip()
+    if not target_keyword:
+        return None, None, (
+            "🎭 진실게임 설정\n\n"
+            "상대를 지목해주세요.\n\n"
+            f"예시: /진실게임 {difficulty} 미트"
+        )
+
+    return target_keyword, difficulty, None
+
+
+def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
     try:
         if not user_id:
             return "🎭 진실게임 실패\n\n사용자 정보를 확인할 수 없습니다."
 
-        pending = get_pending_truth_game(user_id)
+        target_keyword = str(target_keyword or "").strip()
+        if not target_keyword:
+            return truth_game_setup_text()
+
+        difficulty = str(difficulty or "").strip()
+        if difficulty and difficulty not in TRUTH_GAME_DIFFICULTIES:
+            return (
+                "🎭 진실게임 실패\n\n"
+                "난이도를 확인해주세요.\n"
+                f"사용 가능: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
+            )
+
+        target, err = resolve_active_user_by_nickname(target_keyword, purpose="대상")
+        if err:
+            return "🎭 진실게임 실패\n\n" + err
+        if target["user_id"] == user_id:
+            return "🎭 진실게임 실패\n\n자기 자신은 지목할 수 없습니다."
+
+        pending = get_pending_truth_game(target["user_id"])
         if pending:
             return (
                 "🎭 진행 중인 진실게임이 있습니다.\n\n"
+                f"대상: {pending['user_name']}\n"
+                f"난이도: {pending['category']}\n"
                 f"질문: {pending['question']}\n"
-                "답변: /진실답변 내용\n"
-                "패스: /진실패스"
+                f"{pending['user_name']}님이 먼저 답변하거나 패스해야 합니다."
             )
 
         if get_balance(user_id) < TRUTH_GAME_COST:
@@ -4833,24 +4941,35 @@ def truth_game_start(user_id, user_name):
                 f"현재 보유: {coin_text(get_balance(user_id))}"
             )
 
-        category, question = random.choice(TRUTH_GAME_QUESTIONS)
+        question_pool = [
+            item for item in TRUTH_GAME_QUESTIONS
+            if not difficulty or item[0] == difficulty
+        ]
+        category, question = random.choice(question_pool)
         change_money(user_id, user_name, -TRUTH_GAME_COST, "진실게임 질문 뽑기", None, "진실게임")
 
         conn = db()
         cur = conn.cursor()
         cur.execute("""
         INSERT INTO truth_game_sessions (
-            user_id, user_name, question, category, status, cost, created_at
-        ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
-        """, (user_id, user_name, question, category, TRUTH_GAME_COST, now_str()))
+            user_id, user_name, requester_user_id, requester_user_name,
+            question, category, status, cost, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        """, (
+            target["user_id"], target["user_name"],
+            user_id, user_name,
+            question, category, TRUTH_GAME_COST, now_str()
+        ))
         conn.commit()
         conn.close()
 
+        target_name = display_nickname(target["user_name"])
         return (
             "🎭 진실게임 시작\n\n"
+            f"지목: {target_name}님\n"
+            f"난이도: {category}\n"
             f"질문: {question}\n"
-            "답변: /진실답변 내용\n"
-            "패스: /진실패스"
+            f"{target_name}님은 /진실답변 내용 으로 답변하거나 /진실패스 로 넘길 수 있습니다."
         )
     except Exception as e:
         print("TRUTH_GAME_START_ERROR:", repr(e))
@@ -4886,13 +5005,16 @@ def truth_game_answer(user_id, user_name, answer_text):
         if not changed:
             return "🎭 진실게임 답변 실패\n\n진행 중인 질문이 없습니다."
 
-        change_money(user_id, user_name, TRUTH_GAME_COST, "진실게임 답변 환급", None, "진실게임")
+        change_money(user_id, user_name, TRUTH_GAME_COST, "진실게임 답변 보상", None, "진실게임")
+        requester = pending["requester_user_name"] if "requester_user_name" in pending.keys() else None
+        request_line = f"지목자: {requester}\n" if requester else ""
         return (
             "🎭 진실게임 답변\n\n"
+            f"{request_line}"
             f"질문: {pending['question']}\n\n"
             f"{user_name}님의 답변:\n"
             f"{answer_text}\n\n"
-            f"환급: {coin_text(TRUTH_GAME_COST)}"
+            f"답변 보상: {coin_text(TRUTH_GAME_COST)}"
         )
     except Exception as e:
         print("TRUTH_GAME_ANSWER_ERROR:", repr(e))
@@ -4907,13 +5029,6 @@ def truth_game_pass(user_id, user_name):
         pending = get_pending_truth_game(user_id)
         if not pending:
             return "🎭 진실게임 패스 실패\n\n진행 중인 질문이 없습니다.\n질문 뽑기: /진실게임"
-
-        if get_balance(user_id) < TRUTH_GAME_PASS_COST:
-            return (
-                "🎭 진실게임 패스 실패\n\n"
-                f"패스 비용: {coin_text(TRUTH_GAME_PASS_COST)}\n"
-                f"현재 보유: {coin_text(get_balance(user_id))}"
-            )
 
         conn = db()
         cur = conn.cursor()
@@ -4930,11 +5045,26 @@ def truth_game_pass(user_id, user_name):
         if not changed:
             return "🎭 진실게임 패스 실패\n\n진행 중인 질문이 없습니다."
 
-        change_money(user_id, user_name, -TRUTH_GAME_PASS_COST, "진실게임 패스", None, "진실게임")
+        requester = pending["requester_user_name"] if "requester_user_name" in pending.keys() else None
+        requester_user_id = pending["requester_user_id"] if "requester_user_id" in pending.keys() else None
+        refund = int(pending["cost"] or TRUTH_GAME_COST)
+        refund_line = ""
+        if requester_user_id and requester:
+            change_money(
+                requester_user_id,
+                requester,
+                refund,
+                f"진실게임 패스 환급: {user_name}",
+                None,
+                "진실게임"
+            )
+            refund_line = f"\n지목자 환급: {coin_text(refund)}"
+        request_line = f"지목자: {requester}\n" if requester else ""
         return (
             "🎭 진실게임 패스\n\n"
-            f"{user_name}님이 질문을 패스했습니다.\n"
-            f"패스 비용: {coin_text(TRUTH_GAME_PASS_COST)}"
+            f"{request_line}"
+            f"{user_name}님이 질문을 패스했습니다."
+            f"{refund_line}"
         )
     except Exception as e:
         print("TRUTH_GAME_PASS_ERROR:", repr(e))
@@ -4948,6 +5078,7 @@ def truth_game_list_text(limit=10):
         cur.execute("""
         SELECT
             t.user_name,
+            t.requester_user_name,
             t.question,
             t.answer_text,
             t.answered_at
@@ -4971,6 +5102,8 @@ def truth_game_list_text(limit=10):
         else:
             for i, row in enumerate(rows, 1):
                 lines.append(f"{i}. {row['user_name']}")
+                if row["requester_user_name"]:
+                    lines.append(f"지목자: {row['requester_user_name']}")
                 lines.append(f"Q. {row['question']}")
                 lines.append(f"A. {row['answer_text']}")
                 if row["answered_at"]:
@@ -5070,6 +5203,7 @@ def find_delete_candidates(keyword, limit=20):
         ("sns_lucky_draw_entries", "user_id", "user_name"),
         ("achievements", "user_id", "user_name"),
         ("truth_game_sessions", "user_id", "user_name"),
+        ("truth_game_sessions", "requester_user_id", "requester_user_name"),
         ("chat_last_speakers", "user_id", "user_name"),
         ("mention_logs", "sender_user_id", "sender_user_name"),
         ("mention_logs", "target_user_id", "target_user_name"),
@@ -5160,6 +5294,7 @@ def delete_users_by_ids(targets):
             ("mention_logs", "target_user_id"),
             ("anonymous_pokes", "sender_user_id"),
             ("anonymous_pokes", "target_user_id"),
+            ("truth_game_sessions", "requester_user_id"),
             ("affinity_scores", "user_a"),
             ("affinity_scores", "user_b"),
             ("affinity_cumulative_scores", "user_a"),
@@ -5952,7 +6087,25 @@ def complete_manitto_if_ready(hunter_user_id, hunter_user_name, partner_user_id)
         "축하합니다 😊"
     )
 
-    return public_text
+    try:
+        delay_count = random.randint(10, 20)
+        release_after_log_id = latest_chat_log_id(COUNT_SOURCE_ID) + delay_count
+        queue_public_announcement(
+            COUNT_SOURCE_ID,
+            public_text,
+            "manitto_success",
+            release_after_log_id=release_after_log_id
+        )
+        print(
+            "MANITTO_PUBLIC_NOTICE_QUEUED:",
+            f"hunter={hunter_user_id}",
+            f"delay={delay_count}",
+            f"release_after_log_id={release_after_log_id}",
+        )
+    except Exception as e:
+        print("MANITTO_PUBLIC_NOTICE_QUEUE_ERROR:", repr(e))
+
+    return None
 
 
 def send_manitto_reply(event, user_id, user_name):
@@ -6946,6 +7099,7 @@ def snapshot_user_data(user_id):
         ("mention_logs", "target_user_id"),
         ("anonymous_pokes", "sender_user_id"),
         ("anonymous_pokes", "target_user_id"),
+        ("truth_game_sessions", "requester_user_id"),
         ("affinity_scores", "user_a"),
         ("affinity_scores", "user_b"),
         ("affinity_cumulative_scores", "user_a"),
@@ -7095,7 +7249,7 @@ def handle(event):
             message_type = type(event.message).__name__
             message_text = ""
 
-        save_chat_log(
+        current_chat_log_id = save_chat_log(
             date_str,
             source_id,
             user_id,
@@ -7112,7 +7266,7 @@ def handle(event):
 
         try:
             if source_id == COUNT_SOURCE_ID:
-                public_notices.extend(pop_public_announcements(source_id))
+                public_notices.extend(pop_public_announcements(source_id, current_chat_log_id))
         except Exception as e:
             print("PUBLIC_ANNOUNCEMENT_ERROR:", e)
 
@@ -7815,8 +7969,16 @@ def handle(event):
         reply_many(event.reply_token, split_text_messages(anonymous_poke_ranking_text()))
         return
 
-    if text in ["/진실게임", "/진실질문"]:
-        reply_many(event.reply_token, split_text_messages(truth_game_start(user_id, user_name)))
+    if text == "/진실게임" or text.startswith("/진실게임 ") or text == "/진실질문" or text.startswith("/진실질문 "):
+        if text.startswith("/진실게임"):
+            raw_truth_args = text.replace("/진실게임", "", 1).strip()
+        else:
+            raw_truth_args = text.replace("/진실질문", "", 1).strip()
+        target_keyword, truth_difficulty, truth_err = parse_truth_game_args(raw_truth_args)
+        if truth_err:
+            reply_many(event.reply_token, split_text_messages(truth_err))
+            return
+        reply_many(event.reply_token, split_text_messages(truth_game_start(user_id, user_name, target_keyword, truth_difficulty)))
         return
 
     if text.startswith("/진실답변"):
