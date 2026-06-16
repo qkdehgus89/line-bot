@@ -23,6 +23,11 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 try:
+    from linebot.v3.messaging import ApiException
+except Exception:
+    ApiException = Exception
+
+try:
     from linebot.v3.webhooks import MemberJoinedEvent, MemberLeftEvent
 except Exception:
     MemberJoinedEvent = None
@@ -61,7 +66,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "10"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "10"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "sns-flowerbot-v10.4"
+BOT_VERSION = "sns-flowerbot-v10.5"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -926,6 +931,7 @@ def push_private_message(user_id, text_value):
     """
     USER_ID(U...)로만 개인 DM PushMessage를 보냅니다.
     성공 True / 실패 False
+    실패 시 LINE SDK ApiException 상세를 Railway 로그에 출력합니다.
     """
     user_id = str(user_id or "").strip()
     if not user_id.startswith("U"):
@@ -947,10 +953,18 @@ def push_private_message(user_id, text_value):
             )
         print("[DM_OK]", user_id)
         return True
-    except Exception as e:
-        print("[DM_FAIL]", user_id, repr(e))
+    except ApiException as e:
+        print("[DM_FAIL]", user_id)
+        print("status:", getattr(e, "status", None))
+        print("reason:", getattr(e, "reason", None))
+        print("body:", getattr(e, "body", None))
+        print("data:", getattr(e, "data", None))
+        print("headers:", getattr(e, "headers", None))
+        print("repr:", repr(e))
         return False
-
+    except Exception as e:
+        print("[DM_FAIL_UNKNOWN]", user_id, repr(e))
+        return False
 
 def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 개인 메시지로 전송했습니다."):
     """
@@ -6516,7 +6530,7 @@ def handle(event):
             event.reply_token,
             "🤖 S.N.S 꽃봇\n\n"
             f"버전: {BOT_VERSION}\n"
-            "빌드: v10.4\n"
+            "빌드: v10.5\n"
             "환경변수: ADMIN_SOURCE_ID / COUNT_SOURCE_ID / ADMIN_USER_IDS / OPERATOR_USER_IDS"
         )
         return
