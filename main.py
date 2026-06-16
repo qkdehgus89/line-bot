@@ -17,15 +17,9 @@ from linebot.v3.messaging import (
     Configuration,
     MessagingApi,
     ReplyMessageRequest,
-    PushMessageRequest,
     TextMessage,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
-
-try:
-    from linebot.v3.messaging import ApiException
-except Exception:
-    ApiException = Exception
 
 try:
     from linebot.v3.webhooks import MemberJoinedEvent, MemberLeftEvent
@@ -148,7 +142,6 @@ def is_operator_command(text):
         "/지급 ", "/차감 ", "/코인내역 ", "/삭제복구",
         "/상품추가 ", "/상품등록 ", "/상품삭제 ",
         "/사용 ", "/사용처리 ", "/구매취소 ", "/아이템지급 ",
-        "/DM테스트 ",
     ]
 
     return text in exact_commands or any(text.startswith(prefix) for prefix in prefix_commands)
@@ -927,116 +920,40 @@ def is_private_chat(event):
     return bool(source_user_id and str(source_user_id).strip() not in ("", "NO_USER_ID", "None"))
 
 
-def line_api_error_summary(error):
-    status = getattr(error, "status", None)
-    reason = getattr(error, "reason", None)
-    body = getattr(error, "body", None) or getattr(error, "data", None)
-    parts = []
-    if status is not None:
-        parts.append(f"status={status}")
-    if reason:
-        parts.append(f"reason={reason}")
-    if body:
-        body_text = str(body).replace("\r", " ").replace("\n", " ")
-        parts.append(f"body={body_text[:500]}")
-    return " / ".join(parts) or repr(error)
-
-
-def is_monthly_message_limit_error(error_summary):
-    text_value = str(error_summary or "").lower()
-    return "monthly limit" in text_value or "reached your monthly limit" in text_value
-
-
-def dm_failure_guidance(error_summary):
-    if is_monthly_message_limit_error(error_summary):
-        return (
-            "이번 달 LINE 공식계정 메시지 발송 한도를 모두 사용했습니다.\n"
-            "그룹/운영방에서 개인 DM으로 보내는 기능은 한도 복구 전까지 실패합니다.\n\n"
-            "해결 방법:\n"
-            "1. LINE Official Account Manager에서 메시지 사용량/요금제를 확인\n"
-            "2. 필요하면 플랜 업그레이드 또는 추가 메시지 한도 설정\n"
-            "3. 한도 복구 전에는 꽃봇 1:1 채팅에서 명령어를 직접 입력"
-        )
-
-    return (
-        "확인할 것:\n"
-        "1. 대상이 꽃봇을 친구추가했는지\n"
-        "2. 대상이 꽃봇을 차단하지 않았는지\n"
-        "3. Railway의 LINE_CHANNEL_ACCESS_TOKEN이 현재 봇 채널 토큰인지"
-    )
+def one_to_one_command_notice(feature_name="해당 기능", command_hint=None):
+    lines = [
+        f"{feature_name} 안내",
+        "",
+        "꽃봇 1:1 채팅에서 직접 이용해주세요.",
+        "",
+        "월간 메시지 한도 절약을 위해 개인 DM 자동 발송은 사용하지 않습니다.",
+    ]
+    if command_hint:
+        lines += ["", f"1:1에서 입력: {command_hint}"]
+    return "\n".join(lines)
 
 
 def push_private_message(user_id, text_value, return_error=False):
     """
-    USER_ID(U...)로만 개인 DM PushMessage를 보냅니다.
-    성공 True / 실패 False
-    실패 시 LINE SDK ApiException 상세를 Railway 로그에 출력합니다.
+    LINE Push API는 월간 메시지 한도 절약을 위해 사용하지 않습니다.
+    1:1 채팅에서는 reply로만 응답하고, 공개방에서는 1:1 직접 입력을 안내합니다.
     """
     user_id = str(user_id or "").strip()
-    if not user_id.startswith("U"):
-        print("[DM_FAIL] INVALID_USER_ID", user_id)
-        return (False, "INVALID_USER_ID") if return_error else False
+    print("[PUSH_DISABLED]", user_id)
+    error_summary = "PUSH_DISABLED: 꽃봇 1:1 채팅에서 직접 명령어를 입력해주세요."
+    return (False, error_summary) if return_error else False
 
-    try:
-        messages = [TextMessage(text=str(t)[:4900]) for t in split_text_messages(text_value)]
-        if not messages:
-            messages = [TextMessage(text="내용이 없습니다.")]
 
-        with ApiClient(config) as client:
-            api = MessagingApi(client)
-            api.push_message(
-                PushMessageRequest(
-                    to=user_id,
-                    messages=messages[:5]
-                )
-            )
-        print("[DM_OK]", user_id)
-        return (True, "") if return_error else True
-    except ApiException as e:
-        error_summary = line_api_error_summary(e)
-        print("[DM_FAIL]", user_id)
-        print("status:", getattr(e, "status", None))
-        print("reason:", getattr(e, "reason", None))
-        print("body:", getattr(e, "body", None))
-        print("data:", getattr(e, "data", None))
-        print("headers:", getattr(e, "headers", None))
-        print("repr:", repr(e))
-        return (False, error_summary) if return_error else False
-    except Exception as e:
-        print("[DM_FAIL_UNKNOWN]", user_id, repr(e))
-        return (False, repr(e)) if return_error else False
-
-def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 개인 메시지로 전송했습니다."):
+def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 개인 메시지로 전송했습니다.", command_hint=None):
     """
     1:1 채팅에서는 현재 대화에 바로 reply.
-    공개방/그룹/룸에서는 유저에게 1:1 Push 후 공개방에는 안내만 출력.
+    공개방/그룹/룸에서는 Push를 쓰지 않고 1:1 직접 입력을 안내.
     """
     if is_private_chat(event):
         reply_many(event.reply_token, split_text_messages(text_value))
         return
 
-    if not user_id:
-        reply(event.reply_token, "개인 메시지를 보내려면 USER_ID가 필요합니다.\n방에서 채팅 1회 후 다시 입력해주세요.")
-        return
-
-    ok, error_summary = push_private_message(user_id, text_value, return_error=True)
-    if ok:
-        reply(event.reply_token, public_notice)
-    else:
-        if is_monthly_message_limit_error(error_summary):
-            reply(
-                event.reply_token,
-                "📩 개인 메시지 전송에 실패했습니다.\n\n"
-                "LINE 공식계정의 이번 달 메시지 발송 한도를 모두 사용했습니다.\n"
-                "한도 복구 전에는 꽃봇 1:1 채팅에서 명령어를 직접 입력해주세요."
-            )
-        else:
-            reply(
-                event.reply_token,
-                "📩 개인 메시지 전송에 실패했습니다.\n\n"
-                "꽃봇을 친구추가한 뒤 다시 입력해주세요.\n\n"
-                "※ 이미 친구추가가 되어 있다면 운영진에게 알려주세요."
-            )
+    reply(event.reply_token, one_to_one_command_notice("개인 정보 기능", command_hint))
 
 
 def private_only_notice(*args):
@@ -1048,22 +965,21 @@ def private_only_notice(*args):
     """
     if len(args) >= 4:
         event, user_id, text_value, feature_name = args[0], args[1], args[2], args[3]
-        ok = push_private_message(user_id, text_value) if user_id else False
-        if ok:
-            reply(event.reply_token, f"📩 {feature_name} 안내를 개인 메시지로 보내드렸습니다.")
-        else:
-            reply(
-                event.reply_token,
-                f"📩 {feature_name} 안내 전송에 실패했습니다.\n\n"
-                "꽃봇을 친구추가한 뒤 다시 입력해주세요."
-            )
+        command_hint = {
+            "가챠": "/가챠",
+            "상점": "/상점",
+            "개인 기능": "/명령어",
+        }.get(str(feature_name), None)
+        reply(event.reply_token, one_to_one_command_notice(feature_name, command_hint))
         return None
 
     feature_name = args[0] if args else "해당 기능"
-    return (
-        f"📩 {feature_name}은 꽃봇 1:1 채팅에서 이용해주세요.\n\n"
-        "공개방에는 개인정보 보호를 위해 자세한 내용을 표시하지 않습니다."
-    )
+    command_hint = {
+        "가챠": "/가챠",
+        "상점": "/상점",
+        "개인 기능": "/명령어",
+    }.get(str(feature_name), None)
+    return one_to_one_command_notice(feature_name, command_hint)
 
 
 def gacha_private_guide_text():
@@ -1314,7 +1230,6 @@ def operator_commands_text():
 /수집누락
 /경고
 /조각정리
-/DM테스트 닉네임
 /버전"""
 
 # =========================
@@ -3202,26 +3117,13 @@ def gacha_system_text():
 # =========================
 
 def broadcast_hidden_reward(reason, user_name, reward):
-    try:
-        from linebot.v3.messaging import PushMessageRequest, TextMessage
-
-        msg = (
-            "🎉 히든 미션 달성!\n\n"
-            f"{reason}\n"
-            f"달성자: {user_name}\n"
-            f"보상: 💰{coin_text(reward)}"
-        )
-
-        with ApiClient(config) as client:
-            api = MessagingApi(client)
-            api.push_message(
-                PushMessageRequest(
-                    to=COUNT_SOURCE_ID,
-                    messages=[TextMessage(text=msg)]
-                )
-            )
-    except Exception as e:
-        print("HIDDEN_BROADCAST_ERROR:", e)
+    msg = (
+        "🎉 히든 미션 달성!\n\n"
+        f"{reason}\n"
+        f"달성자: {user_name}\n"
+        f"보상: 💰{coin_text(reward)}"
+    )
+    print("[PUSH_DISABLED] HIDDEN_REWARD", msg)
 
 
 def grant_hidden_reward_once(date_str, mission_key, user_id, user_name, reward, reason, meta=""):
@@ -3368,27 +3270,14 @@ def get_today_chat_log_sequence(source_id, date_str):
 
 
 def broadcast_hidden_reward_to(source_id, reason, user_name, reward):
-    """히든 보상 알림을 해당 방으로 발송."""
-    try:
-        from linebot.v3.messaging import PushMessageRequest, TextMessage
-
-        msg = (
-            "🎉 히든 보상 달성!\n\n"
-            f"{reason}\n"
-            f"달성자: {user_name}\n"
-            f"보상: 💰{coin_text(reward)}"
-        )
-
-        with ApiClient(config) as client:
-            api = MessagingApi(client)
-            api.push_message(
-                PushMessageRequest(
-                    to=source_id,
-                    messages=[TextMessage(text=msg)]
-                )
-            )
-    except Exception as e:
-        print("HIDDEN_BROADCAST_TO_ERROR:", e)
+    """히든 보상 알림은 Push 대신 로그로만 남깁니다."""
+    msg = (
+        "🎉 히든 보상 달성!\n\n"
+        f"{reason}\n"
+        f"달성자: {user_name}\n"
+        f"보상: 💰{coin_text(reward)}"
+    )
+    print("[PUSH_DISABLED] HIDDEN_REWARD_TO", source_id, msg)
 
 
 def grant_daily_chat_jackpot(date_str, source_id, seq, user_id, user_name, reward, reason, meta=""):
@@ -4040,15 +3929,8 @@ def maybe_auto_lucky_draw():
     if not ok:
         return False
 
-    try:
-        from linebot.v3.messaging import PushMessageRequest, TextMessage
-        with ApiClient(config) as client:
-            api = MessagingApi(client)
-            api.push_message(PushMessageRequest(to=COUNT_SOURCE_ID, messages=[TextMessage(text=msg)]))
-        return True
-    except Exception as e:
-        print("SNS_LUCKY_AUTO_PUSH_ERROR:", e)
-        return False
+    print("[PUSH_DISABLED] SNS_LUCKY_AUTO_RESULT", msg)
+    return True
 
 
 def lucky_draw_auto_scheduler_loop():
@@ -5297,11 +5179,6 @@ def complete_manitto_if_ready(hunter_user_id, hunter_user_name, partner_user_id)
         "축하합니다 😊"
     )
 
-    try:
-        push_private_message(hunter_user_id, dm_text)
-    except Exception as e:
-        print("MANITTO_REWARD_DM_ERROR:", repr(e))
-
     return public_text
 
 
@@ -6143,12 +6020,7 @@ def run_weekly_settlement_auto():
         set_system_flag(flag_key, "done")
 
         notify_text = "🏆 자동 주간정산 완료\n\n" + str(result_text)
-        if ADMIN_SOURCE_IDS:
-            for sid in ADMIN_SOURCE_IDS:
-                push_private_message(sid, notify_text)
-        elif ADMIN_SOURCE_ID:
-            push_private_message(ADMIN_SOURCE_ID, notify_text)
-
+        print("[PUSH_DISABLED] AUTO_WEEKLY_SETTLEMENT_NOTIFY", notify_text)
         print("AUTO_WEEKLY_SETTLEMENT_DONE:", date_str)
 
     except Exception as e:
@@ -6545,33 +6417,12 @@ def handle(event):
         if not is_staff(user_id):
             reply(event.reply_token, operator_only_warning())
             return
-        if source_id not in ADMIN_SOURCE_IDS:
-            reply(event.reply_token, "⛔ 운영방에서만 사용 가능합니다.")
-            return
-        keyword = text.replace("/DM테스트", "", 1).strip()
-        target = find_user(keyword)
-        if not target:
-            reply(event.reply_token, f"❌ 유저를 찾을 수 없습니다.\n검색어: {keyword}")
-            return
-        target_user_id = str(target["user_id"] or "").strip()
-        target_name = target["user_name"]
-        if not target_user_id.startswith("U"):
-            reply(event.reply_token, f"❌ USER_ID가 올바르지 않습니다.\n대상: {target_name}\nUSER_ID: {target_user_id}")
-            return
-        ok, error_summary = push_private_message(
-            target_user_id,
-            "📩 DM 테스트 메시지입니다.\n이 메시지가 보이면 DM 전송은 정상입니다.",
-            return_error=True,
+        reply(
+            event.reply_token,
+            "📩 DM 테스트는 비활성화되어 있습니다.\n\n"
+            "월간 메시지 한도 절약을 위해 꽃봇은 Push 메시지를 보내지 않습니다.\n"
+            "개인 기능은 사용자가 꽃봇 1:1 채팅에서 직접 명령어를 입력해야 합니다."
         )
-        if ok:
-            reply(event.reply_token, f"✅ DM 테스트 성공\n대상: {target_name}\nUSER_ID: {target_user_id}")
-        else:
-            reply(
-                event.reply_token,
-                f"❌ DM 테스트 실패\n대상: {target_name}\nUSER_ID: {target_user_id}\n\n"
-                f"LINE 응답: {error_summary or '-'}\n\n"
-                f"{dm_failure_guidance(error_summary)}"
-            )
         return
 
     if text == "/DB상태":
@@ -6831,7 +6682,7 @@ def handle(event):
                 lines.append(f"{row['created_at']} / {sign}{coin_text(row['amount'])} / {row['reason'] or '-'}")
         lines.append("")
         lines.append(f"현재 보유: {coin_text(get_balance(user_id))}")
-        push_or_reply_private_info(event, user_id, "\n".join(lines), "📩 코인내역을 개인 메시지로 보내드렸습니다.")
+        push_or_reply_private_info(event, user_id, "\n".join(lines), "📩 코인내역을 개인 메시지로 보내드렸습니다.", "/코인내역")
         return
 
     if text.startswith("/코인내역 "):
@@ -6991,15 +6842,10 @@ def handle(event):
     # 유저 명령어
     # =========================
     if text == "/가이드":
-        # 가이드는 개인정보가 아니므로 DM 실패 시 공개창에 본문을 표시합니다.
         if is_private_chat(event):
             reply_many(event.reply_token, split_text_messages(beginner_guide_text()))
         else:
-            ok = push_private_message(user_id, beginner_guide_text()) if user_id else False
-            if ok:
-                reply(event.reply_token, "📩 가이드를 개인 메시지로 보내드렸습니다.")
-            else:
-                reply_many(event.reply_token, split_text_messages(beginner_guide_text()))
+            reply(event.reply_token, one_to_one_command_notice("가이드", "/가이드"))
         return
 
     if text == "/명령어":
@@ -7031,7 +6877,7 @@ def handle(event):
         return
 
     if text == "/친밀도랭킹":
-        push_or_reply_private_info(event, user_id, affinity_ranking_text(limit=10), "📩 친밀도 랭킹을 개인 메시지로 보내드렸습니다.")
+        push_or_reply_private_info(event, user_id, affinity_ranking_text(limit=10), "📩 친밀도 랭킹을 개인 메시지로 보내드렸습니다.", "/친밀도랭킹")
         return
 
     if text == "/마니또보상":
@@ -7091,11 +6937,11 @@ def handle(event):
         return
 
     if text == "/친밀도" or text.startswith("/친밀도 "):
-        push_or_reply_private_info(event, user_id, affinity_status_text(user_id, user_name), "📩 친밀도 정보를 개인 메시지로 보내드렸습니다.")
+        push_or_reply_private_info(event, user_id, affinity_status_text(user_id, user_name), "📩 친밀도 정보를 개인 메시지로 보내드렸습니다.", text)
         return
 
     if text in ["/잔액", "/내보유"]:
-        push_or_reply_private_info(event, user_id, f"💰 {user_name}님의 보유 코인\n\n{coin_text(get_balance(user_id))}", "📩 보유 정보를 개인 메시지로 보내드렸습니다.")
+        push_or_reply_private_info(event, user_id, f"💰 {user_name}님의 보유 코인\n\n{coin_text(get_balance(user_id))}", "📩 보유 정보를 개인 메시지로 보내드렸습니다.", text)
         return
 
     if text == "/코인랭킹":
@@ -7111,7 +6957,7 @@ def handle(event):
         return
 
     if text == "/업적":
-        push_or_reply_private_info(event, user_id, achievement_status_text(user_id, user_name), "📩 업적 현황을 개인 메시지로 보내드렸습니다.")
+        push_or_reply_private_info(event, user_id, achievement_status_text(user_id, user_name), "📩 업적 현황을 개인 메시지로 보내드렸습니다.", "/업적")
         return
 
     if text == "/주간랭킹":
@@ -7129,7 +6975,7 @@ def handle(event):
         return
 
     if text == "/럭키드로우결과":
-        push_or_reply_private_info(event, user_id, lucky_draw_result_text(), "📩 럭키드로우 결과를 개인 메시지로 보내드렸습니다.")
+        push_or_reply_private_info(event, user_id, lucky_draw_result_text(), "📩 럭키드로우 결과를 개인 메시지로 보내드렸습니다.", "/럭키드로우결과")
         return
 
     # =========================
