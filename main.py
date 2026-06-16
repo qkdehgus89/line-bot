@@ -137,7 +137,7 @@ def is_operator_command(text):
         return False
 
     exact_commands = {
-        "/운영명령어", "/방정보", "/DB상태", "/전체유저",
+        "/운영명령어", "/방정보", "/DB상태", "/수집상태", "/최근로그", "/수집누락", "/전체유저",
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
         "/조각정리", "/버전",
@@ -1642,52 +1642,6 @@ def set_nomicl(user_name_keyword, value):
     return changed
 
 
-def set_user_active_by_id(user_id, value):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    UPDATE users
-    SET is_active = ?,
-        updated_at = ?
-    WHERE user_id = ?
-    """, (value, now_str(), user_id))
-    changed = cur.rowcount
-    conn.commit()
-    conn.close()
-    return changed
-
-
-def set_user_active_by_name(keyword, value):
-    rows = find_users(keyword, limit=20)
-
-    if not rows:
-        return 0, []
-
-    conn = db()
-    cur = conn.cursor()
-
-    changed = 0
-    names = []
-
-    for row in rows:
-        cur.execute("""
-        UPDATE users
-        SET is_active = ?,
-            updated_at = ?
-        WHERE user_id = ?
-        """, (value, now_str(), row["user_id"]))
-
-        changed += cur.rowcount
-        names.append(row["user_name"])
-
-    conn.commit()
-    conn.close()
-
-    return changed, names
-
-
-
-
 def get_user_by_id(user_id):
     conn = db()
     cur = conn.cursor()
@@ -2652,6 +2606,10 @@ PIECE_INFO = {
 OLD_PIECE_KEYS = {"선갠라", "단벙", "봇등록", "미션", "임티", "칭호"}
 
 
+def piece_item_name(info):
+    return info.get("item") or f"{info['label']} 완성 보상"
+
+
 def weighted_pick(weighted_items):
     total = sum(weight for weight, _ in weighted_items)
     point = random.uniform(0, total)
@@ -2740,7 +2698,7 @@ def add_gacha_piece(user_id, user_name, piece_key, amount):
 
     while total_count >= need:
         total_count -= need
-        completed.append(info["item"])
+        completed.append(piece_item_name(info))
 
     cur.execute("""
     UPDATE gacha_pieces
@@ -4117,7 +4075,7 @@ def achievement_status_text(user_id, user_name):
 
     dynamic = []
     for key, info in PIECE_INFO.items():
-        dynamic.append((f"blacksmith_{key}", f"🔨 대장장이: {info['item']}", f"{info['label']} 최초 완성", 20))
+        dynamic.append((f"blacksmith_{key}", f"🔨 대장장이: {piece_item_name(info)}", f"{info['label']} 최초 완성", 20))
 
     catalog = ACHIEVEMENT_CATALOG + dynamic
     lines = [
@@ -4227,7 +4185,7 @@ def grant_blacksmith_if_first(user_id, user_name, piece_key):
         user_id,
         user_name,
         f"blacksmith_{piece_key}",
-        f"🔨 대장장이: {info['item']}",
+        f"🔨 대장장이: {piece_item_name(info)}",
         20,
         f"piece_key={piece_key}"
     )
