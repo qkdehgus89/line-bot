@@ -16,6 +16,7 @@ from linebot.v3.messaging import (
     ApiClient,
     Configuration,
     MessagingApi,
+    PushMessageRequest,
     ReplyMessageRequest,
     TextMessage,
 )
@@ -134,7 +135,7 @@ def is_operator_command(text):
         "/운영명령어", "/방정보", "/DB상태", "/수집상태", "/최근로그", "/수집누락", "/전체유저",
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
-        "/조각정리", "/버전",
+        "/찔러보기초기화", "/조각정리", "/버전",
     }
 
     prefix_commands = [
@@ -964,6 +965,30 @@ def push_private_message(user_id, text_value, return_error=False):
     return (False, error_summary) if return_error else False
 
 
+def push_public_message(source_id, text_value):
+    """
+    1:1에서 실행된 이벤트 결과를 지정된 공개방으로 보냅니다.
+    현재는 /찔러보기 공개 알림 전용으로만 사용합니다.
+    """
+    source_id = str(source_id or "").strip()
+    if not source_id:
+        return False, "PUBLIC_SOURCE_ID_MISSING"
+
+    try:
+        with ApiClient(config) as client:
+            api = MessagingApi(client)
+            api.push_message(
+                PushMessageRequest(
+                    to=source_id,
+                    messages=[TextMessage(text=str(text_value)[:4900])]
+                )
+            )
+        return True, ""
+    except Exception as e:
+        print("PUBLIC_PUSH_FAIL:", repr(e))
+        return False, "PUBLIC_PUSH_FAILED"
+
+
 def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 개인 메시지로 전송했습니다.", command_hint=None):
     """
     1:1 채팅에서는 현재 대화에 바로 reply.
@@ -1117,7 +1142,7 @@ def user_commands_text():
 ━━━━━━━━━━
 👀 찔러보기
 ━━━━━━━━━━
-/찔러보기 닉네임
+/찔러보기 닉네임 (1:1)
 /찔러보기현황
 /찔러보기랭킹
 
@@ -1263,6 +1288,11 @@ def operator_commands_text():
 /럭키정산
 /럭키초기화
 /럭키현황전체
+
+━━━━━━━━━━
+👀 이벤트 관리
+━━━━━━━━━━
+/찔러보기초기화
 
 ━━━━━━━━━━
 ⚙️ 시스템
@@ -4535,7 +4565,7 @@ def mention_ranking_text(keyword, date_str, source_id):
         return "👑 언급랭킹 조회 중 오류가 발생했습니다."
 
 
-def anonymous_poke(sender_user_id, sender_user_name, target_keyword):
+def anonymous_poke(sender_user_id, sender_user_name, target_keyword, announce_public=False):
     try:
         if not sender_user_id:
             return "👀 찔러보기 실패\n\n사용자 정보를 확인할 수 없습니다."
@@ -4595,9 +4625,24 @@ def anonymous_poke(sender_user_id, sender_user_name, target_keyword):
         conn.close()
 
         target_name = display_nickname(target["user_name"])
-        return (
+        public_message = (
             f"👀 누군가가 {target_name}님을 찔러보았습니다.\n\n"
             f"오늘 {target_name}님을 궁금해하는 사람이 있습니다."
+        )
+        if not announce_public:
+            return public_message
+
+        ok, _ = push_public_message(COUNT_SOURCE_ID, public_message)
+        if ok:
+            return (
+                "👀 찔러보기 완료\n\n"
+                "공개창에 익명 알림을 보냈습니다."
+            )
+
+        return (
+            "👀 찔러보기 완료\n\n"
+            "기록은 완료되었습니다.\n"
+            "공창 알림 전송 실패"
         )
     except Exception as e:
         print("ANONYMOUS_POKE_ERROR:", repr(e))
@@ -4681,6 +4726,26 @@ def anonymous_poke_ranking_text():
     except Exception as e:
         print("ANONYMOUS_POKE_RANKING_ERROR:", repr(e))
         return "👀 찔러보기 랭킹 조회 중 오류가 발생했습니다."
+
+
+def reset_today_anonymous_pokes(date_str=None):
+    date_str = date_str or today()
+    try:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM anonymous_pokes WHERE date = ?", (date_str,))
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+        return (
+            "👀 찔러보기 초기화 완료\n\n"
+            f"기준일: {date_str}\n"
+            f"삭제된 기록: {deleted}건\n\n"
+            "오늘 찔러보기 횟수가 초기화되었습니다."
+        )
+    except Exception as e:
+        print("ANONYMOUS_POKE_RESET_ERROR:", repr(e))
+        return "👀 찔러보기 초기화 중 오류가 발생했습니다."
 
 
 def get_pending_truth_game(user_id):
@@ -7132,6 +7197,13 @@ def handle(event):
         reply(event.reply_token, "🗄️ DB 상태\n\n" + "\n".join(counts))
         return
 
+    if text == "/찔러보기초기화":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply(event.reply_token, reset_today_anonymous_pokes(date_str))
+        return
+
     if text == "/수집상태":
         if not is_staff(user_id):
             reply(event.reply_token, operator_only_warning())
@@ -7673,8 +7745,11 @@ def handle(event):
         return
 
     if text == "/찔러보기" or text.startswith("/찔러보기 "):
+        if not is_private_chat(event):
+            reply(event.reply_token, one_to_one_command_notice("찔러보기", "/찔러보기 닉네임"))
+            return
         keyword = text.replace("/찔러보기", "", 1).strip()
-        reply_many(event.reply_token, split_text_messages(anonymous_poke(user_id, user_name, keyword)))
+        reply_many(event.reply_token, split_text_messages(anonymous_poke(user_id, user_name, keyword, announce_public=True)))
         return
 
     if text == "/찔러보기현황":
