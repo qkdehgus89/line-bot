@@ -942,6 +942,30 @@ def line_api_error_summary(error):
     return " / ".join(parts) or repr(error)
 
 
+def is_monthly_message_limit_error(error_summary):
+    text_value = str(error_summary or "").lower()
+    return "monthly limit" in text_value or "reached your monthly limit" in text_value
+
+
+def dm_failure_guidance(error_summary):
+    if is_monthly_message_limit_error(error_summary):
+        return (
+            "이번 달 LINE 공식계정 메시지 발송 한도를 모두 사용했습니다.\n"
+            "그룹/운영방에서 개인 DM으로 보내는 기능은 한도 복구 전까지 실패합니다.\n\n"
+            "해결 방법:\n"
+            "1. LINE Official Account Manager에서 메시지 사용량/요금제를 확인\n"
+            "2. 필요하면 플랜 업그레이드 또는 추가 메시지 한도 설정\n"
+            "3. 한도 복구 전에는 꽃봇 1:1 채팅에서 명령어를 직접 입력"
+        )
+
+    return (
+        "확인할 것:\n"
+        "1. 대상이 꽃봇을 친구추가했는지\n"
+        "2. 대상이 꽃봇을 차단하지 않았는지\n"
+        "3. Railway의 LINE_CHANNEL_ACCESS_TOKEN이 현재 봇 채널 토큰인지"
+    )
+
+
 def push_private_message(user_id, text_value, return_error=False):
     """
     USER_ID(U...)로만 개인 DM PushMessage를 보냅니다.
@@ -995,16 +1019,24 @@ def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 �
         reply(event.reply_token, "개인 메시지를 보내려면 USER_ID가 필요합니다.\n방에서 채팅 1회 후 다시 입력해주세요.")
         return
 
-    ok = push_private_message(user_id, text_value)
+    ok, error_summary = push_private_message(user_id, text_value, return_error=True)
     if ok:
         reply(event.reply_token, public_notice)
     else:
-        reply(
-            event.reply_token,
-            "📩 개인 메시지 전송에 실패했습니다.\n\n"
-            "꽃봇을 친구추가한 뒤 다시 입력해주세요.\n\n"
-            "※ 이미 친구추가가 되어 있다면 운영진에게 알려주세요."
-        )
+        if is_monthly_message_limit_error(error_summary):
+            reply(
+                event.reply_token,
+                "📩 개인 메시지 전송에 실패했습니다.\n\n"
+                "LINE 공식계정의 이번 달 메시지 발송 한도를 모두 사용했습니다.\n"
+                "한도 복구 전에는 꽃봇 1:1 채팅에서 명령어를 직접 입력해주세요."
+            )
+        else:
+            reply(
+                event.reply_token,
+                "📩 개인 메시지 전송에 실패했습니다.\n\n"
+                "꽃봇을 친구추가한 뒤 다시 입력해주세요.\n\n"
+                "※ 이미 친구추가가 되어 있다면 운영진에게 알려주세요."
+            )
 
 
 def private_only_notice(*args):
@@ -6538,10 +6570,7 @@ def handle(event):
                 event.reply_token,
                 f"❌ DM 테스트 실패\n대상: {target_name}\nUSER_ID: {target_user_id}\n\n"
                 f"LINE 응답: {error_summary or '-'}\n\n"
-                "확인할 것:\n"
-                "1. 대상이 꽃봇을 친구추가했는지\n"
-                "2. 대상이 꽃봇을 차단하지 않았는지\n"
-                "3. Railway의 LINE_CHANNEL_ACCESS_TOKEN이 현재 봇 채널 토큰인지"
+                f"{dm_failure_guidance(error_summary)}"
             )
         return
 
