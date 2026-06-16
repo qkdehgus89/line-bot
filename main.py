@@ -925,8 +925,6 @@ def one_to_one_command_notice(feature_name="해당 기능", command_hint=None):
         f"{feature_name} 안내",
         "",
         "꽃봇 1:1 채팅에서 직접 이용해주세요.",
-        "",
-        "월간 메시지 한도 절약을 위해 개인 DM 자동 발송은 사용하지 않습니다.",
     ]
     if command_hint:
         lines += ["", f"1:1에서 입력: {command_hint}"]
@@ -935,7 +933,7 @@ def one_to_one_command_notice(feature_name="해당 기능", command_hint=None):
 
 def push_private_message(user_id, text_value, return_error=False):
     """
-    LINE Push API는 월간 메시지 한도 절약을 위해 사용하지 않습니다.
+    LINE Push API는 사용하지 않습니다.
     1:1 채팅에서는 reply로만 응답하고, 공개방에서는 1:1 직접 입력을 안내합니다.
     """
     user_id = str(user_id or "").strip()
@@ -6420,7 +6418,6 @@ def handle(event):
         reply(
             event.reply_token,
             "📩 DM 테스트는 비활성화되어 있습니다.\n\n"
-            "월간 메시지 한도 절약을 위해 꽃봇은 Push 메시지를 보내지 않습니다.\n"
             "개인 기능은 사용자가 꽃봇 1:1 채팅에서 직접 명령어를 입력해야 합니다."
         )
         return
@@ -6849,7 +6846,10 @@ def handle(event):
         return
 
     if text == "/명령어":
-        reply_many(event.reply_token, split_text_messages(user_commands_text()))
+        if is_private_chat(event):
+            reply_many(event.reply_token, split_text_messages(user_commands_text()))
+        else:
+            reply(event.reply_token, one_to_one_command_notice("명령어", "/명령어"))
         return
 
     if text == "/마디수":
