@@ -927,7 +927,22 @@ def is_private_chat(event):
     return bool(source_user_id and str(source_user_id).strip() not in ("", "NO_USER_ID", "None"))
 
 
-def push_private_message(user_id, text_value):
+def line_api_error_summary(error):
+    status = getattr(error, "status", None)
+    reason = getattr(error, "reason", None)
+    body = getattr(error, "body", None) or getattr(error, "data", None)
+    parts = []
+    if status is not None:
+        parts.append(f"status={status}")
+    if reason:
+        parts.append(f"reason={reason}")
+    if body:
+        body_text = str(body).replace("\r", " ").replace("\n", " ")
+        parts.append(f"body={body_text[:500]}")
+    return " / ".join(parts) or repr(error)
+
+
+def push_private_message(user_id, text_value, return_error=False):
     """
     USER_ID(U...)로만 개인 DM PushMessage를 보냅니다.
     성공 True / 실패 False
@@ -936,7 +951,7 @@ def push_private_message(user_id, text_value):
     user_id = str(user_id or "").strip()
     if not user_id.startswith("U"):
         print("[DM_FAIL] INVALID_USER_ID", user_id)
-        return False
+        return (False, "INVALID_USER_ID") if return_error else False
 
     try:
         messages = [TextMessage(text=str(t)[:4900]) for t in split_text_messages(text_value)]
@@ -952,8 +967,9 @@ def push_private_message(user_id, text_value):
                 )
             )
         print("[DM_OK]", user_id)
-        return True
+        return (True, "") if return_error else True
     except ApiException as e:
+        error_summary = line_api_error_summary(e)
         print("[DM_FAIL]", user_id)
         print("status:", getattr(e, "status", None))
         print("reason:", getattr(e, "reason", None))
@@ -961,10 +977,10 @@ def push_private_message(user_id, text_value):
         print("data:", getattr(e, "data", None))
         print("headers:", getattr(e, "headers", None))
         print("repr:", repr(e))
-        return False
+        return (False, error_summary) if return_error else False
     except Exception as e:
         print("[DM_FAIL_UNKNOWN]", user_id, repr(e))
-        return False
+        return (False, repr(e)) if return_error else False
 
 def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 개인 메시지로 전송했습니다."):
     """
@@ -6510,11 +6526,23 @@ def handle(event):
         if not target_user_id.startswith("U"):
             reply(event.reply_token, f"❌ USER_ID가 올바르지 않습니다.\n대상: {target_name}\nUSER_ID: {target_user_id}")
             return
-        ok = push_private_message(target_user_id, "📩 DM 테스트 메시지입니다.\n이 메시지가 보이면 DM 전송은 정상입니다.")
+        ok, error_summary = push_private_message(
+            target_user_id,
+            "📩 DM 테스트 메시지입니다.\n이 메시지가 보이면 DM 전송은 정상입니다.",
+            return_error=True,
+        )
         if ok:
             reply(event.reply_token, f"✅ DM 테스트 성공\n대상: {target_name}\nUSER_ID: {target_user_id}")
         else:
-            reply(event.reply_token, f"❌ DM 테스트 실패\n대상: {target_name}\nUSER_ID: {target_user_id}\nRailway 로그의 [DM_FAIL] 내용을 확인해주세요.")
+            reply(
+                event.reply_token,
+                f"❌ DM 테스트 실패\n대상: {target_name}\nUSER_ID: {target_user_id}\n\n"
+                f"LINE 응답: {error_summary or '-'}\n\n"
+                "확인할 것:\n"
+                "1. 대상이 꽃봇을 친구추가했는지\n"
+                "2. 대상이 꽃봇을 차단하지 않았는지\n"
+                "3. Railway의 LINE_CHANNEL_ACCESS_TOKEN이 현재 봇 채널 토큰인지"
+            )
         return
 
     if text == "/DB상태":
