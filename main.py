@@ -60,7 +60,7 @@ MALE_LIMIT = int(os.getenv("MALE_LIMIT", "10"))
 FEMALE_LIMIT = int(os.getenv("FEMALE_LIMIT", "10"))
 WARNING_LIMIT = int(os.getenv("WARNING_LIMIT", "10"))
 CURRENCY_NAME = os.getenv("CURRENCY_NAME", "코인").strip()
-BOT_VERSION = "sns-flowerbot-v10.5"
+BOT_VERSION = "sns-flowerbot-v10.6"
 BOT_USER_ID = os.getenv("BOT_USER_ID", "").strip()
 
 # 1코인 = 10포인트, 0.2코인 = 2포인트
@@ -1157,6 +1157,8 @@ def user_commands_text():
 💰 재화
 ━━━━━━━━━━
 /내보유
+/내보유 미사용
+/내보유 사용
 /잔액
 /코인랭킹
 /코인내역
@@ -7914,8 +7916,49 @@ def handle(event):
         push_or_reply_private_info(event, user_id, affinity_status_text(user_id, user_name), "📩 친밀도 정보를 개인 메시지로 보내드렸습니다.", text)
         return
 
-    if text in ["/잔액", "/내보유"]:
-        push_or_reply_private_info(event, user_id, f"💰 {user_name}님의 보유 코인\n\n{coin_text(get_balance(user_id))}", "📩 보유 정보를 개인 메시지로 보내드렸습니다.", text)
+    if text == "/잔액":
+        push_or_reply_private_info(
+            event,
+            user_id,
+            f"💰 {user_name}님의 보유 코인\n\n{coin_text(get_balance(user_id))}",
+            "📩 잔액 정보를 개인 메시지로 보내드렸습니다.",
+            "/잔액"
+        )
+        return
+
+    if text == "/내보유":
+        msg = (
+            f"💰 {user_name}님의 보유 코인\n\n"
+            f"{coin_text(get_balance(user_id))}\n\n"
+            f"{user_purchases_text(user_id, 'all')}"
+        )
+        push_or_reply_private_info(
+            event,
+            user_id,
+            msg,
+            "📩 보유 정보를 개인 메시지로 보내드렸습니다.",
+            "/내보유"
+        )
+        return
+
+    if text == "/내보유 미사용":
+        push_or_reply_private_info(
+            event,
+            user_id,
+            user_purchases_text(user_id, "owned"),
+            "📩 미사용 아이템 목록을 개인 메시지로 보내드렸습니다.",
+            "/내보유 미사용"
+        )
+        return
+
+    if text == "/내보유 사용":
+        push_or_reply_private_info(
+            event,
+            user_id,
+            user_purchases_text(user_id, "used"),
+            "📩 사용완료 아이템 목록을 개인 메시지로 보내드렸습니다.",
+            "/내보유 사용"
+        )
         return
 
     if text == "/코인랭킹":
