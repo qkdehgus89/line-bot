@@ -422,6 +422,18 @@ def init_db():
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS attendance_streak_rewards (
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        streak_days INTEGER NOT NULL,
+        reward INTEGER NOT NULL,
+        achieved_date TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, streak_days)
+    )
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS mission_claims (
         date TEXT NOT NULL,
         user_id TEXT NOT NULL,
@@ -3794,6 +3806,51 @@ def attendance_streak_days(user_id, date_str):
     return streak
 
 
+def grant_attendance_streak_reward_once(date_str, user_id, user_name, streak_days, reward, current_streak):
+    """
+    연속출석 보상은 유저별/단계별로 한 번만 지급합니다.
+    """
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT OR IGNORE INTO attendance_streak_rewards (
+        user_id, user_name, streak_days, reward, achieved_date, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        user_id,
+        user_name,
+        streak_days,
+        reward,
+        date_str,
+        now_str()
+    ))
+    inserted = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+
+    if not inserted:
+        return False
+
+    change_money(
+        user_id,
+        user_name,
+        reward,
+        f"연속출석 보상: {streak_days}일 연속 출석",
+        None,
+        "출석시스템"
+    )
+    print(
+        "ATTENDANCE_STREAK_REWARD:",
+        user_id,
+        user_name,
+        streak_days,
+        reward,
+        f"current_streak={current_streak}"
+    )
+    return True
+
+
 def check_attendance_streak_reward(date_str, user_id, user_name):
     """
     연속출석:
@@ -3812,15 +3869,13 @@ def check_attendance_streak_reward(date_str, user_id, user_name):
 
     for required_days, reward in rewards:
         if streak >= required_days:
-            mission_key = f"attendance_streak_{required_days}_{user_id}"
-            ok = grant_hidden_reward_once(
+            ok = grant_attendance_streak_reward_once(
                 date_str,
-                mission_key,
                 user_id,
                 user_name,
+                required_days,
                 reward,
-                f"연속출석 보상: {required_days}일 연속 출석",
-                f"streak={streak}"
+                streak
             )
             if ok:
                 paid.append((required_days, reward))
@@ -5197,6 +5252,7 @@ def find_delete_candidates(keyword, limit=20):
         ("currency_logs", "user_id", "user_name"),
         ("purchases", "user_id", "user_name"),
         ("attendance", "user_id", "user_name"),
+        ("attendance_streak_rewards", "user_id", "user_name"),
         ("mission_claims", "user_id", "user_name"),
         ("hidden_rewards", "user_id", "user_name"),
         ("gacha_settings", "user_id", "user_name"),
@@ -5270,6 +5326,7 @@ def delete_users_by_ids(targets):
         "currency_logs",
         "purchases",
         "attendance",
+        "attendance_streak_rewards",
         "mission_claims",
         "hidden_rewards",
         "gacha_settings",
@@ -7084,7 +7141,7 @@ def snapshot_user_data(user_id):
     conn = db()
     cur = conn.cursor()
     tables = [
-        "users", "currency", "currency_logs", "purchases", "attendance", "mission_claims",
+        "users", "currency", "currency_logs", "purchases", "attendance", "attendance_streak_rewards", "mission_claims",
         "hidden_rewards", "gacha_settings", "gacha_pity", "gacha_pieces", "gacha_weekly_counts",
         "weekly_rewards", "sns_lucky_draw_entries", "achievements", "chat_logs", "counts",
         "truth_game_sessions",
