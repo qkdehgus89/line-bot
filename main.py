@@ -298,6 +298,48 @@ def init_db():
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS mention_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        sender_user_id TEXT NOT NULL,
+        sender_user_name TEXT NOT NULL,
+        target_user_id TEXT NOT NULL,
+        target_user_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS anonymous_pokes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        sender_user_id TEXT NOT NULL,
+        sender_user_name TEXT NOT NULL,
+        target_user_id TEXT NOT NULL,
+        target_user_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS truth_game_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        question TEXT NOT NULL,
+        category TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        cost INTEGER NOT NULL DEFAULT 2,
+        created_at TEXT NOT NULL,
+        answered_at TEXT,
+        answer_text TEXT
+    )
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS currency (
         user_id TEXT PRIMARY KEY,
         balance INTEGER NOT NULL DEFAULT 0,
@@ -1065,6 +1107,30 @@ def user_commands_text():
 /친밀도랭킹
 
 ━━━━━━━━━━
+👑 인기인
+━━━━━━━━━━
+/인기인
+/오늘인기인
+/주간인기인
+/언급랭킹 닉네임
+
+━━━━━━━━━━
+👀 찔러보기
+━━━━━━━━━━
+/찔러보기 닉네임
+/찔러보기현황
+/찔러보기랭킹
+
+━━━━━━━━━━
+🎭 진실게임
+━━━━━━━━━━
+/진실게임
+/진실질문
+/진실답변 내용
+/진실패스
+/진실목록
+
+━━━━━━━━━━
 🏆 업적
 ━━━━━━━━━━
 /업적
@@ -1239,6 +1305,126 @@ def upsert_user(user_id, user_name, source_id):
 
 def clean_keyword(text_value):
     return "".join(ch for ch in str(text_value) if ch.isalnum() or ("가" <= ch <= "힣")).lower()
+
+
+def remove_nickname_bracket_text(text_value):
+    text_value = str(text_value or "")
+    return re.sub(r"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}|<[^>]*>|【[^】]*】|［[^］]*］|（[^）]*）", "", text_value)
+
+
+def nickname_tokens(text_value):
+    text_value = remove_nickname_bracket_text(text_value)
+    tokens = []
+    for token in re.findall(r"[0-9A-Za-z가-힣]+", text_value):
+        token = re.sub(r"^\d+", "", token).strip().lower()
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def normalize_mention_name(text_value):
+    """
+    장식 이모지/앞 숫자/꼬리표를 제거하고 실제로 부르는 핵심 닉네임만 뽑습니다.
+    예: 🪩미트🪩 -> 미트, 33무화🔸💉 -> 무화, ⚖️무화⚖️💉[밍구전용봊] -> 무화
+    """
+    tokens = nickname_tokens(text_value)
+    if tokens:
+        return tokens[0]
+    return clean_keyword(remove_nickname_bracket_text(text_value))
+
+
+def normalize_match_text(text_value):
+    return clean_keyword(remove_nickname_bracket_text(text_value))
+
+
+def display_nickname(user_name):
+    return normalize_mention_name(user_name) or str(user_name or "").strip()
+
+
+def active_user_rows_for_matching():
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT u.user_id, u.user_name, u.updated_at, COALESCE(u.is_active, 1) AS is_active
+    FROM users u
+    LEFT JOIN deleted_users d
+      ON d.original_user_id = u.user_id
+    WHERE u.user_id IS NOT NULL
+      AND u.user_id != ''
+      AND COALESCE(u.is_active, 1) = 1
+      AND d.original_user_id IS NULL
+    ORDER BY u.updated_at DESC, u.user_name ASC
+    """)
+    rows = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def user_match_score(keyword, user_name):
+    query = normalize_mention_name(keyword)
+    if len(query) < 2:
+        return None
+
+    core = normalize_mention_name(user_name)
+    full = normalize_match_text(user_name)
+    if len(core) < 2 and len(full) < 2:
+        return None
+
+    if core == query:
+        return 0
+    if full == query:
+        return 1
+    if core.startswith(query):
+        return 2
+    if query in core:
+        return 3
+    if query in full:
+        return 4
+    return None
+
+
+def find_active_user_candidates(keyword, limit=10, exclude_user_id=None):
+    candidates = []
+    for row in active_user_rows_for_matching():
+        if exclude_user_id and row["user_id"] == exclude_user_id:
+            continue
+        score = user_match_score(keyword, row["user_name"])
+        if score is None:
+            continue
+        item = dict(row)
+        item["_match_score"] = score
+        item["_match_core"] = normalize_mention_name(row["user_name"])
+        candidates.append(item)
+
+    candidates.sort(key=lambda row: (
+        row["_match_score"],
+        len(row["_match_core"] or row["user_name"]),
+        row["user_name"],
+    ))
+    return candidates[:limit]
+
+
+def resolve_active_user_by_nickname(keyword, exclude_user_id=None, purpose="대상"):
+    candidates = find_active_user_candidates(keyword, limit=10, exclude_user_id=exclude_user_id)
+    if not candidates:
+        return None, (
+            f"{purpose}을 찾지 못했습니다.\n"
+            "닉네임을 조금 더 정확히 입력해주세요."
+        )
+
+    best_score = candidates[0]["_match_score"]
+    best = [row for row in candidates if row["_match_score"] == best_score]
+    if len(best) == 1:
+        return best[0], None
+
+    lines = [
+        f"{purpose}이 여러 명 검색되었습니다.",
+        "닉네임을 더 정확히 입력해주세요.",
+        "",
+    ]
+    for row in best[:5]:
+        lines.append(f"- {row['user_name']}")
+    return None, "\n".join(lines)
 
 
 def find_users(keyword, limit=10):
@@ -4091,6 +4277,597 @@ def check_chatter_achievements(date_str, source_id, user_id, user_name):
 
     return granted
 
+
+# =========================
+# 인기인 / 찔러보기 / 진실게임
+# =========================
+MENTION_SUFFIXES = (
+    "님", "아", "야", "이", "가", "은", "는", "을", "를",
+    "랑", "하고", "한테", "에게", "도", "만", "ㅋㅋ", "ㅎㅎ",
+)
+
+TRUTH_GAME_COST = 2       # 0.2코인
+TRUTH_GAME_PASS_COST = 1  # 0.1코인
+TRUTH_GAME_QUESTIONS = [
+    ("순한맛", "요즘 공창에서 제일 반가운 사람은?"),
+    ("순한맛", "더 친해지고 싶은 사람은?"),
+    ("순한맛", "하루 종일 갠라해도 안 질릴 것 같은 사람은?"),
+    ("순한맛", "벙 가면 제일 먼저 찾게 되는 사람은?"),
+    ("순한맛", "최근 가장 인상이 좋아진 사람은?"),
+    ("순한맛", "공창 분위기를 제일 좋게 만드는 사람은?"),
+    ("순한맛", "가장 많이 웃게 해준 사람은?"),
+    ("순한맛", "지금 가장 궁금한 사람은?"),
+    ("순한맛", "처음엔 의외였는데 점점 괜찮아 보인 사람은?"),
+    ("순한맛", "같이 술 한잔 해보고 싶은 사람은?"),
+    ("썸맛", "요즘 가장 눈이 가는 사람은?"),
+    ("썸맛", "DM이 오면 은근 반가울 것 같은 사람은?"),
+    ("썸맛", "최근 가장 신경 쓰이는 사람은?"),
+    ("썸맛", "공창에서 안 보이면 아쉬울 것 같은 사람은?"),
+    ("썸맛", "단둘이 더 이야기해보고 싶은 사람은?"),
+    ("썸맛", "처음보다 훨씬 매력적으로 보이는 사람은?"),
+    ("썸맛", "벙에서 옆자리에 앉고 싶은 사람은?"),
+    ("썸맛", "연락이 오면 가장 먼저 확인할 것 같은 사람은?"),
+    ("썸맛", "지금 가장 플러팅 받아보고 싶은 사람은?"),
+    ("썸맛", "같이 밤새 이야기해도 재밌을 것 같은 사람은?"),
+    ("매운맛", "최근 가장 설렌 순간을 만든 사람은?"),
+    ("매운맛", "솔직히 한 번쯤 갠라를 고민해본 사람은?"),
+    ("매운맛", "지금 가장 보고 싶은 사람은?"),
+    ("매운맛", "단둘이 술 마시면 재밌을 것 같은 사람은?"),
+    ("매운맛", "공창에서 가장 매력 있다고 생각하는 사람은?"),
+    ("매운맛", "외모보다 분위기가 끌리는 사람은?"),
+    ("매운맛", "요즘 묘하게 궁금한 사람은?"),
+    ("매운맛", "벙에서 가장 먼저 눈에 들어올 것 같은 사람은?"),
+    ("매운맛", "은근 질투난 적 있는 사람은?"),
+    ("매운맛", "최근 가장 기억에 남는 사람은?"),
+    ("위험맛", "만약 오늘 단둘이 벙을 나간다면 누구를 고를 건가요?"),
+    ("위험맛", "지금 이 순간 같이 드라이브 가고 싶은 사람은?"),
+    ("위험맛", "최근 가장 의식하게 된 사람은?"),
+    ("위험맛", "공창에서 가장 플러팅 잘한다고 생각하는 사람은?"),
+    ("위험맛", "한 번쯤 더 알아가고 싶다고 느낀 사람은?"),
+    ("위험맛", "지금 가장 연락 오길 기다리는 사람은?"),
+    ("위험맛", "솔직히 갠라 오면 거절 안 할 것 같은 사람은?"),
+    ("위험맛", "최근 가장 심쿵했던 사람은?"),
+    ("위험맛", "오늘 하루 같이 보내라면 누구를 고를 건가요?"),
+    ("위험맛", "방에서 가장 위험한 매력을 가진 사람은?"),
+]
+
+
+def medal_icon(rank):
+    if rank == 1:
+        return "🥇"
+    if rank == 2:
+        return "🥈"
+    if rank == 3:
+        return "🥉"
+    return f"{rank}."
+
+
+def mentioned_target_in_text(target_name, text_value):
+    target = normalize_mention_name(target_name)
+    if len(target) < 2:
+        return False
+
+    if len(target) <= 2:
+        for token in nickname_tokens(text_value):
+            if token == target:
+                return True
+            if token.startswith(target):
+                suffix = token[len(target):]
+                if any(suffix.startswith(item) for item in MENTION_SUFFIXES):
+                    return True
+        return False
+
+    return target in normalize_match_text(text_value)
+
+
+def process_mentions(date_str, source_id, sender_user_id, sender_user_name, text_value):
+    try:
+        text_value = str(text_value or "").strip()
+        if not sender_user_id or not text_value:
+            return 0
+        if text_value.startswith("/"):
+            return 0
+        if is_bot_jackpot_user(sender_user_id, sender_user_name):
+            return 0
+
+        week_start, _ = event_week_key()
+        targets = []
+        seen = set()
+        for row in active_user_rows_for_matching():
+            target_user_id = row["user_id"]
+            if target_user_id == sender_user_id or target_user_id in seen:
+                continue
+            if mentioned_target_in_text(row["user_name"], text_value):
+                targets.append(row)
+                seen.add(target_user_id)
+
+        if not targets:
+            return 0
+
+        conn = db()
+        cur = conn.cursor()
+        for row in targets:
+            cur.execute("""
+            INSERT INTO mention_logs (
+                date, week_start, source_id,
+                sender_user_id, sender_user_name,
+                target_user_id, target_user_name, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                date_str, week_start, source_id,
+                sender_user_id, sender_user_name,
+                row["user_id"], row["user_name"], now_str()
+            ))
+        conn.commit()
+        conn.close()
+        return len(targets)
+    except Exception as e:
+        print("PROCESS_MENTIONS_ERROR:", repr(e))
+        return 0
+
+
+def mention_period_filter(period, date_str):
+    if period == "weekly":
+        week_start, week_end = event_week_key()
+        return "m.week_start = ?", [week_start], f"기간: {week_start} ~ {week_end}"
+    return "m.date = ?", [date_str], f"날짜: {date_str}"
+
+
+def popular_mentions_text(date_str, source_id, period="daily"):
+    try:
+        where_sql, where_params, period_line = mention_period_filter(period, date_str)
+        title = "👑 이번 주 인기인" if period == "weekly" else "👑 오늘의 인기인"
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute(f"""
+        SELECT
+            m.target_user_id,
+            u.user_name AS target_user_name,
+            COUNT(*) AS mention_count
+        FROM mention_logs m
+        JOIN users u
+          ON u.user_id = m.target_user_id
+        LEFT JOIN deleted_users d
+          ON d.original_user_id = m.target_user_id
+        WHERE {where_sql}
+          AND m.source_id = ?
+          AND COALESCE(u.is_active, 1) = 1
+          AND d.original_user_id IS NULL
+        GROUP BY m.target_user_id
+        ORDER BY mention_count DESC, target_user_name ASC
+        LIMIT 10
+        """, (*where_params, source_id))
+        rows = cur.fetchall()
+
+        cur.execute(f"""
+        SELECT
+            su.user_name AS sender_user_name,
+            tu.user_name AS target_user_name,
+            COUNT(*) AS mention_count
+        FROM mention_logs m
+        JOIN users su
+          ON su.user_id = m.sender_user_id
+        JOIN users tu
+          ON tu.user_id = m.target_user_id
+        LEFT JOIN deleted_users sd
+          ON sd.original_user_id = m.sender_user_id
+        LEFT JOIN deleted_users td
+          ON td.original_user_id = m.target_user_id
+        WHERE {where_sql}
+          AND m.source_id = ?
+          AND COALESCE(su.is_active, 1) = 1
+          AND COALESCE(tu.is_active, 1) = 1
+          AND sd.original_user_id IS NULL
+          AND td.original_user_id IS NULL
+        GROUP BY m.sender_user_id, m.target_user_id
+        ORDER BY mention_count DESC, sender_user_name ASC, target_user_name ASC
+        LIMIT 1
+        """, (*where_params, source_id))
+        combo = cur.fetchone()
+        conn.close()
+
+        lines = [title, period_line, ""]
+        if not rows:
+            lines.append("아직 언급 기록이 없습니다.")
+            return "\n".join(lines)
+
+        for i, row in enumerate(rows, 1):
+            lines.append(f"{medal_icon(i)} {display_nickname(row['target_user_name'])} {row['mention_count']}회")
+
+        lines += ["", "오늘 가장 많이 언급한 조합:" if period != "weekly" else "이번 주 가장 많이 언급한 조합:"]
+        if combo:
+            lines.append(
+                f"{display_nickname(combo['sender_user_name'])} → "
+                f"{display_nickname(combo['target_user_name'])} {combo['mention_count']}회"
+            )
+        else:
+            lines.append("-")
+        return "\n".join(lines)
+    except Exception as e:
+        print("POPULAR_MENTIONS_TEXT_ERROR:", repr(e))
+        return "👑 인기인 조회 중 오류가 발생했습니다."
+
+
+def mention_ranking_text(keyword, date_str, source_id):
+    try:
+        target, err = resolve_active_user_by_nickname(keyword, purpose="유저")
+        if err:
+            return "👑 언급랭킹 조회 실패\n\n" + err
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT
+            u.user_name AS target_user_name,
+            COUNT(*) AS mention_count
+        FROM mention_logs m
+        JOIN users u
+          ON u.user_id = m.target_user_id
+        LEFT JOIN deleted_users d
+          ON d.original_user_id = m.target_user_id
+        WHERE m.date = ?
+          AND m.source_id = ?
+          AND m.sender_user_id = ?
+          AND COALESCE(u.is_active, 1) = 1
+          AND d.original_user_id IS NULL
+        GROUP BY m.target_user_id
+        ORDER BY mention_count DESC, target_user_name ASC
+        LIMIT 10
+        """, (date_str, source_id, target["user_id"]))
+        rows = cur.fetchall()
+        conn.close()
+
+        lines = [
+            "👑 언급랭킹",
+            f"대상: {display_nickname(target['user_name'])}",
+            f"날짜: {date_str}",
+            "",
+        ]
+        if not rows:
+            lines.append("오늘 언급한 기록이 없습니다.")
+        else:
+            for i, row in enumerate(rows, 1):
+                lines.append(f"{medal_icon(i)} {display_nickname(row['target_user_name'])} {row['mention_count']}회")
+        return "\n".join(lines)
+    except Exception as e:
+        print("MENTION_RANKING_TEXT_ERROR:", repr(e))
+        return "👑 언급랭킹 조회 중 오류가 발생했습니다."
+
+
+def anonymous_poke(sender_user_id, sender_user_name, target_keyword):
+    try:
+        if not sender_user_id:
+            return "👀 찔러보기 실패\n\n사용자 정보를 확인할 수 없습니다."
+
+        target_keyword = str(target_keyword or "").strip()
+        if not target_keyword:
+            return "👀 찔러보기 실패\n\n사용법: /찔러보기 닉네임"
+
+        target, err = resolve_active_user_by_nickname(target_keyword, purpose="대상")
+        if err:
+            return "👀 찔러보기 실패\n\n" + err
+        if target["user_id"] == sender_user_id:
+            return "👀 찔러보기 실패\n\n자기 자신은 찔러볼 수 없습니다."
+
+        date_str = today()
+        week_start, _ = event_week_key()
+        conn = db()
+        cur = conn.cursor()
+
+        cur.execute("""
+        SELECT id
+        FROM anonymous_pokes
+        WHERE date = ? AND sender_user_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """, (date_str, sender_user_id))
+        if cur.fetchone():
+            conn.close()
+            return "👀 찔러보기 실패\n\n찔러보기는 하루 1회만 가능합니다."
+
+        cur.execute("""
+        SELECT target_user_id
+        FROM anonymous_pokes
+        WHERE sender_user_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """, (sender_user_id,))
+        last = cur.fetchone()
+        if last and last["target_user_id"] == target["user_id"]:
+            conn.close()
+            return "👀 찔러보기 실패\n\n같은 대상에게 연속으로 찔러보기는 할 수 없습니다."
+
+        cur.execute("""
+        INSERT INTO anonymous_pokes (
+            date, week_start,
+            sender_user_id, sender_user_name,
+            target_user_id, target_user_name,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            date_str, week_start,
+            sender_user_id, sender_user_name,
+            target["user_id"], target["user_name"],
+            now_str()
+        ))
+        conn.commit()
+        conn.close()
+
+        target_name = display_nickname(target["user_name"])
+        return (
+            f"👀 누군가가 {target_name}님을 찔러보았습니다.\n\n"
+            f"오늘 {target_name}님을 궁금해하는 사람이 있습니다."
+        )
+    except Exception as e:
+        print("ANONYMOUS_POKE_ERROR:", repr(e))
+        return "👀 찔러보기 처리 중 오류가 발생했습니다."
+
+
+def anonymous_poke_status_text(user_id, user_name):
+    try:
+        if not user_id:
+            return "👀 찔러보기 현황 조회 실패\n\n사용자 정보를 확인할 수 없습니다."
+
+        date_str = today()
+        week_start, week_end = event_week_key()
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT target_user_name, created_at
+        FROM anonymous_pokes
+        WHERE date = ? AND sender_user_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """, (date_str, user_id))
+        sent = cur.fetchone()
+
+        cur.execute("""
+        SELECT COUNT(*) AS cnt
+        FROM anonymous_pokes
+        WHERE week_start = ? AND target_user_id = ?
+        """, (week_start, user_id))
+        received = cur.fetchone()
+        conn.close()
+
+        lines = [
+            "👀 찔러보기 현황",
+            f"대상: {user_name}",
+            f"기간: {week_start} ~ {week_end}",
+            "",
+        ]
+        if sent:
+            lines.append(f"오늘 찔러보기: 완료 ({display_nickname(sent['target_user_name'])}님)")
+        else:
+            lines.append("오늘 찔러보기: 아직 사용하지 않음")
+        lines.append(f"이번 주 받은 찔러보기: {int(received['cnt'] or 0) if received else 0}회")
+        return "\n".join(lines)
+    except Exception as e:
+        print("ANONYMOUS_POKE_STATUS_ERROR:", repr(e))
+        return "👀 찔러보기 현황 조회 중 오류가 발생했습니다."
+
+
+def anonymous_poke_ranking_text():
+    try:
+        week_start, week_end = event_week_key()
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT
+            u.user_name,
+            COUNT(*) AS poke_count
+        FROM anonymous_pokes p
+        JOIN users u
+          ON u.user_id = p.target_user_id
+        LEFT JOIN deleted_users d
+          ON d.original_user_id = p.target_user_id
+        WHERE p.week_start = ?
+          AND COALESCE(u.is_active, 1) = 1
+          AND d.original_user_id IS NULL
+        GROUP BY p.target_user_id
+        ORDER BY poke_count DESC, u.user_name ASC
+        LIMIT 10
+        """, (week_start,))
+        rows = cur.fetchall()
+        conn.close()
+
+        lines = ["👀 이번주 찔림 랭킹", f"기간: {week_start} ~ {week_end}", ""]
+        if not rows:
+            lines.append("아직 찔러보기 기록이 없습니다.")
+        else:
+            for i, row in enumerate(rows, 1):
+                lines.append(f"{medal_icon(i)} {display_nickname(row['user_name'])} {row['poke_count']}회")
+        return "\n".join(lines)
+    except Exception as e:
+        print("ANONYMOUS_POKE_RANKING_ERROR:", repr(e))
+        return "👀 찔러보기 랭킹 조회 중 오류가 발생했습니다."
+
+
+def get_pending_truth_game(user_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT *
+    FROM truth_game_sessions
+    WHERE user_id = ? AND status = 'pending'
+    ORDER BY id DESC
+    LIMIT 1
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def truth_game_start(user_id, user_name):
+    try:
+        if not user_id:
+            return "🎭 진실게임 실패\n\n사용자 정보를 확인할 수 없습니다."
+
+        pending = get_pending_truth_game(user_id)
+        if pending:
+            return (
+                "🎭 진행 중인 진실게임이 있습니다.\n\n"
+                f"질문: {pending['question']}\n"
+                "답변: /진실답변 내용\n"
+                "패스: /진실패스"
+            )
+
+        if get_balance(user_id) < TRUTH_GAME_COST:
+            return (
+                "🎭 진실게임 실패\n\n"
+                f"필요 코인: {coin_text(TRUTH_GAME_COST)}\n"
+                f"현재 보유: {coin_text(get_balance(user_id))}"
+            )
+
+        category, question = random.choice(TRUTH_GAME_QUESTIONS)
+        change_money(user_id, user_name, -TRUTH_GAME_COST, "진실게임 질문 뽑기", None, "진실게임")
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        INSERT INTO truth_game_sessions (
+            user_id, user_name, question, category, status, cost, created_at
+        ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
+        """, (user_id, user_name, question, category, TRUTH_GAME_COST, now_str()))
+        conn.commit()
+        conn.close()
+
+        return (
+            "🎭 진실게임 시작\n\n"
+            f"질문: {question}\n"
+            "답변: /진실답변 내용\n"
+            "패스: /진실패스"
+        )
+    except Exception as e:
+        print("TRUTH_GAME_START_ERROR:", repr(e))
+        return "🎭 진실게임 시작 중 오류가 발생했습니다."
+
+
+def truth_game_answer(user_id, user_name, answer_text):
+    try:
+        if not user_id:
+            return "🎭 진실게임 답변 실패\n\n사용자 정보를 확인할 수 없습니다."
+
+        answer_text = str(answer_text or "").strip()
+        if not answer_text:
+            return "🎭 진실게임 답변 실패\n\n사용법: /진실답변 내용"
+
+        pending = get_pending_truth_game(user_id)
+        if not pending:
+            return "🎭 진실게임 답변 실패\n\n진행 중인 질문이 없습니다.\n질문 뽑기: /진실게임"
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        UPDATE truth_game_sessions
+        SET status = 'answered',
+            answered_at = ?,
+            answer_text = ?,
+            user_name = ?
+        WHERE id = ? AND status = 'pending'
+        """, (now_str(), answer_text, user_name, pending["id"]))
+        changed = cur.rowcount
+        conn.commit()
+        conn.close()
+        if not changed:
+            return "🎭 진실게임 답변 실패\n\n진행 중인 질문이 없습니다."
+
+        change_money(user_id, user_name, TRUTH_GAME_COST, "진실게임 답변 환급", None, "진실게임")
+        return (
+            "🎭 진실게임 답변\n\n"
+            f"질문: {pending['question']}\n\n"
+            f"{user_name}님의 답변:\n"
+            f"{answer_text}\n\n"
+            f"환급: {coin_text(TRUTH_GAME_COST)}"
+        )
+    except Exception as e:
+        print("TRUTH_GAME_ANSWER_ERROR:", repr(e))
+        return "🎭 진실게임 답변 처리 중 오류가 발생했습니다."
+
+
+def truth_game_pass(user_id, user_name):
+    try:
+        if not user_id:
+            return "🎭 진실게임 패스 실패\n\n사용자 정보를 확인할 수 없습니다."
+
+        pending = get_pending_truth_game(user_id)
+        if not pending:
+            return "🎭 진실게임 패스 실패\n\n진행 중인 질문이 없습니다.\n질문 뽑기: /진실게임"
+
+        if get_balance(user_id) < TRUTH_GAME_PASS_COST:
+            return (
+                "🎭 진실게임 패스 실패\n\n"
+                f"패스 비용: {coin_text(TRUTH_GAME_PASS_COST)}\n"
+                f"현재 보유: {coin_text(get_balance(user_id))}"
+            )
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        UPDATE truth_game_sessions
+        SET status = 'passed',
+            answered_at = ?,
+            user_name = ?
+        WHERE id = ? AND status = 'pending'
+        """, (now_str(), user_name, pending["id"]))
+        changed = cur.rowcount
+        conn.commit()
+        conn.close()
+        if not changed:
+            return "🎭 진실게임 패스 실패\n\n진행 중인 질문이 없습니다."
+
+        change_money(user_id, user_name, -TRUTH_GAME_PASS_COST, "진실게임 패스", None, "진실게임")
+        return (
+            "🎭 진실게임 패스\n\n"
+            f"{user_name}님이 질문을 패스했습니다.\n"
+            f"패스 비용: {coin_text(TRUTH_GAME_PASS_COST)}"
+        )
+    except Exception as e:
+        print("TRUTH_GAME_PASS_ERROR:", repr(e))
+        return "🎭 진실게임 패스 처리 중 오류가 발생했습니다."
+
+
+def truth_game_list_text(limit=10):
+    try:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT
+            t.user_name,
+            t.question,
+            t.answer_text,
+            t.answered_at
+        FROM truth_game_sessions t
+        JOIN users u
+          ON u.user_id = t.user_id
+        LEFT JOIN deleted_users d
+          ON d.original_user_id = t.user_id
+        WHERE t.status = 'answered'
+          AND COALESCE(u.is_active, 1) = 1
+          AND d.original_user_id IS NULL
+        ORDER BY t.id DESC
+        LIMIT ?
+        """, (limit,))
+        rows = cur.fetchall()
+        conn.close()
+
+        lines = ["🎭 최근 진실게임", ""]
+        if not rows:
+            lines.append("아직 답변된 진실게임이 없습니다.")
+        else:
+            for i, row in enumerate(rows, 1):
+                lines.append(f"{i}. {row['user_name']}")
+                lines.append(f"Q. {row['question']}")
+                lines.append(f"A. {row['answer_text']}")
+                if row["answered_at"]:
+                    lines.append(f"시간: {row['answered_at']}")
+                lines.append("")
+        return "\n".join(lines).strip()
+    except Exception as e:
+        print("TRUTH_GAME_LIST_ERROR:", repr(e))
+        return "🎭 진실게임 목록 조회 중 오류가 발생했습니다."
+
+
 def grant_blacksmith_if_first(user_id, user_name, piece_key):
     info = PIECE_INFO.get(piece_key)
     if not info:
@@ -4178,7 +4955,12 @@ def find_delete_candidates(keyword, limit=20):
         ("weekly_rewards", "user_id", "user_name"),
         ("sns_lucky_draw_entries", "user_id", "user_name"),
         ("achievements", "user_id", "user_name"),
+        ("truth_game_sessions", "user_id", "user_name"),
         ("chat_last_speakers", "user_id", "user_name"),
+        ("mention_logs", "sender_user_id", "sender_user_name"),
+        ("mention_logs", "target_user_id", "target_user_name"),
+        ("anonymous_pokes", "sender_user_id", "sender_user_name"),
+        ("anonymous_pokes", "target_user_id", "target_user_name"),
         ("affinity_scores", "user_a", "user_a_name"),
         ("affinity_scores", "user_b", "user_b_name"),
         ("manitto_assignments", "hunter_user_id", "hunter_user_name"),
@@ -4246,6 +5028,7 @@ def delete_users_by_ids(targets):
         "weekly_rewards",
         "sns_lucky_draw_entries",
         "achievements",
+        "truth_game_sessions",
         "chat_last_speakers",
     ]
 
@@ -4259,6 +5042,10 @@ def delete_users_by_ids(targets):
 
         relation_deletes = [
             ("sns_lucky_draw_results", "winner_user_id"),
+            ("mention_logs", "sender_user_id"),
+            ("mention_logs", "target_user_id"),
+            ("anonymous_pokes", "sender_user_id"),
+            ("anonymous_pokes", "target_user_id"),
             ("affinity_scores", "user_a"),
             ("affinity_scores", "user_b"),
             ("affinity_cumulative_scores", "user_a"),
@@ -6031,6 +6818,7 @@ def snapshot_user_data(user_id):
         "users", "currency", "currency_logs", "purchases", "attendance", "mission_claims",
         "hidden_rewards", "gacha_settings", "gacha_pity", "gacha_pieces", "gacha_weekly_counts",
         "weekly_rewards", "sns_lucky_draw_entries", "achievements", "chat_logs", "counts",
+        "truth_game_sessions",
     ]
     snap = {}
     for table in tables:
@@ -6039,7 +6827,18 @@ def snapshot_user_data(user_id):
             snap[table] = [dict(r) for r in cur.fetchall()]
         except Exception:
             snap[table] = []
-    for table, col in [("affinity_scores", "user_a"), ("affinity_scores", "user_b"), ("affinity_cumulative_scores", "user_a"), ("affinity_cumulative_scores", "user_b"), ("manitto_assignments", "hunter_user_id"), ("manitto_assignments", "target_user_id")]:
+    for table, col in [
+        ("mention_logs", "sender_user_id"),
+        ("mention_logs", "target_user_id"),
+        ("anonymous_pokes", "sender_user_id"),
+        ("anonymous_pokes", "target_user_id"),
+        ("affinity_scores", "user_a"),
+        ("affinity_scores", "user_b"),
+        ("affinity_cumulative_scores", "user_a"),
+        ("affinity_cumulative_scores", "user_b"),
+        ("manitto_assignments", "hunter_user_id"),
+        ("manitto_assignments", "target_user_id"),
+    ]:
         key = f"{table}:{col}"
         try:
             cur.execute(f"SELECT * FROM {table} WHERE {col} = ?", (user_id,))
@@ -6191,6 +6990,12 @@ def handle(event):
             message_text
         )
 
+        try:
+            if message_type == "text":
+                process_mentions(date_str, source_id, user_id, user_name, message_text)
+        except Exception as e:
+            print("MENTION_PROCESS_ERROR:", e)
+
         # 히든 미션 자동 체크
         try:
             hidden_1000_msg = check_hidden_1000_reward(date_str, source_id, user_id, user_name)
@@ -6317,7 +7122,7 @@ def handle(event):
         conn = db()
         cur = conn.cursor()
         counts = []
-        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "mission_claims", "manitto_assignments", "affinity_scores"]:
+        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "anonymous_pokes", "truth_game_sessions"]:
             try:
                 cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                 counts.append(f"{table}: {cur.fetchone()['cnt']}")
@@ -6422,7 +7227,7 @@ def handle(event):
         reply_many(event.reply_token, split_text_messages(admin_user_detail_text(keyword)))
         return
 
-    if text.startswith("/닉삭제"):
+    if text == "/닉삭제" or text.startswith("/닉삭제 "):
         if not is_staff(user_id):
             reply(event.reply_token, operator_only_warning())
             return
@@ -6846,6 +7651,55 @@ def handle(event):
 
     if text == "/업적":
         push_or_reply_private_info(event, user_id, achievement_status_text(user_id, user_name), "📩 업적 현황을 개인 메시지로 보내드렸습니다.", "/업적")
+        return
+
+    if text in ["/인기인", "/오늘인기인"]:
+        rank_source_id = source_id if source_id in count_source_ids() else COUNT_SOURCE_ID
+        reply_many(event.reply_token, split_text_messages(popular_mentions_text(date_str, rank_source_id, "daily")))
+        return
+
+    if text == "/주간인기인":
+        rank_source_id = source_id if source_id in count_source_ids() else COUNT_SOURCE_ID
+        reply_many(event.reply_token, split_text_messages(popular_mentions_text(date_str, rank_source_id, "weekly")))
+        return
+
+    if text.startswith("/언급랭킹"):
+        keyword = text.replace("/언급랭킹", "", 1).strip()
+        if not keyword:
+            reply(event.reply_token, "사용법: /언급랭킹 닉네임")
+            return
+        rank_source_id = source_id if source_id in count_source_ids() else COUNT_SOURCE_ID
+        reply_many(event.reply_token, split_text_messages(mention_ranking_text(keyword, date_str, rank_source_id)))
+        return
+
+    if text == "/찔러보기" or text.startswith("/찔러보기 "):
+        keyword = text.replace("/찔러보기", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(anonymous_poke(user_id, user_name, keyword)))
+        return
+
+    if text == "/찔러보기현황":
+        push_or_reply_private_info(event, user_id, anonymous_poke_status_text(user_id, user_name), "📩 찔러보기 현황을 개인 메시지로 보내드렸습니다.", "/찔러보기현황")
+        return
+
+    if text == "/찔러보기랭킹":
+        reply_many(event.reply_token, split_text_messages(anonymous_poke_ranking_text()))
+        return
+
+    if text in ["/진실게임", "/진실질문"]:
+        reply_many(event.reply_token, split_text_messages(truth_game_start(user_id, user_name)))
+        return
+
+    if text.startswith("/진실답변"):
+        answer_text = text.replace("/진실답변", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(truth_game_answer(user_id, user_name, answer_text)))
+        return
+
+    if text == "/진실패스":
+        reply_many(event.reply_token, split_text_messages(truth_game_pass(user_id, user_name)))
+        return
+
+    if text == "/진실목록":
+        reply_many(event.reply_token, split_text_messages(truth_game_list_text(limit=10)))
         return
 
     if text == "/주간랭킹":
