@@ -498,26 +498,6 @@ def init_db():
     )
     """)
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS weekly_bounties (
-        week_start TEXT NOT NULL,
-        week_end TEXT NOT NULL,
-        hunter_user_id TEXT NOT NULL,
-        hunter_user_name TEXT NOT NULL,
-        target_user_id TEXT NOT NULL,
-        target_user_name TEXT NOT NULL,
-        mention_count INTEGER NOT NULL DEFAULT 0,
-        required_count INTEGER NOT NULL DEFAULT 5,
-        reward INTEGER NOT NULL DEFAULT 10,
-        completed INTEGER NOT NULL DEFAULT 0,
-        last_text_key TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        completed_at TEXT,
-        PRIMARY KEY (week_start, hunter_user_id)
-    )
-    """)
-
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS chat_last_speakers (
@@ -3114,14 +3094,22 @@ def gacha_system_text():
 # 히든 미션
 # =========================
 
-def broadcast_hidden_reward(reason, user_name, reward):
-    msg = (
-        "🎉 히든 미션 달성!\n\n"
+def hidden_reward_message(title, reason, user_name, reward):
+    return (
+        f"{title}\n\n"
         f"{reason}\n"
         f"달성자: {user_name}\n"
         f"보상: 💰{coin_text(reward)}"
     )
-    print("[PUSH_DISABLED] HIDDEN_REWARD", msg)
+
+
+def achievement_message(achievement_name, user_name, reward):
+    return (
+        "🏆 업적 달성!\n\n"
+        f"{achievement_name}\n"
+        f"달성자: {user_name}\n"
+        f"보상: 💰{coin_text(reward)}"
+    )
 
 
 def grant_hidden_reward_once(date_str, mission_key, user_id, user_name, reward, reason, meta=""):
@@ -3161,10 +3149,9 @@ def grant_hidden_reward_once(date_str, mission_key, user_id, user_name, reward, 
             "히든이벤트"
         )
 
-        broadcast_hidden_reward(reason, user_name, reward)
-        return True
+        return hidden_reward_message("🎉 히든 미션 달성!", reason, user_name, reward)
 
-    return False
+    return None
 
 
 
@@ -3267,17 +3254,6 @@ def get_today_chat_log_sequence(source_id, date_str):
     return int(row["total_logs"] or 0) if row else 0
 
 
-def broadcast_hidden_reward_to(source_id, reason, user_name, reward):
-    """히든 보상 알림은 Push 대신 로그로만 남깁니다."""
-    msg = (
-        "🎉 히든 보상 달성!\n\n"
-        f"{reason}\n"
-        f"달성자: {user_name}\n"
-        f"보상: 💰{coin_text(reward)}"
-    )
-    print("[PUSH_DISABLED] HIDDEN_REWARD_TO", source_id, msg)
-
-
 def grant_daily_chat_jackpot(date_str, source_id, seq, user_id, user_name, reward, reason, meta=""):
     """
     당일 + 방 + 순번별 1회만 보상 지급.
@@ -3319,8 +3295,7 @@ def grant_daily_chat_jackpot(date_str, source_id, seq, user_id, user_name, rewar
         "채팅잭팟"
     )
 
-    broadcast_hidden_reward_to(source_id, reason, user_name, reward)
-    return True
+    return hidden_reward_message("🎉 히든 보상 달성!", reason, user_name, reward)
 
 
 def set_pending_daily_jackpot(date_str, source_id, seq, reward, reason):
@@ -3372,7 +3347,7 @@ def check_daily_chat_jackpot_rewards(date_str, source_id, user_id, user_name):
         pending = pop_pending_daily_jackpot(date_str, source_id)
         if pending:
             pending_seq, pending_reward, pending_reason = pending
-            ok = grant_daily_chat_jackpot(
+            msg = grant_daily_chat_jackpot(
                 date_str,
                 source_id,
                 pending_seq,
@@ -3382,8 +3357,8 @@ def check_daily_chat_jackpot_rewards(date_str, source_id, user_id, user_name):
                 f"{pending_reason} / 봇 순번으로 다음 채팅자 지급",
                 f"source_id={source_id};seq={pending_seq};pending_to_next=1"
             )
-            if ok:
-                paid.append((pending_seq, pending_reward))
+            if msg:
+                paid.append(msg)
 
     seq = get_today_chat_log_sequence(source_id, date_str)
     lucky_number = get_daily_lucky_number(date_str)
@@ -3403,7 +3378,7 @@ def check_daily_chat_jackpot_rewards(date_str, source_id, user_id, user_name):
             set_pending_daily_jackpot(date_str, source_id, target_seq, reward, reason)
             continue
 
-        ok = grant_daily_chat_jackpot(
+        msg = grant_daily_chat_jackpot(
             date_str,
             source_id,
             target_seq,
@@ -3413,8 +3388,8 @@ def check_daily_chat_jackpot_rewards(date_str, source_id, user_id, user_name):
             reason,
             f"source_id={source_id};seq={seq};lucky_number={lucky_number}"
         )
-        if ok:
-            paid.append((target_seq, reward))
+        if msg:
+            paid.append(msg)
 
     return paid
 
@@ -3466,7 +3441,7 @@ def check_hidden_1000_reward(date_str, source_id, user_id, user_name):
         user_id,
         user_name,
         10,
-        "숨겨진 이벤트 보상: 당일 첫 1000마디 달성",
+        "🎯 당일 첫 1000마디 달성",
         f"count={count}"
     )
 
@@ -3490,7 +3465,7 @@ def check_hidden_2000_reward(date_str, source_id, user_id, user_name):
         user_id,
         user_name,
         30,
-        "숨겨진 이벤트 보상: 사이버망령 당일 첫 2000마디 달성",
+        "👻 사이버망령 당일 첫 2000마디 달성",
         f"count={count}"
     )
 
@@ -3949,20 +3924,28 @@ def start_lucky_draw_auto_scheduler():
 
 
 # =========================
-# 업적 / 현상금
+# 업적
 # =========================
-BOUNTY_REQUIRED_COUNT = 5
-BOUNTY_REWARD = 10  # 1코인
-
 ACHIEVEMENT_CATALOG = [
     ("first_attendance", "✅ 첫 출석", "출석을 처음 완료", 2),
     ("first_gacha", "🎰 첫 가챠", "가챠를 처음 이용", 2),
     ("first_lucky", "🎟️ 첫 럭키드로우", "S.N.S 럭키드로우 첫 참여", 2),
-    ("bounty_complete", "🎯 첫 현상금", "현상금을 처음 완료", 5),
     ("first_manitto", "🎭 첫 마니또", "마니또를 처음 성공", 5),
+    ("affinity_50", "💞 친밀한 시작", "한 상대와 누적 친밀도 50 달성", 2),
+    ("affinity_100", "💗 가까운 사이", "한 상대와 누적 친밀도 100 달성", 5),
+    ("affinity_300", "💖 단짝", "한 상대와 누적 친밀도 300 달성", 10),
+    ("jagiya", "💕 자기야", "한 상대와 누적 친밀도 500 달성", 30),
     ("daily_500_chatter", "💬 수다왕", "하루 500마디 달성", 10),
     ("weekly_500_emperor", "👑 수다황제", "7일 연속 500마디 이상 달성", 50),
 ]
+
+AFFINITY_ACHIEVEMENT_MILESTONES = [
+    (50, "affinity_50", "💞 친밀한 시작", 2),
+    (100, "affinity_100", "💗 가까운 사이", 5),
+    (300, "affinity_300", "💖 단짝", 10),
+]
+
+EXCLUDED_ACHIEVEMENT_KEYS = {"".join(("boun", "ty_complete"))}
 
 
 def grant_achievement_once(user_id, user_name, achievement_key, achievement_name, reward=0, meta=""):
@@ -3998,7 +3981,10 @@ def get_user_achievements(user_id):
 
 
 def achievement_status_text(user_id, user_name):
-    rows = get_user_achievements(user_id)
+    rows = [
+        row for row in get_user_achievements(user_id)
+        if row["achievement_key"] not in EXCLUDED_ACHIEVEMENT_KEYS
+    ]
     owned = {row["achievement_key"] for row in rows}
 
     dynamic = []
@@ -4089,7 +4075,7 @@ def check_chatter_achievements(date_str, source_id, user_id, user_name):
             10,
             f"date={date_str};count={current_count}"
         ):
-            granted.append("💬 수다왕")
+            granted.append(("💬 수다왕", 10))
 
         streak = count_500_madi_streak(user_id, date_str, source_id)
         if streak >= 7:
@@ -4101,7 +4087,7 @@ def check_chatter_achievements(date_str, source_id, user_id, user_name):
                 50,
                 f"date={date_str};streak={streak};count={current_count}"
             ):
-                granted.append("👑 수다황제")
+                granted.append(("👑 수다황제", 50))
 
     return granted
 
@@ -4118,159 +4104,6 @@ def grant_blacksmith_if_first(user_id, user_name, piece_key):
         f"piece_key={piece_key}"
     )
 
-
-def active_bounty_targets(exclude_user_id):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT user_id, user_name
-    FROM users
-    WHERE COALESCE(is_active, 1) = 1
-      AND user_id IS NOT NULL
-      AND user_id != ''
-      AND user_id != ?
-    ORDER BY RANDOM()
-    LIMIT 1
-    """, (exclude_user_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-
-def ensure_weekly_bounty(user_id, user_name):
-    week_start, week_end = event_week_key()
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT * FROM weekly_bounties
-    WHERE week_start = ? AND hunter_user_id = ?
-    """, (week_start, user_id))
-    row = cur.fetchone()
-    if row:
-        conn.close()
-        return row, None
-    conn.close()
-
-    target = active_bounty_targets(user_id)
-    if not target:
-        return None, "현상금 타깃을 지정할 활성 유저가 부족합니다."
-
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    INSERT INTO weekly_bounties (
-        week_start, week_end, hunter_user_id, hunter_user_name,
-        target_user_id, target_user_name, mention_count, required_count,
-        reward, completed, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?)
-    """, (
-        week_start, week_end, user_id, user_name,
-        target["user_id"], target["user_name"],
-        BOUNTY_REQUIRED_COUNT, BOUNTY_REWARD, now_str(), now_str()
-    ))
-    conn.commit()
-    cur.execute("""
-    SELECT * FROM weekly_bounties
-    WHERE week_start = ? AND hunter_user_id = ?
-    """, (week_start, user_id))
-    row = cur.fetchone()
-    conn.close()
-    return row, None
-
-
-def bounty_status_text(user_id, user_name):
-    row, err = ensure_weekly_bounty(user_id, user_name)
-    if err:
-        return err
-
-    status = "완료" if row["completed"] else "진행중"
-    return (
-        "🎯 S.N.S 현상금\n\n"
-        f"이번 주 타깃: {row['target_user_name']}\n"
-        f"조건: 메인방에서 타깃 닉네임 언급 {row['required_count']}회\n"
-        f"진행도: {row['mention_count']} / {row['required_count']}\n"
-        f"보상: {coin_text(row['reward'])}\n"
-        f"상태: {status}\n\n"
-        "※ 같은 문장 반복은 카운트되지 않습니다.\n"
-        "※ 명령어 메시지는 제외됩니다."
-    )
-
-
-def process_bounty_mention(source_id, user_id, user_name, text_value):
-    if source_id != COUNT_SOURCE_ID or not user_id or not text_value:
-        return None
-    if text_value.startswith('/'):
-        return None
-
-    row, err = ensure_weekly_bounty(user_id, user_name)
-    if err or not row or row["completed"]:
-        return None
-
-    target_key = clean_keyword(row["target_user_name"])
-    text_key = clean_keyword(text_value)
-    if not target_key or target_key not in text_key:
-        return None
-    if row["target_user_id"] == user_id:
-        return None
-    if row["last_text_key"] and row["last_text_key"] == text_key:
-        return None
-
-    new_count = row["mention_count"] + 1
-    completed = 1 if new_count >= row["required_count"] else 0
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    UPDATE weekly_bounties
-    SET mention_count = ?,
-        completed = ?,
-        last_text_key = ?,
-        updated_at = ?,
-        completed_at = CASE WHEN ? = 1 THEN ? ELSE completed_at END
-    WHERE week_start = ? AND hunter_user_id = ?
-    """, (
-        new_count, completed, text_key, now_str(), completed, now_str(),
-        row["week_start"], user_id
-    ))
-    conn.commit()
-    conn.close()
-
-    if completed:
-        change_money(user_id, user_name, row["reward"], f"현상금 완료: {row['target_user_name']} 언급", None, "현상금시스템")
-        grant_achievement_once(user_id, user_name, "bounty_complete", "🎯 첫 현상금", 5, f"target={row['target_user_name']}")
-        return (
-            "🎯 현상금 달성!\n\n"
-            f"타깃: {row['target_user_name']}\n"
-            f"달성자: {user_name}\n"
-            f"보상: {coin_text(row['reward'])}\n"
-            f"현재 잔액: {coin_text(get_balance(user_id))}"
-        )
-    return None
-
-
-def bounty_admin_status_text():
-    week_start, week_end = event_week_key()
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT hunter_user_name, target_user_name, mention_count, required_count, reward, completed
-    FROM weekly_bounties
-    WHERE week_start = ?
-    ORDER BY completed DESC, mention_count DESC, hunter_user_name ASC
-    LIMIT 50
-    """, (week_start,))
-    rows = cur.fetchall()
-    conn.close()
-    lines = ["🎯 현상금 현황", f"기간: {week_start} ~ {week_end}", ""]
-    if not rows:
-        lines.append("아직 발급된 현상금이 없습니다.")
-    else:
-        for i, row in enumerate(rows, 1):
-            mark = "✅" if row["completed"] else "진행"
-            lines.append(
-                f"{i}. {row['hunter_user_name']} → {row['target_user_name']} "
-                f"{row['mention_count']}/{row['required_count']} / {coin_text(row['reward'])} / {mark}"
-            )
-    return format_long_lines("", lines).strip()
 
 # =========================
 # 초기화 / 삭제
@@ -4345,8 +4178,6 @@ def find_delete_candidates(keyword, limit=20):
         ("weekly_rewards", "user_id", "user_name"),
         ("sns_lucky_draw_entries", "user_id", "user_name"),
         ("achievements", "user_id", "user_name"),
-        ("weekly_bounties", "hunter_user_id", "hunter_user_name"),
-        ("weekly_bounties", "target_user_id", "target_user_name"),
         ("chat_last_speakers", "user_id", "user_name"),
         ("affinity_scores", "user_a", "user_a_name"),
         ("affinity_scores", "user_b", "user_b_name"),
@@ -4428,8 +4259,6 @@ def delete_users_by_ids(targets):
 
         relation_deletes = [
             ("sns_lucky_draw_results", "winner_user_id"),
-            ("weekly_bounties", "hunter_user_id"),
-            ("weekly_bounties", "target_user_id"),
             ("affinity_scores", "user_a"),
             ("affinity_scores", "user_b"),
             ("affinity_cumulative_scores", "user_a"),
@@ -4520,7 +4349,7 @@ def format_hard_delete_done(target_name, deleted_users, deleted_counts, deleted_
 
 def jagiya_achievement_notice(user_name, other_name):
     return (
-        "🏆 신규 업적 달성!\n\n"
+        "🏆 업적 달성!\n\n"
         "💕 자기야\n\n"
         f"{user_name}님과 {other_name}님이\n"
         "누적 친밀도 500을 달성했습니다.\n\n"
@@ -4620,6 +4449,14 @@ def process_affinity_message(source_id, user_id, user_name, text_value):
     messages = []
 
     try:
+        milestone_msg = grant_affinity_milestone_achievements_if_ready(
+            user_id, user_name,
+            last["user_id"], last["user_name"],
+            cumulative_score
+        )
+        if milestone_msg:
+            messages.append(milestone_msg)
+
         jagiya_msg = grant_jagiya_achievement_if_ready(
             user_id, user_name,
             last["user_id"], last["user_name"],
@@ -4628,7 +4465,7 @@ def process_affinity_message(source_id, user_id, user_name, text_value):
         if jagiya_msg:
             messages.append(jagiya_msg)
     except Exception as e:
-        print("JAGIYA_ACHIEVEMENT_ERROR:", repr(e))
+        print("AFFINITY_ACHIEVEMENT_ERROR:", repr(e))
 
     try:
         msg1 = complete_manitto_if_ready(user_id, user_name, last["user_id"])
@@ -4646,6 +4483,43 @@ def process_affinity_message(source_id, user_id, user_name, text_value):
     return None
 
 
+def grant_affinity_milestone_achievements_if_ready(user_id_1, user_name_1, user_id_2, user_name_2, total_score):
+    """
+    한 상대와 누적 친밀도 단계 달성 시 양쪽에게 업적을 지급합니다.
+    각 단계는 유저별 최초 1회만 지급됩니다.
+    """
+    total_score = int(total_score or 0)
+    unlocked = []
+
+    for required_score, key, title, reward in AFFINITY_ACHIEVEMENT_MILESTONES:
+        if total_score < required_score:
+            continue
+
+        paid = []
+        for owner_id, owner_name, partner_id, partner_name in [
+            (user_id_1, user_name_1, user_id_2, user_name_2),
+            (user_id_2, user_name_2, user_id_1, user_name_1),
+        ]:
+            meta = f"partner_id={partner_id};partner_name={partner_name};total_affinity={total_score}"
+            if grant_achievement_once(owner_id, owner_name, key, title, reward, meta):
+                paid.append(owner_name)
+
+        if paid:
+            unlocked.append((required_score, title, reward))
+
+    if not unlocked:
+        return None
+
+    lines = [
+        "🏆 업적 달성!",
+        "",
+        f"{user_name_1}님과 {user_name_2}님",
+        f"누적 친밀도 {total_score}",
+        "",
+    ]
+    for required_score, title, reward in unlocked:
+        lines.append(f"{title} - {required_score} 달성 / 각 {coin_text(reward)}")
+    return "\n".join(lines)
 
 
 
@@ -5317,7 +5191,7 @@ def grant_jagiya_achievement_if_ready(user_id_1, user_name_1, user_id_2, user_na
 
     if paid:
         return (
-            "🏆 신규 업적 달성!\n\n"
+            "🏆 업적 달성!\n\n"
             "💕 자기야\n\n"
             f"{user_name_1}님과 {user_name_2}님이\n"
             f"누적 친밀도 {total_score}을 달성했습니다.\n\n"
@@ -6291,6 +6165,8 @@ def handle(event):
     print("USER_ID:", user_id)
     print("USER_NAME:", user_name)
 
+    public_notices = []
+
     if user_id:
         upsert_user(user_id, user_name, source_id)
 
@@ -6317,17 +6193,28 @@ def handle(event):
 
         # 히든 미션 자동 체크
         try:
-            check_hidden_1000_reward(date_str, source_id, user_id, user_name)
-            check_hidden_2000_reward(date_str, source_id, user_id, user_name)
-            check_daily_chat_jackpot_rewards(date_str, source_id, user_id, user_name)
-            check_chatter_achievements(date_str, source_id, user_id, user_name)
+            hidden_1000_msg = check_hidden_1000_reward(date_str, source_id, user_id, user_name)
+            if hidden_1000_msg:
+                public_notices.append(hidden_1000_msg)
+            hidden_2000_msg = check_hidden_2000_reward(date_str, source_id, user_id, user_name)
+            if hidden_2000_msg:
+                public_notices.append(hidden_2000_msg)
+            public_notices.extend(check_daily_chat_jackpot_rewards(date_str, source_id, user_id, user_name))
+            for achievement_name, reward in check_chatter_achievements(date_str, source_id, user_id, user_name):
+                public_notices.append(achievement_message(achievement_name, user_name, reward))
         except Exception as e:
             print("HIDDEN_REWARD_ERROR:", e)
 
     if not isinstance(event.message, TextMessageContent):
+        if public_notices:
+            reply_many(event.reply_token, split_text_messages("\n\n".join(dict.fromkeys(public_notices))))
         return
 
     text = (event.message.text or "").strip()
+
+    if public_notices and text.startswith("/"):
+        reply_many(event.reply_token, split_text_messages("\n\n".join(dict.fromkeys(public_notices))))
+        return
 
     # 운영진 전용 명령어 통합 차단
     # 일반 유저가 운영 명령어를 입력하면 모든 기능에서 같은 경고 문구만 출력한다.
@@ -6359,8 +6246,9 @@ def handle(event):
 
     try:
         affinity_msg = process_affinity_message(source_id, user_id, user_name, text)
-        if affinity_msg:
-            reply_many(event.reply_token, split_text_messages(affinity_msg))
+        if public_notices or affinity_msg:
+            notice_text = "\n\n".join(dict.fromkeys(public_notices + ([affinity_msg] if affinity_msg else [])))
+            reply_many(event.reply_token, split_text_messages(notice_text))
             return
     except Exception as e:
         print("AFFINITY_PROCESS_ERROR:", e)
