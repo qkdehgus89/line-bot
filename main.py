@@ -16,7 +16,6 @@ from linebot.v3.messaging import (
     ApiClient,
     Configuration,
     MessagingApi,
-    PushMessageRequest,
     ReplyMessageRequest,
     TextMessage,
 )
@@ -322,6 +321,17 @@ def init_db():
         target_user_id TEXT NOT NULL,
         target_user_name TEXT NOT NULL,
         created_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS public_announcements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id TEXT NOT NULL,
+        category TEXT NOT NULL,
+        message TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        delivered_at TEXT
     )
     """)
 
@@ -965,28 +975,58 @@ def push_private_message(user_id, text_value, return_error=False):
     return (False, error_summary) if return_error else False
 
 
-def push_public_message(source_id, text_value):
-    """
-    1:1에서 실행된 이벤트 결과를 지정된 공개방으로 보냅니다.
-    현재는 /찔러보기 공개 알림 전용으로만 사용합니다.
-    """
+def queue_public_announcement(source_id, text_value, category="general"):
     source_id = str(source_id or "").strip()
     if not source_id:
-        return False, "PUBLIC_SOURCE_ID_MISSING"
+        return False
 
     try:
-        with ApiClient(config) as client:
-            api = MessagingApi(client)
-            api.push_message(
-                PushMessageRequest(
-                    to=source_id,
-                    messages=[TextMessage(text=str(text_value)[:4900])]
-                )
-            )
-        return True, ""
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        INSERT INTO public_announcements (source_id, category, message, created_at)
+        VALUES (?, ?, ?, ?)
+        """, (source_id, category, str(text_value), now_str()))
+        conn.commit()
+        conn.close()
+        return True
     except Exception as e:
-        print("PUBLIC_PUSH_FAIL:", repr(e))
-        return False, "PUBLIC_PUSH_FAILED"
+        print("PUBLIC_ANNOUNCEMENT_QUEUE_ERROR:", repr(e))
+        return False
+
+
+def pop_public_announcements(source_id, limit=5):
+    source_id = str(source_id or "").strip()
+    if not source_id:
+        return []
+
+    try:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT id, message
+        FROM public_announcements
+        WHERE source_id = ?
+          AND delivered_at IS NULL
+        ORDER BY id ASC
+        LIMIT ?
+        """, (source_id, limit))
+        rows = cur.fetchall()
+        if not rows:
+            conn.close()
+            return []
+
+        ids = [row["id"] for row in rows]
+        cur.execute(
+            f"UPDATE public_announcements SET delivered_at = ? WHERE id IN ({','.join('?' for _ in ids)})",
+            [now_str(), *ids]
+        )
+        conn.commit()
+        conn.close()
+        return [row["message"] for row in rows]
+    except Exception as e:
+        print("PUBLIC_ANNOUNCEMENT_POP_ERROR:", repr(e))
+        return []
 
 
 def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 개인 메시지로 전송했습니다.", command_hint=None):
@@ -4632,17 +4672,18 @@ def anonymous_poke(sender_user_id, sender_user_name, target_keyword, announce_pu
         if not announce_public:
             return public_message
 
-        ok, _ = push_public_message(COUNT_SOURCE_ID, public_message)
+        ok = queue_public_announcement(COUNT_SOURCE_ID, public_message, "anonymous_poke")
         if ok:
             return (
                 "👀 찔러보기 완료\n\n"
-                "공개창에 익명 알림을 보냈습니다."
+                "공개창 알림을 예약했습니다.\n"
+                "다음 공창 메시지에 익명 알림이 표시됩니다."
             )
 
         return (
             "👀 찔러보기 완료\n\n"
             "기록은 완료되었습니다.\n"
-            "공창 알림 전송 실패"
+            "공창 알림 예약 실패"
         )
     except Exception as e:
         print("ANONYMOUS_POKE_ERROR:", repr(e))
@@ -4735,12 +4776,20 @@ def reset_today_anonymous_pokes(date_str=None):
         cur = conn.cursor()
         cur.execute("DELETE FROM anonymous_pokes WHERE date = ?", (date_str,))
         deleted = cur.rowcount
+        cur.execute("""
+        DELETE FROM public_announcements
+        WHERE category = 'anonymous_poke'
+          AND delivered_at IS NULL
+          AND substr(created_at, 1, 10) = ?
+        """, (date_str,))
+        queued_deleted = cur.rowcount
         conn.commit()
         conn.close()
         return (
             "👀 찔러보기 초기화 완료\n\n"
             f"기준일: {date_str}\n"
             f"삭제된 기록: {deleted}건\n\n"
+            f"삭제된 대기 알림: {queued_deleted}건\n\n"
             "오늘 찔러보기 횟수가 초기화되었습니다."
         )
     except Exception as e:
@@ -7061,6 +7110,12 @@ def handle(event):
         except Exception as e:
             print("MENTION_PROCESS_ERROR:", e)
 
+        try:
+            if source_id == COUNT_SOURCE_ID:
+                public_notices.extend(pop_public_announcements(source_id))
+        except Exception as e:
+            print("PUBLIC_ANNOUNCEMENT_ERROR:", e)
+
         # 히든 미션 자동 체크
         try:
             hidden_1000_msg = check_hidden_1000_reward(date_str, source_id, user_id, user_name)
@@ -7187,7 +7242,7 @@ def handle(event):
         conn = db()
         cur = conn.cursor()
         counts = []
-        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "anonymous_pokes", "truth_game_sessions"]:
+        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "anonymous_pokes", "public_announcements", "truth_game_sessions"]:
             try:
                 cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                 counts.append(f"{table}: {cur.fetchone()['cnt']}")
