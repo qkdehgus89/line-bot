@@ -141,7 +141,7 @@ def is_operator_command(text):
         "/유저검색 ", "/유저상세 ", "/닉삭제", "/닉삭제번호",
         "/지급 ", "/차감 ", "/코인내역 ", "/삭제복구",
         "/상품추가 ", "/상품등록 ", "/상품삭제 ",
-        "/사용 ", "/사용처리 ", "/구매취소 ", "/아이템지급 ",
+        "/사용처리 ", "/구매취소 ", "/아이템지급 ",
     ]
 
     return text in exact_commands or any(text.startswith(prefix) for prefix in prefix_commands)
@@ -7766,15 +7766,15 @@ def handle(event):
         return
 
     if text.startswith("/사용 "):
-        if not is_staff(user_id):
-            reply(event.reply_token, operator_only_warning())
+        if not is_private_chat(event):
+            reply(event.reply_token, "아이템 사용은 꽃봇 1:1 채팅에서만 가능합니다.\n\n사용법: /사용 구매번호")
             return
         try:
             purchase_id = int(text.split()[1])
         except Exception:
             reply(event.reply_token, "사용법: /사용 구매번호")
             return
-        ok, msg = staff_use_purchase(purchase_id, user_name)
+        ok, msg = use_purchase(purchase_id, user_id, user_name)
         reply_many(event.reply_token, split_text_messages(msg))
         return
 
