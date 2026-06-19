@@ -135,7 +135,7 @@ def is_operator_command(text):
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
         "/찔러보기초기화", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
-        "/운영진친밀도", "/운영진친밀도확인", "/버전",
+        "/운영진친밀도", "/운영진친밀도확인", "/김미트상가챠", "/버전",
     }
 
     prefix_commands = [
@@ -1404,6 +1404,11 @@ def operator_commands_text():
 /운영진친밀도 닉네임
 /운영진친밀도확인
 /운영진친밀도확인 닉네임
+
+━━━━━━━━━━
+👑 방장 전용
+━━━━━━━━━━
+/김미트상가챠
 
 ━━━━━━━━━━
 ⚙️ 시스템
@@ -3085,6 +3090,22 @@ GACHA_TYPE_LABELS = {
     "random": "랜덤형",
 }
 
+COIN_GACHA_WEIGHTS = {
+    "하": [(52, "F"), (34, "D"), (10, "C"), (4, "B")],
+    "중": [(52, "F"), (31, "D"), (11, "C"), (5, "B"), (1, "A")],
+    "상": [(52, "F"), (29, "D"), (10, "C"), (6, "B"), (2.5, "A"), (0.5, "S")],
+}
+
+KIMMEAT_SANG_GACHA_WEIGHTS = [
+    (10, "F"),
+    (20, "E"),
+    (30, "D"),
+    (20, "C"),
+    (12, "B"),
+    (6, "A"),
+    (2, "S"),
+]
+
 PIECE_INFO = {
     "iron": {"label": "철 조각", "need": 10, "reward": 5},
     "silver": {"label": "은 조각", "need": 10, "reward": 10},
@@ -3300,21 +3321,9 @@ def get_gacha_pity_point(user_id):
     return row["pity_points"] if row else 0
 
 
-def gacha_grade(gacha_type, tier):
+def gacha_grade(gacha_type, tier, coin_weights=None):
     if gacha_type == "coin":
-        # 코인형: 과도한 복사 방지 밸런스
-        # 손해 50.1%, 본전 24.9%, 소이득 20%, 고이득 5% 내외
-        if tier == "하":
-            return weighted_pick([
-                (50.1, "F"), (24.9, "E"), (17, "D"), (6, "C"), (2, "B")
-            ])
-        if tier == "중":
-            return weighted_pick([
-                (50.1, "F"), (24.9, "E"), (17, "D"), (6, "C"), (1.7, "B"), (0.3, "A")
-            ])
-        return weighted_pick([
-            (50.1, "F"), (24.9, "E"), (17, "D"), (5.5, "C"), (2.0, "B"), (0.45, "A"), (0.05, "S")
-        ])
+        return weighted_pick(coin_weights or COIN_GACHA_WEIGHTS[tier])
 
     # 조각형 / 랜덤형: 손해 구간 약 40%
     if tier == "하":
@@ -3337,28 +3346,28 @@ def random_piece_by_group(group=None):
 def coin_prize_for(tier, grade):
     prize_table = {
         "하": {
-            "F": [2, 3, 5],      # 0.2~0.5코인
-            "E": [10],           # 본전 1코인
-            "D": [12],           # 1.2코인
-            "C": [15],           # 1.5코인
-            "B": [20],           # 2코인
+            "F": [0, 2, 5],
+            "E": [10],
+            "D": [12, 15],
+            "C": [18],
+            "B": [20],
         },
         "중": {
-            "F": [10, 15, 20],   # 1~2코인
-            "E": [30],           # 본전 3코인
-            "D": [35, 40],       # 3.5~4코인
-            "C": [50],           # 5코인
-            "B": [70],           # 7코인
-            "A": [100],          # 10코인
+            "F": [0, 10, 20],
+            "E": [30],
+            "D": [35, 40],
+            "C": [45, 50],
+            "B": [60],
+            "A": [60],
         },
         "상": {
-            "F": [20, 30, 40],   # 2~4코인
-            "E": [50],           # 본전 5코인
-            "D": [60, 70],       # 6~7코인
-            "C": [90],           # 9코인
-            "B": [120],          # 12코인
-            "A": [180],          # 18코인
-            "S": [250],          # 25코인
+            "F": [0, 20, 30, 40],
+            "E": [50],
+            "D": [60, 70],
+            "C": [80, 90],
+            "B": [100],
+            "A": [100],
+            "S": [100],
         },
     }
 
@@ -3487,7 +3496,7 @@ def gacha_count_status_text(user_id):
     )
 
 
-def run_gacha(user_id, user_name, tier):
+def run_gacha(user_id, user_name, tier, coin_weights=None):
     if tier not in GACHA_COSTS:
         return False, "사용법\n\n/가챠 하\n/가챠 중\n/가챠 상"
 
@@ -3517,7 +3526,7 @@ def run_gacha(user_id, user_name, tier):
     change_money(user_id, user_name, -cost, f"{tier} 가챠 이용", None, "가챠시스템")
     weekly_used_after = add_weekly_gacha_count(user_id, user_name)
 
-    grade = gacha_grade(gacha_type, tier)
+    grade = gacha_grade(gacha_type, tier, coin_weights=coin_weights)
     lines = [
         f"🎰 {tier}급 가챠 결과",
         "",
@@ -3602,6 +3611,15 @@ def run_gacha(user_id, user_name, tier):
     return True, "\n".join(lines)
 
 
+def run_kimmeat_sang_gacha(user_id, user_name):
+    return run_gacha(
+        user_id,
+        user_name,
+        "상",
+        coin_weights=KIMMEAT_SANG_GACHA_WEIGHTS
+    )
+
+
 def gacha_system_text():
     return (
         "🎰 가챠 시스템 🎰\n\n"
@@ -3616,14 +3634,13 @@ def gacha_system_text():
         "/하가챠 : 1코인\n"
         "/중가챠 : 3코인\n"
         "/상가챠 : 5코인\n\n"
-        "공통 손해확률: 50.1%\n"
-        "많이 돌릴수록 평균적으로 손해가 나게 설계되어 있습니다.\n\n"
+        "결과 범위: 0배 ~ 2배\n"
+        "결과에 따라 코인이 줄거나 늘어날 수 있습니다.\n\n"
         "━━━━━━━━━━\n"
         "🧩 조각 가챠\n"
         "━━━━━━━━━━\n\n"
         "/조각가챠 : 1코인\n"
-        "성공확률: 51%\n"
-        "획득 조각: 철 / 은 / 금\n\n"
+        "획득: 철 / 은 / 금 조각 또는 꽝\n\n"
         "━━━━━━━━━━\n"
         "🔨 대장장이\n"
         "━━━━━━━━━━\n\n"
@@ -7842,6 +7859,16 @@ def handle(event):
             reply(event.reply_token, operator_only_warning())
             return
         reply(event.reply_token, reset_today_anonymous_pokes(date_str))
+        return
+
+    if text == "/김미트상가챠":
+        if not is_admin(user_id):
+            reply(event.reply_token, "⛔ 방장 전용 명령어입니다.")
+            return
+        success, message = run_kimmeat_sang_gacha(user_id, user_name)
+        if success:
+            grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, "kimmeat_sang")
+        reply_many(event.reply_token, split_text_messages(message))
         return
 
     if text == "/운영진친밀도" or text.startswith("/운영진친밀도 ") or text == "/운영진친밀도확인" or text.startswith("/운영진친밀도확인 "):
