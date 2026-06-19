@@ -8501,13 +8501,7 @@ def handle(event):
         return
 
     if text == "/잔액":
-        push_or_reply_private_info(
-            event,
-            user_id,
-            f"💰 {user_name}님의 보유 코인\n\n{coin_text(get_balance(user_id))}",
-            "📩 잔액 정보를 개인 메시지로 보내드렸습니다.",
-            "/잔액"
-        )
+        reply(event.reply_token, f"💰 {user_name}님의 보유 코인\n\n{coin_text(get_balance(user_id))}")
         return
 
     if text == "/내보유":
