@@ -134,7 +134,7 @@ def is_operator_command(text):
         "/운영명령어", "/방정보", "/DB상태", "/수집상태", "/최근로그", "/수집누락", "/전체유저",
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
-        "/찔러보기초기화", "/조각정리", "/버전",
+        "/찔러보기초기화", "/조각정리", "/운영진친밀도", "/운영진친밀도확인", "/버전",
     }
 
     prefix_commands = [
@@ -142,6 +142,7 @@ def is_operator_command(text):
         "/지급 ", "/차감 ", "/코인내역 ", "/삭제복구",
         "/상품추가 ", "/상품등록 ", "/상품삭제 ",
         "/사용처리 ", "/구매취소 ", "/아이템지급 ",
+        "/운영진친밀도 ", "/운영진친밀도확인 ",
     ]
 
     return text in exact_commands or any(text.startswith(prefix) for prefix in prefix_commands)
@@ -1206,8 +1207,6 @@ def user_commands_text():
 ━━━━━━━━━━
 ❤️ 친밀도
 ━━━━━━━━━━
-/친밀도
-/친밀도 닉네임
 /친밀도랭킹
 
 ━━━━━━━━━━
@@ -1270,7 +1269,7 @@ def beginner_guide_text():
 
 8️⃣ /상점 에서 다양한 아이템을 구매할 수 있습니다.
 
-9️⃣ /마니또 와 /친밀도 시스템을 통해 추가 보상을 획득할 수 있습니다.
+9️⃣ /마니또 와 친밀도 시스템을 통해 추가 보상을 획득할 수 있습니다.
 
 ━━━━━━━━━━
 
@@ -1318,7 +1317,6 @@ def beginner_guide_text():
 /내보유
 /상점
 /마니또
-/친밀도
 
 좋은 인연과 즐거운 대화를 만들어보세요 😀"""
 
@@ -1373,6 +1371,10 @@ def operator_commands_text():
 👀 이벤트 관리
 ━━━━━━━━━━
 /찔러보기초기화
+/운영진친밀도
+/운영진친밀도 닉네임
+/운영진친밀도확인
+/운영진친밀도확인 닉네임
 
 ━━━━━━━━━━
 ⚙️ 시스템
@@ -6414,7 +6416,7 @@ def affinity_status_text(user_id, user_name):
             other_name = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
             lines.append(f"{i}. {other_name} - {row['score']}")
 
-    lines += ["", "친밀도 확인: /친밀도"]
+    lines += ["", "운영진 확인: /운영진친밀도확인 닉네임"]
     return "\n".join(lines)
 
 
@@ -6447,6 +6449,92 @@ def cumulative_affinity_status_text(user_id, user_name):
         f"상대와 누적 친밀도 {AFFINITY_CUMULATIVE_JAGIYA_SCORE} 달성 시",
         f"각 {coin_text(AFFINITY_CUMULATIVE_JAGIYA_REWARD)} 지급",
     ]
+    return "\n".join(lines)
+
+
+def operator_affinity_report_text(keyword="", min_score=50):
+    keyword = (keyword or "").strip()
+    target = None
+
+    if keyword:
+        target = find_user(keyword)
+        if not target:
+            return "대상 유저를 찾을 수 없습니다."
+
+    week_start, week_end = event_week_key()
+    conn = db()
+    cur = conn.cursor()
+
+    if target:
+        target_user_id = target["user_id"]
+        target_user_name = target["user_name"]
+        cur.execute("""
+        SELECT user_a, user_b, user_a_name, user_b_name, score, updated_at
+        FROM affinity_scores
+        WHERE week_start = ?
+          AND score >= ?
+          AND (user_a = ? OR user_b = ?)
+        ORDER BY score DESC, updated_at DESC
+        """, (week_start, min_score, target_user_id, target_user_id))
+        weekly_rows = cur.fetchall()
+
+        cur.execute("""
+        SELECT user_a, user_b, user_a_name, user_b_name, total_score, updated_at
+        FROM affinity_cumulative_scores
+        WHERE total_score >= ?
+          AND (user_a = ? OR user_b = ?)
+        ORDER BY total_score DESC, updated_at DESC
+        """, (min_score, target_user_id, target_user_id))
+        cumulative_rows = cur.fetchall()
+    else:
+        target_user_id = None
+        target_user_name = "전체"
+        cur.execute("""
+        SELECT user_a, user_b, user_a_name, user_b_name, score, updated_at
+        FROM affinity_scores
+        WHERE week_start = ?
+          AND score >= ?
+        ORDER BY score DESC, updated_at DESC
+        """, (week_start, min_score))
+        weekly_rows = cur.fetchall()
+
+        cur.execute("""
+        SELECT user_a, user_b, user_a_name, user_b_name, total_score, updated_at
+        FROM affinity_cumulative_scores
+        WHERE total_score >= ?
+        ORDER BY total_score DESC, updated_at DESC
+        """, (min_score,))
+        cumulative_rows = cur.fetchall()
+
+    conn.close()
+
+    def pair_label(row, target_id=None):
+        if target_id:
+            return row["user_b_name"] if row["user_a"] == target_id else row["user_a_name"]
+        return f"{row['user_a_name']} ↔ {row['user_b_name']}"
+
+    lines = [
+        "💞 운영진 친밀도 확인",
+        f"대상: {target_user_name}",
+        f"기준: {min_score} 이상",
+        "",
+        "이번 주 친밀도",
+        f"기간: {week_start} ~ {week_end}",
+    ]
+
+    if not weekly_rows:
+        lines.append("기록 없음")
+    else:
+        for i, row in enumerate(weekly_rows, 1):
+            lines.append(f"{i}. {pair_label(row, target_user_id)} - {int(row['score'] or 0)}")
+
+    lines += ["", "누적 친밀도"]
+    if not cumulative_rows:
+        lines.append("기록 없음")
+    else:
+        for i, row in enumerate(cumulative_rows, 1):
+            lines.append(f"{i}. {pair_label(row, target_user_id)} - {int(row['total_score'] or 0)}")
+
     return "\n".join(lines)
 
 
@@ -6836,7 +6924,7 @@ def my_info_text(user_id, user_name):
     except Exception as e:
         print("MY_INFO_PURCHASE_ERROR:", e)
 
-    lines += ["", "자세히 보기", "/내보유 /친밀도 /업적 /조각 /가챠횟수"]
+    lines += ["", "자세히 보기", "/내보유 /업적 /조각 /가챠횟수"]
     return "\n".join(lines)
 
 
@@ -7546,6 +7634,17 @@ def handle(event):
         reply(event.reply_token, reset_today_anonymous_pokes(date_str))
         return
 
+    if text == "/운영진친밀도" or text.startswith("/운영진친밀도 ") or text == "/운영진친밀도확인" or text.startswith("/운영진친밀도확인 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        if text.startswith("/운영진친밀도확인"):
+            keyword = text.replace("/운영진친밀도확인", "", 1).strip()
+        else:
+            keyword = text.replace("/운영진친밀도", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(operator_affinity_report_text(keyword)))
+        return
+
     if text == "/수집상태":
         if not is_staff(user_id):
             reply(event.reply_token, operator_only_warning())
@@ -8046,10 +8145,6 @@ def handle(event):
             reply(event.reply_token, f"수령 가능한 미션 보상이 없습니다.\n\n현재 마디수: {count}\n확인: /미션")
         else:
             reply(event.reply_token, f"🎉 미션 보상 수령 완료\n\n달성 미션: {', '.join(claimed_names)}\n지급: {coin_text(total_reward)}\n현재 보유: {coin_text(get_balance(user_id))}")
-        return
-
-    if text == "/친밀도" or text.startswith("/친밀도 "):
-        push_or_reply_private_info(event, user_id, affinity_status_text(user_id, user_name), "📩 친밀도 정보를 개인 메시지로 보내드렸습니다.", text)
         return
 
     if text == "/잔액":
