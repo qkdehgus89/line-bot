@@ -135,7 +135,7 @@ def is_operator_command(text):
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
         "/찔러보기초기화", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
-        "/운영진친밀도", "/운영진친밀도확인", "/김미트상가챠", "/버전",
+        "/운영진친밀도", "/운영진친밀도확인", "/버전",
     }
 
     prefix_commands = [
@@ -3565,7 +3565,7 @@ def gacha_count_status_text(user_id):
     )
 
 
-def run_gacha(user_id, user_name, tier, coin_weights=None):
+def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None):
     if tier not in GACHA_COSTS:
         return False, "사용법\n\n/가챠 하\n/가챠 중\n/가챠 상"
 
@@ -3592,7 +3592,8 @@ def run_gacha(user_id, user_name, tier, coin_weights=None):
             f"보유: {coin_text(balance)}"
         )
 
-    change_money(user_id, user_name, -cost, f"{tier} 가챠 이용", None, "가챠시스템")
+    log_label = log_command or f"{tier} 가챠"
+    change_money(user_id, user_name, -cost, f"{log_label} 이용", None, "가챠시스템")
     weekly_used_after = add_weekly_gacha_count(user_id, user_name)
 
     grade = gacha_grade(gacha_type, tier, coin_weights=coin_weights)
@@ -3608,7 +3609,7 @@ def run_gacha(user_id, user_name, tier, coin_weights=None):
         prize = coin_prize_for(tier, grade)
 
         if prize > 0:
-            change_money(user_id, user_name, prize, f"{tier} 가챠 {grade}등급 코인 보상", None, "가챠시스템")
+            change_money(user_id, user_name, prize, f"{log_label} {grade}등급 코인 보상", None, "가챠시스템")
             lines.append(f"획득: 💰{coin_text(prize)}")
         else:
             lines.append("획득: 꽝")
@@ -3649,7 +3650,7 @@ def run_gacha(user_id, user_name, tier, coin_weights=None):
         if kind == "coin":
             prize = coin_prize_for(tier, grade)
             if prize > 0:
-                change_money(user_id, user_name, prize, f"{tier} 가챠 {grade}등급 코인 보상", None, "가챠시스템")
+                change_money(user_id, user_name, prize, f"{log_label} {grade}등급 코인 보상", None, "가챠시스템")
                 lines.append(f"획득: 💰{coin_text(prize)}")
             else:
                 lines.append("획득: 꽝")
@@ -3685,7 +3686,8 @@ def run_kimmeat_sang_gacha(user_id, user_name):
         user_id,
         user_name,
         "상",
-        coin_weights=KIMMEAT_SANG_GACHA_WEIGHTS
+        coin_weights=KIMMEAT_SANG_GACHA_WEIGHTS,
+        log_command="/가챠상"
     )
 
 
@@ -4484,7 +4486,7 @@ def lucky_draw_status_text(week_start=None, week_end=None, title="🎟️ S.N.S 
         for i, row in enumerate(rows, 1):
             lines.append(f"{i}. {row['user_name']}")
 
-    return format_long_lines("", lines).strip()
+    return "\n".join(lines)
 
 
 def settle_lucky_draw(settled_by="자동추첨"):
@@ -7930,16 +7932,6 @@ def handle(event):
         reply(event.reply_token, reset_today_anonymous_pokes(date_str))
         return
 
-    if text == "/김미트상가챠":
-        if not is_admin(user_id):
-            reply(event.reply_token, "⛔ 방장 전용 명령어입니다.")
-            return
-        success, message = run_kimmeat_sang_gacha(user_id, user_name)
-        if success:
-            grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, "kimmeat_sang")
-        reply_many(event.reply_token, split_text_messages(message))
-        return
-
     if text == "/운영진친밀도" or text.startswith("/운영진친밀도 ") or text == "/운영진친밀도확인" or text.startswith("/운영진친밀도확인 "):
         if not is_staff(user_id):
             reply(event.reply_token, operator_only_warning())
@@ -8636,9 +8628,9 @@ def handle(event):
     # =========================
     # 1:1 전용 명령어
     # =========================
-    if text in ["/가챠", "/가챠시스템", "/가챠횟수", "/상가챠", "/중가챠", "/하가챠", "/조각가챠", "/조각", "/대장장이", "/상점", "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과"] or text.startswith("/구매 "):
+    if text in ["/가챠", "/가챠시스템", "/가챠횟수", "/상가챠", "/중가챠", "/하가챠", "/조각가챠", "/조각", "/대장장이", "/김미트상가챠", "/상점", "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과"] or text.startswith("/구매 "):
         if not is_private_chat(event):
-            if text.startswith("/가챠") or text in ["/상가챠", "/중가챠", "/하가챠", "/조각가챠", "/조각", "/대장장이", "/가챠시스템", "/가챠횟수"]:
+            if text.startswith("/가챠") or text in ["/상가챠", "/중가챠", "/하가챠", "/조각가챠", "/조각", "/대장장이", "/김미트상가챠", "/가챠시스템", "/가챠횟수"]:
                 private_only_notice(event, user_id, gacha_private_guide_text(), "가챠")
             elif text in ["/상점"] or text.startswith("/구매 "):
                 private_only_notice(event, user_id, shop_private_guide_text(), "상점")
@@ -8655,6 +8647,16 @@ def handle(event):
             success, message = run_gacha(user_id, user_name, tier)
             if success:
                 grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, tier)
+            reply_many(event.reply_token, split_text_messages(message))
+            return
+
+        if text == "/김미트상가챠":
+            if not is_admin(user_id):
+                reply(event.reply_token, "⛔ 방장 전용 명령어입니다.")
+                return
+            success, message = run_kimmeat_sang_gacha(user_id, user_name)
+            if success:
+                grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, "kimmeat_sang")
             reply_many(event.reply_token, split_text_messages(message))
             return
 
