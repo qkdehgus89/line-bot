@@ -134,7 +134,8 @@ def is_operator_command(text):
         "/운영명령어", "/방정보", "/DB상태", "/수집상태", "/최근로그", "/수집누락", "/전체유저",
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
-        "/찔러보기초기화", "/조각정리", "/운영진친밀도", "/운영진친밀도확인", "/버전",
+        "/찔러보기초기화", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
+        "/운영진친밀도", "/운영진친밀도확인", "/버전",
     }
 
     prefix_commands = [
@@ -142,6 +143,7 @@ def is_operator_command(text):
         "/지급 ", "/차감 ", "/코인내역 ", "/삭제복구",
         "/상품추가 ", "/상품등록 ", "/상품삭제 ",
         "/사용처리 ", "/구매취소 ", "/아이템지급 ",
+        "/마디수 ", "/경고누적일 ", "/단벙참여확인 ", "/단벙참석확인 ",
         "/운영진친밀도 ", "/운영진친밀도확인 ",
     ]
 
@@ -196,6 +198,21 @@ def parse_date(text: str):
         except ValueError:
             pass
     return today()
+
+
+def parse_date_arg(text_value):
+    value = (text_value or "").strip()
+    if not value:
+        return today(), None
+    if value in ("오늘", "today"):
+        return today(), None
+    if value in ("어제", "yesterday"):
+        return (datetime.now(KST).date() - timedelta(days=1)).strftime("%Y-%m-%d"), None
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+        return value, None
+    except ValueError:
+        return None, "날짜는 YYYY-MM-DD 형식으로 입력해주세요.\n예: /마디수 2026-06-19"
 
 
 # =========================
@@ -431,6 +448,17 @@ def init_db():
         achieved_date TEXT NOT NULL,
         created_at TEXT NOT NULL,
         PRIMARY KEY (user_id, streak_days)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS danbung_attendance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        cost INTEGER NOT NULL DEFAULT 10,
+        created_at TEXT NOT NULL
     )
     """)
 
@@ -1162,7 +1190,8 @@ def user_commands_text():
 /출석
 /미션
 /수령
-/단벙참석
+/단벙
+/단벙참여
 /마디수
 /전체순위
 /주간랭킹
@@ -1385,6 +1414,11 @@ def operator_commands_text():
 /최근로그
 /수집누락
 /경고
+/경고누적일
+/경고누적일 최소횟수
+/마디수 YYYY-MM-DD
+/단벙참여확인
+/단벙참여확인 YYYY-MM-DD
 /조각정리
 /버전"""
 
@@ -2168,6 +2202,101 @@ def warning_text_for_staff(date_str, source_id):
     return "\n".join(lines)
 
 
+def madi_history_text(date_str, source_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT
+        c.user_id,
+        c.user_name,
+        c.count,
+        COALESCE(u.is_active, 1) AS is_active
+    FROM counts c
+    LEFT JOIN users u
+      ON u.user_id = c.user_id
+    LEFT JOIN deleted_users d
+      ON d.original_user_id = c.user_id
+    WHERE c.date = ?
+      AND c.source_id = ?
+      AND d.original_user_id IS NULL
+      AND COALESCE(u.is_active, 1) = 1
+    ORDER BY c.count DESC, c.user_name ASC
+    """, (date_str, source_id))
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return (
+            "📊 마디수 기록 조회\n\n"
+            f"기준일: {date_str}\n\n"
+            "해당 날짜의 마디수 기록이 없습니다."
+        )
+
+    total_count = sum(int(row["count"] or 0) for row in rows)
+    lines = [
+        "📊 마디수 기록 조회",
+        "",
+        f"기준일: {date_str}",
+        f"참여자: {len(rows)}명",
+        f"총 마디수: {total_count}마디",
+        "",
+        "━━━━━━━━━━",
+    ]
+
+    for i, row in enumerate(rows, 1):
+        lines.append(f"{i}. {row['user_name']} - {int(row['count'] or 0)}마디")
+
+    lines.append("━━━━━━━━━━")
+    return "\n".join(lines)
+
+
+def warning_accumulated_days_text(source_id, min_days=1):
+    min_days = max(1, int(min_days or 1))
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT
+        c.user_id,
+        COALESCE(u.user_name, c.user_name) AS user_name,
+        COUNT(DISTINCT c.date) AS warning_days,
+        MIN(c.date) AS first_date,
+        MAX(c.date) AS last_date
+    FROM counts c
+    LEFT JOIN users u
+      ON u.user_id = c.user_id
+    LEFT JOIN deleted_users d
+      ON d.original_user_id = c.user_id
+    WHERE c.source_id = ?
+      AND c.count < ?
+      AND d.original_user_id IS NULL
+      AND COALESCE(u.is_active, 1) = 1
+    GROUP BY c.user_id
+    HAVING warning_days >= ?
+    ORDER BY warning_days DESC, user_name ASC
+    """, (source_id, WARNING_LIMIT, min_days))
+    rows = cur.fetchall()
+    conn.close()
+
+    lines = [
+        "⚠️ 경고 누적일",
+        "",
+        f"기준: 일별 {WARNING_LIMIT}마디 미만",
+        f"표시: {min_days}회 이상 누적",
+        "",
+        "━━━━━━━━━━",
+    ]
+
+    if not rows:
+        lines.append("누적 경고 대상이 없습니다.")
+    else:
+        for i, row in enumerate(rows, 1):
+            lines.append(f"{i}. {row['user_name']} 경고 {int(row['warning_days'] or 0)}회 누적")
+            lines.append(f"   기간: {row['first_date']} ~ {row['last_date']}")
+
+    lines.append("━━━━━━━━━━")
+    return "\n".join(lines)
+
+
 # =========================
 # 화폐 기능
 # =========================
@@ -2207,12 +2336,28 @@ def change_money(user_id, user_name, amount, reason, staff_user_id=None, staff_u
     return balance
 
 
+def danbung_info_text():
+    return (
+        "💠 단벙 안내\n\n"
+        "단벙은 소규모 번개 참여 비용을 명확하게 정리하기 위한 기능입니다.\n\n"
+        "1. 일반 단벙\n"
+        "- 주최자와 참여자 모두 각 1코인이 차감됩니다.\n"
+        "- 참여자는 꽃봇에게 /단벙참여 를 입력해 참여 처리할 수 있습니다.\n\n"
+        "2. 단벙주최권 사용 단벙\n"
+        "- 주최자가 단벙주최권을 구매해 사용하면 참여자는 코인이 차감되지 않습니다.\n"
+        "- 단벙주최권은 /상점 에서 구매할 수 있습니다.\n\n"
+        "운영진 확인\n"
+        "- /단벙참여확인\n"
+        "- /단벙참여확인 YYYY-MM-DD"
+    )
+
+
 def charge_danbung_attendance(user_id, user_name):
     cost = coin_to_points("1")
     balance = get_balance(user_id)
     if balance < cost:
         return False, (
-            "💠 단벙 참석 처리 실패\n\n"
+            "💠 단벙 참여 처리 실패\n\n"
             f"보유: {coin_text(balance)}\n"
             f"필요: {coin_text(cost)}"
         )
@@ -2221,15 +2366,78 @@ def charge_danbung_attendance(user_id, user_name):
         user_id,
         user_name,
         -cost,
-        "단벙 참석",
+        "단벙 참여",
         None,
         "단벙"
     )
+    try:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        INSERT INTO danbung_attendance (
+            date, user_id, user_name, cost, created_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """, (today(), user_id, user_name, cost, now_str()))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print("DANBUNG_ATTENDANCE_LOG_ERROR:", repr(e))
+
     return True, (
-        "💠 단벙 참석 처리 완료\n\n"
+        "💠 단벙 참여 처리 완료\n\n"
         f"차감: {coin_text(cost)}\n"
-        f"현재 보유: {coin_text(new_balance)}"
+        f"현재 보유: {coin_text(new_balance)}\n\n"
+        "운영진이 /단벙참여확인 으로 참여 기록을 확인할 수 있습니다."
     )
+
+
+def danbung_attendance_status_text(date_str):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT
+        user_id,
+        user_name,
+        COUNT(*) AS attend_count,
+        COALESCE(SUM(cost), 0) AS total_cost,
+        MIN(created_at) AS first_at,
+        MAX(created_at) AS last_at
+    FROM danbung_attendance
+    WHERE date = ?
+    GROUP BY user_id
+    ORDER BY attend_count DESC, last_at ASC, user_name ASC
+    """, (date_str,))
+    rows = cur.fetchall()
+    conn.close()
+
+    lines = [
+        "💠 단벙 참여 확인",
+        "",
+        f"기준일: {date_str}",
+    ]
+
+    if not rows:
+        lines += ["", "━━━━━━━━━━", "해당 날짜의 단벙 참여 기록이 없습니다.", "━━━━━━━━━━"]
+        return "\n".join(lines)
+
+    total_records = sum(int(row["attend_count"] or 0) for row in rows)
+    total_cost = sum(int(row["total_cost"] or 0) for row in rows)
+    lines += [
+        f"참여자: {len(rows)}명 / 기록: {total_records}회",
+        f"차감 합계: {coin_text(total_cost)}",
+        "",
+        "━━━━━━━━━━",
+    ]
+
+    for i, row in enumerate(rows, 1):
+        lines.append(
+            f"{i}. {row['user_name']} - {int(row['attend_count'] or 0)}회 / {coin_text(int(row['total_cost'] or 0))}"
+        )
+        lines.append(f"   최근: {row['last_at']}")
+
+    lines.append("━━━━━━━━━━")
+    return "\n".join(lines)
 
 
 def currency_ranking(limit=20):
@@ -5329,6 +5537,7 @@ def find_delete_candidates(keyword, limit=20):
         ("purchases", "user_id", "user_name"),
         ("attendance", "user_id", "user_name"),
         ("attendance_streak_rewards", "user_id", "user_name"),
+        ("danbung_attendance", "user_id", "user_name"),
         ("mission_claims", "user_id", "user_name"),
         ("hidden_rewards", "user_id", "user_name"),
         ("gacha_settings", "user_id", "user_name"),
@@ -5403,6 +5612,7 @@ def delete_users_by_ids(targets):
         "purchases",
         "attendance",
         "attendance_streak_rewards",
+        "danbung_attendance",
         "mission_claims",
         "hidden_rewards",
         "gacha_settings",
@@ -7303,7 +7513,7 @@ def snapshot_user_data(user_id):
     conn = db()
     cur = conn.cursor()
     tables = [
-        "users", "currency", "currency_logs", "purchases", "attendance", "attendance_streak_rewards", "mission_claims",
+        "users", "currency", "currency_logs", "purchases", "attendance", "attendance_streak_rewards", "danbung_attendance", "mission_claims",
         "hidden_rewards", "gacha_settings", "gacha_pity", "gacha_pieces", "gacha_weekly_counts",
         "weekly_rewards", "sns_lucky_draw_entries", "achievements", "chat_logs", "counts",
         "truth_game_sessions",
@@ -7617,7 +7827,7 @@ def handle(event):
         conn = db()
         cur = conn.cursor()
         counts = []
-        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "anonymous_pokes", "public_announcements", "truth_game_sessions"]:
+        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "anonymous_pokes", "public_announcements", "truth_game_sessions"]:
             try:
                 cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                 counts.append(f"{table}: {cur.fetchone()['cnt']}")
@@ -7701,6 +7911,45 @@ def handle(event):
             reply(event.reply_token, operator_only_warning())
             return
         reply_many(event.reply_token, split_text_messages(warning_text_for_staff(date_str, COUNT_SOURCE_ID)))
+        return
+
+    if text.startswith("/마디수 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        target_date, err = parse_date_arg(text.replace("/마디수", "", 1).strip())
+        if err:
+            reply(event.reply_token, err)
+            return
+        reply_many(event.reply_token, split_text_messages(madi_history_text(target_date, COUNT_SOURCE_ID)))
+        return
+
+    if text == "/경고누적일" or text.startswith("/경고누적일 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        raw_days = text.replace("/경고누적일", "", 1).strip()
+        try:
+            min_days = int(raw_days) if raw_days else 1
+        except Exception:
+            reply(event.reply_token, "사용법: /경고누적일 또는 /경고누적일 최소횟수")
+            return
+        reply_many(event.reply_token, split_text_messages(warning_accumulated_days_text(COUNT_SOURCE_ID, min_days)))
+        return
+
+    if text == "/단벙참여확인" or text.startswith("/단벙참여확인 ") or text == "/단벙참석확인" or text.startswith("/단벙참석확인 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        if text.startswith("/단벙참석확인"):
+            raw_date = text.replace("/단벙참석확인", "", 1).strip()
+        else:
+            raw_date = text.replace("/단벙참여확인", "", 1).strip()
+        target_date, err = parse_date_arg(raw_date)
+        if err:
+            reply(event.reply_token, err.replace("/마디수", "/단벙참여확인"))
+            return
+        reply_many(event.reply_token, split_text_messages(danbung_attendance_status_text(target_date)))
         return
 
     if text == "/전체유저":
@@ -8124,7 +8373,11 @@ def handle(event):
             reply(event.reply_token, f"이미 오늘 출석했습니다.\n\n현재 보유: {coin_text(balance)}")
         return
 
-    if text == "/단벙참석":
+    if text == "/단벙":
+        reply_many(event.reply_token, split_text_messages(danbung_info_text()))
+        return
+
+    if text in ("/단벙참여", "/단벙참석"):
         ok, msg = charge_danbung_attendance(user_id, user_name)
         reply(event.reply_token, msg)
         return
