@@ -1161,6 +1161,7 @@ def user_commands_text():
 /출석
 /미션
 /수령
+/단벙참석
 /마디수
 /전체순위
 /주간랭킹
@@ -2202,6 +2203,31 @@ def change_money(user_id, user_name, amount, reason, staff_user_id=None, staff_u
     conn.commit()
     conn.close()
     return balance
+
+
+def charge_danbung_attendance(user_id, user_name):
+    cost = coin_to_points("1")
+    balance = get_balance(user_id)
+    if balance < cost:
+        return False, (
+            "💠 단벙 참석 처리 실패\n\n"
+            f"보유: {coin_text(balance)}\n"
+            f"필요: {coin_text(cost)}"
+        )
+
+    new_balance = change_money(
+        user_id,
+        user_name,
+        -cost,
+        "단벙 참석",
+        None,
+        "단벙"
+    )
+    return True, (
+        "💠 단벙 참석 처리 완료\n\n"
+        f"차감: {coin_text(cost)}\n"
+        f"현재 보유: {coin_text(new_balance)}"
+    )
 
 
 def currency_ranking(limit=20):
@@ -3806,10 +3832,58 @@ def attendance_streak_days(user_id, date_str):
     return streak
 
 
+def mark_legacy_attendance_streak_reward_claimed(user_id, user_name, streak_days, reward):
+    legacy_key = f"attendance_streak_{streak_days}_{user_id}"
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT date, created_at
+    FROM hidden_rewards
+    WHERE user_id = ?
+      AND mission_key = ?
+    ORDER BY date ASC
+    LIMIT 1
+    """, (user_id, legacy_key))
+    row = cur.fetchone()
+
+    if not row:
+        conn.close()
+        return False
+
+    cur.execute("""
+    INSERT OR IGNORE INTO attendance_streak_rewards (
+        user_id, user_name, streak_days, reward, achieved_date, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        user_id,
+        user_name,
+        streak_days,
+        reward,
+        row["date"],
+        row["created_at"] or now_str()
+    ))
+    inserted = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+
+    if inserted:
+        print(
+            "ATTENDANCE_STREAK_REWARD_LEGACY_CLAIMED:",
+            user_id,
+            user_name,
+            streak_days
+        )
+    return True
+
+
 def grant_attendance_streak_reward_once(date_str, user_id, user_name, streak_days, reward, current_streak):
     """
     연속출석 보상은 유저별/단계별로 한 번만 지급합니다.
     """
+    if mark_legacy_attendance_streak_reward_claimed(user_id, user_name, streak_days, reward):
+        return False
+
     conn = db()
     cur = conn.cursor()
     cur.execute("""
@@ -7949,6 +8023,11 @@ def handle(event):
             reply(event.reply_token, f"✅ 출석 완료\n\n{user_name}님\n보상: {coin_text(5)}\n현재 보유: {coin_text(balance)}{extra}")
         else:
             reply(event.reply_token, f"이미 오늘 출석했습니다.\n\n현재 보유: {coin_text(balance)}")
+        return
+
+    if text == "/단벙참석":
+        ok, msg = charge_danbung_attendance(user_id, user_name)
+        reply(event.reply_token, msg)
         return
 
     if text == "/미션":
