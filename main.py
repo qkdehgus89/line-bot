@@ -455,6 +455,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS danbung_attendance (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT NOT NULL,
+        event_name TEXT,
         user_id TEXT NOT NULL,
         user_name TEXT NOT NULL,
         cost INTEGER NOT NULL DEFAULT 10,
@@ -725,6 +726,12 @@ def init_db():
 
     if "release_after_log_id" not in public_announcement_cols:
         cur.execute("ALTER TABLE public_announcements ADD COLUMN release_after_log_id INTEGER")
+
+    cur.execute("PRAGMA table_info(danbung_attendance)")
+    danbung_attendance_cols = {row["name"] for row in cur.fetchall()}
+
+    if "event_name" not in danbung_attendance_cols:
+        cur.execute("ALTER TABLE danbung_attendance ADD COLUMN event_name TEXT")
 
     cur.execute("PRAGMA table_info(truth_game_sessions)")
     truth_game_cols = {row["name"] for row in cur.fetchall()}
@@ -1191,7 +1198,7 @@ def user_commands_text():
 /미션
 /수령
 /단벙
-/단벙참여
+/단벙참여 단벙제목
 /마디수
 /전체순위
 /주간랭킹
@@ -1418,6 +1425,7 @@ def operator_commands_text():
 /경고누적일 최소횟수
 /마디수 YYYY-MM-DD
 /단벙참여확인
+/단벙참여확인 단벙제목
 /단벙참여확인 YYYY-MM-DD
 /조각정리
 /버전"""
@@ -2339,20 +2347,27 @@ def change_money(user_id, user_name, amount, reason, staff_user_id=None, staff_u
 def danbung_info_text():
     return (
         "💠 단벙 안내\n\n"
-        "단벙은 소규모 번개 참여 비용을 명확하게 정리하기 위한 기능입니다.\n\n"
+        "단벙은 단체 벙 참여 비용을 명확하게 정리하기 위한 기능입니다.\n\n"
         "1. 일반 단벙\n"
         "- 주최자와 참여자 모두 각 1코인이 차감됩니다.\n"
-        "- 참여자는 꽃봇에게 /단벙참여 를 입력해 참여 처리할 수 있습니다.\n\n"
+        "- 참여자는 꽃봇에게 /단벙참여 단벙제목 을 입력해 참여 처리할 수 있습니다.\n"
+        "- 예: /단벙참여 @@1번단벙\n\n"
         "2. 단벙주최권 사용 단벙\n"
         "- 주최자가 단벙주최권을 구매해 사용하면 참여자는 코인이 차감되지 않습니다.\n"
-        "- 단벙주최권은 /상점 에서 구매할 수 있습니다.\n\n"
-        "운영진 확인\n"
-        "- /단벙참여확인\n"
-        "- /단벙참여확인 YYYY-MM-DD"
+        "- 단벙주최권은 /상점 에서 구매할 수 있습니다."
     )
 
 
-def charge_danbung_attendance(user_id, user_name):
+def charge_danbung_attendance(user_id, user_name, event_name=""):
+    event_name = (event_name or "").strip()
+    if not event_name:
+        return False, (
+            "💠 단벙 참여 처리 실패\n\n"
+            "참여할 단벙 제목을 함께 입력해주세요.\n\n"
+            "사용법: /단벙참여 단벙제목\n"
+            "예: /단벙참여 @@1번단벙"
+        )
+
     cost = coin_to_points("1")
     balance = get_balance(user_id)
     if balance < cost:
@@ -2375,10 +2390,10 @@ def charge_danbung_attendance(user_id, user_name):
         cur = conn.cursor()
         cur.execute("""
         INSERT INTO danbung_attendance (
-            date, user_id, user_name, cost, created_at
+            date, event_name, user_id, user_name, cost, created_at
         )
-        VALUES (?, ?, ?, ?, ?)
-        """, (today(), user_id, user_name, cost, now_str()))
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (today(), event_name, user_id, user_name, cost, now_str()))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -2386,9 +2401,10 @@ def charge_danbung_attendance(user_id, user_name):
 
     return True, (
         "💠 단벙 참여 처리 완료\n\n"
+        f"단벙: {event_name}\n"
         f"차감: {coin_text(cost)}\n"
         f"현재 보유: {coin_text(new_balance)}\n\n"
-        "운영진이 /단벙참여확인 으로 참여 기록을 확인할 수 있습니다."
+        "참여 기록이 저장되었습니다."
     )
 
 
@@ -2397,6 +2413,7 @@ def danbung_attendance_status_text(date_str):
     cur = conn.cursor()
     cur.execute("""
     SELECT
+        COALESCE(event_name, '') AS event_name,
         user_id,
         user_name,
         COUNT(*) AS attend_count,
@@ -2405,8 +2422,8 @@ def danbung_attendance_status_text(date_str):
         MAX(created_at) AS last_at
     FROM danbung_attendance
     WHERE date = ?
-    GROUP BY user_id
-    ORDER BY attend_count DESC, last_at ASC, user_name ASC
+    GROUP BY COALESCE(event_name, ''), user_id
+    ORDER BY COALESCE(event_name, '') ASC, attend_count DESC, last_at ASC, user_name ASC
     """, (date_str,))
     rows = cur.fetchall()
     conn.close()
@@ -2431,9 +2448,66 @@ def danbung_attendance_status_text(date_str):
     ]
 
     for i, row in enumerate(rows, 1):
+        event_line = row["event_name"] or "제목 없음"
+        lines.append(
+            f"{i}. {row['user_name']} - {event_line} / {int(row['attend_count'] or 0)}회 / {coin_text(int(row['total_cost'] or 0))}"
+        )
+        lines.append(f"   최근: {row['last_at']}")
+
+    lines.append("━━━━━━━━━━")
+    return "\n".join(lines)
+
+
+def danbung_attendance_event_text(event_name):
+    event_name = (event_name or "").strip()
+    if not event_name:
+        return "사용법: /단벙참여확인 단벙제목"
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT
+        user_id,
+        user_name,
+        COUNT(*) AS attend_count,
+        COALESCE(SUM(cost), 0) AS total_cost,
+        MIN(date) AS first_date,
+        MAX(date) AS last_date,
+        MIN(created_at) AS first_at,
+        MAX(created_at) AS last_at
+    FROM danbung_attendance
+    WHERE event_name = ?
+    GROUP BY user_id
+    ORDER BY attend_count DESC, last_at ASC, user_name ASC
+    """, (event_name,))
+    rows = cur.fetchall()
+    conn.close()
+
+    lines = [
+        "💠 단벙 참여 확인",
+        "",
+        f"단벙: {event_name}",
+    ]
+
+    if not rows:
+        lines += ["", "━━━━━━━━━━", "해당 단벙의 참여 기록이 없습니다.", "━━━━━━━━━━"]
+        return "\n".join(lines)
+
+    total_records = sum(int(row["attend_count"] or 0) for row in rows)
+    total_cost = sum(int(row["total_cost"] or 0) for row in rows)
+    lines += [
+        f"참여자: {len(rows)}명 / 기록: {total_records}회",
+        f"차감 합계: {coin_text(total_cost)}",
+        "",
+        "━━━━━━━━━━",
+    ]
+
+    for i, row in enumerate(rows, 1):
+        date_text = row["first_date"] if row["first_date"] == row["last_date"] else f"{row['first_date']} ~ {row['last_date']}"
         lines.append(
             f"{i}. {row['user_name']} - {int(row['attend_count'] or 0)}회 / {coin_text(int(row['total_cost'] or 0))}"
         )
+        lines.append(f"   날짜: {date_text}")
         lines.append(f"   최근: {row['last_at']}")
 
     lines.append("━━━━━━━━━━")
@@ -7969,7 +8043,7 @@ def handle(event):
             raw_date = text.replace("/단벙참여확인", "", 1).strip()
         target_date, err = parse_date_arg(raw_date)
         if err:
-            reply(event.reply_token, err.replace("/마디수", "/단벙참여확인"))
+            reply_many(event.reply_token, split_text_messages(danbung_attendance_event_text(raw_date)))
             return
         reply_many(event.reply_token, split_text_messages(danbung_attendance_status_text(target_date)))
         return
@@ -8399,8 +8473,12 @@ def handle(event):
         reply_many(event.reply_token, split_text_messages(danbung_info_text()))
         return
 
-    if text in ("/단벙참여", "/단벙참석"):
-        ok, msg = charge_danbung_attendance(user_id, user_name)
+    if text == "/단벙참여" or text.startswith("/단벙참여 ") or text == "/단벙참석" or text.startswith("/단벙참석 "):
+        if text.startswith("/단벙참석"):
+            event_name = text.replace("/단벙참석", "", 1).strip()
+        else:
+            event_name = text.replace("/단벙참여", "", 1).strip()
+        ok, msg = charge_danbung_attendance(user_id, user_name, event_name)
         reply(event.reply_token, msg)
         return
 
