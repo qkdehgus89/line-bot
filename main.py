@@ -135,7 +135,7 @@ def is_operator_command(text):
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
         "/찔러보기초기화", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
-        "/유저아이템보유", "/운영진친밀도", "/운영진친밀도확인", "/버전",
+        "/유저아이템보유", "/유저아이템삭제", "/운영진친밀도", "/운영진친밀도확인", "/버전",
     }
 
     prefix_commands = [
@@ -143,6 +143,7 @@ def is_operator_command(text):
         "/지급 ", "/차감 ", "/코인내역 ", "/삭제복구",
         "/상품추가 ", "/상품등록 ", "/상품삭제 ",
         "/사용처리 ", "/구매취소 ", "/아이템지급 ",
+        "/유저아이템삭제 ",
         "/마디수 ", "/경고누적일 ", "/단벙참여확인 ", "/단벙참석확인 ",
         "/운영진친밀도 ", "/운영진친밀도확인 ",
     ]
@@ -1356,6 +1357,7 @@ def operator_commands_text():
 /상품삭제 상품명
 /아이템지급 닉네임 상품명
 /유저아이템보유
+/유저아이템삭제 닉네임 아이템명 개수
 /사용 구매번호
 /사용처리 구매번호
 /구매취소 구매번호
@@ -2745,6 +2747,140 @@ def user_item_holdings_text():
         ]
 
     return "\n".join(lines)
+
+
+def item_match_score(keyword, item_name):
+    query = normalize_match_text(keyword)
+    target = normalize_match_text(item_name)
+    if not query or not target:
+        return None
+    if target == query:
+        return 0
+    if target.startswith(query):
+        return 1
+    if query in target:
+        return 2
+    return None
+
+
+def remove_user_items_by_name(user_keyword, item_keyword, amount, staff_user_name):
+    """
+    운영진용 아이템 일괄 삭제.
+    실제 row를 삭제하지 않고 cancel 상태로 변경해서 지급/회수 기록은 남깁니다.
+    """
+    amount_match = re.fullmatch(r"\s*(\d+)\s*개?\s*", str(amount or ""))
+    if not amount_match:
+        return False, "사용법: /유저아이템삭제 닉네임 아이템명 개수"
+    amount = int(amount_match.group(1))
+
+    if amount <= 0:
+        return False, "삭제 개수는 1개 이상으로 입력해주세요."
+
+    target, err = resolve_active_user_by_nickname(user_keyword, purpose="유저")
+    if err:
+        return False, err
+
+    conn = None
+    try:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT item_name, COUNT(*) AS cnt
+        FROM purchases
+        WHERE user_id = ?
+          AND status IN ('owned', 'pending')
+          AND item_name IS NOT NULL
+          AND TRIM(item_name) != ''
+        GROUP BY item_name
+        ORDER BY cnt DESC, item_name ASC
+        """, (target["user_id"],))
+        rows = cur.fetchall()
+
+        if not rows:
+            return False, f"{target['user_name']}님은 현재 미사용 아이템이 없습니다."
+
+        candidates = []
+        for row in rows:
+            score = item_match_score(item_keyword, row["item_name"])
+            if score is not None:
+                candidates.append((score, row))
+
+        if not candidates:
+            owned_text = ", ".join(f"{row['item_name']} {int(row['cnt'] or 0)}개" for row in rows)
+            return False, (
+                "해당 아이템을 찾을 수 없습니다.\n\n"
+                f"대상: {target['user_name']}\n"
+                f"검색어: {item_keyword}\n"
+                f"보유 아이템: {owned_text}"
+            )
+
+        candidates.sort(key=lambda x: (x[0], len(x[1]["item_name"]), x[1]["item_name"]))
+        best_score = candidates[0][0]
+        best = [row for score, row in candidates if score == best_score]
+        if len(best) > 1:
+            lines = [
+                "아이템이 여러 개 검색되었습니다.",
+                "아이템명을 더 정확히 입력해주세요.",
+                "",
+            ]
+            for row in best[:5]:
+                lines.append(f"- {row['item_name']} {int(row['cnt'] or 0)}개")
+            return False, "\n".join(lines)
+
+        item_name = best[0]["item_name"]
+        available = int(best[0]["cnt"] or 0)
+        if available < amount:
+            return False, (
+                "삭제할 수량이 보유 수량보다 많습니다.\n\n"
+                f"대상: {target['user_name']}\n"
+                f"아이템: {item_name}\n"
+                f"보유: {available}개\n"
+                f"요청: {amount}개"
+            )
+
+        cur.execute("""
+        SELECT id
+        FROM purchases
+        WHERE user_id = ?
+          AND item_name = ?
+          AND status IN ('owned', 'pending')
+        ORDER BY id ASC
+        LIMIT ?
+        """, (target["user_id"], item_name, amount))
+        purchase_ids = [int(row["id"]) for row in cur.fetchall()]
+
+        if len(purchase_ids) < amount:
+            return False, "삭제 대상 구매 기록을 충분히 찾지 못했습니다. 다시 확인해주세요."
+
+        placeholders = ",".join("?" for _ in purchase_ids)
+        cur.execute(f"""
+        UPDATE purchases
+        SET status = 'cancel',
+            processed_at = ?,
+            processed_by = ?,
+            use_note = ?
+        WHERE id IN ({placeholders})
+        """, [now_str(), staff_user_name, "운영진 일괄 아이템 삭제"] + purchase_ids)
+
+        removed = cur.rowcount
+        conn.commit()
+        remaining = available - removed
+        id_text = ", ".join(f"#{pid}" for pid in purchase_ids)
+        return True, (
+            "🗑️ 유저 아이템 삭제 완료\n\n"
+            f"대상: {target['user_name']}\n"
+            f"아이템: {item_name}\n"
+            f"삭제 수량: {removed}개\n"
+            f"남은 수량: {remaining}개\n"
+            f"처리 구매번호: {id_text}\n"
+            "환불: 없음"
+        )
+    except Exception as e:
+        print("REMOVE USER ITEMS ERROR:", e)
+        return False, "유저 아이템 삭제 처리 중 오류가 발생했습니다."
+    finally:
+        if conn:
+            conn.close()
 
 
 def use_purchase(purchase_id, requester_user_id, requester_user_name, note=""):
@@ -7834,6 +7970,24 @@ def handle(event):
             reply(event.reply_token, operator_only_warning())
             return
         reply_many(event.reply_token, split_text_messages(user_item_holdings_text()))
+        return
+
+    if text == "/유저아이템삭제" or text.startswith("/유저아이템삭제 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        parts = text.split()
+        if len(parts) < 4:
+            reply(event.reply_token, "사용법: /유저아이템삭제 닉네임 아이템명 개수")
+            return
+        user_keyword = parts[1]
+        amount_text = parts[-1]
+        item_keyword = " ".join(parts[2:-1]).strip()
+        if not item_keyword:
+            reply(event.reply_token, "사용법: /유저아이템삭제 닉네임 아이템명 개수")
+            return
+        ok, msg = remove_user_items_by_name(user_keyword, item_keyword, amount_text, user_name)
+        reply_many(event.reply_token, split_text_messages(msg))
         return
 
     if text == "/조각정리":
