@@ -8491,9 +8491,14 @@ def handle(event):
             if streak_paid:
                 paid_lines = [f"{days}일 연속 출석 보상 {coin_text(reward)}" for days, reward in streak_paid]
                 extra = "\n\n🎁 연속출석 보상\n" + "\n".join(paid_lines)
-            reply(event.reply_token, f"✅ 출석 완료\n\n{user_name}님\n보상: {coin_text(5)}\n현재 보유: {coin_text(balance)}{extra}")
+            reply(event.reply_token, f"✅ 출석 완료\n\n{user_name}님\n보상: {coin_text(5)}\n현재 보유: {coin_text(balance)}{extra}\n\n{streak}일차 출석완료")
         else:
-            reply(event.reply_token, f"이미 오늘 출석했습니다.\n\n현재 보유: {coin_text(balance)}")
+            try:
+                streak = attendance_streak_days(user_id, date_str)
+            except Exception:
+                streak = 0
+            streak_text = f"\n\n{streak}일차 출석완료" if streak > 0 else ""
+            reply(event.reply_token, f"이미 오늘 출석했습니다.\n\n현재 보유: {coin_text(balance)}{streak_text}")
         return
 
     if text == "/단벙":
