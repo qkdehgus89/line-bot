@@ -3593,7 +3593,7 @@ def gacha_count_status_text(user_id):
     )
 
 
-def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None):
+def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, bypass_weekly_limit=False):
     if tier not in GACHA_COSTS:
         return False, "사용법\n\n/가챠 하\n/가챠 중\n/가챠 상"
 
@@ -3605,7 +3605,7 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None):
     balance = get_balance(user_id)
 
     used_count = get_weekly_gacha_count(user_id)
-    if used_count >= WEEKLY_GACHA_LIMIT:
+    if used_count >= WEEKLY_GACHA_LIMIT and not bypass_weekly_limit:
         return False, (
             "🎰 이번 주 가챠 횟수를 모두 사용했습니다.\n\n"
             f"사용: {used_count} / {WEEKLY_GACHA_LIMIT}회\n"
@@ -3622,7 +3622,12 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None):
 
     log_label = log_command or f"{tier} 가챠"
     change_money(user_id, user_name, -cost, f"{log_label} 이용", None, "가챠시스템")
-    weekly_used_after = add_weekly_gacha_count(user_id, user_name)
+    if bypass_weekly_limit and used_count >= WEEKLY_GACHA_LIMIT:
+        weekly_used_after = WEEKLY_GACHA_LIMIT
+    else:
+        weekly_used_after = add_weekly_gacha_count(user_id, user_name)
+        if bypass_weekly_limit:
+            weekly_used_after = min(weekly_used_after, WEEKLY_GACHA_LIMIT)
 
     grade = gacha_grade(gacha_type, tier, coin_weights=coin_weights)
     lines = [
@@ -3715,7 +3720,8 @@ def run_kimmeat_sang_gacha(user_id, user_name):
         user_name,
         "상",
         coin_weights=KIMMEAT_SANG_GACHA_WEIGHTS,
-        log_command="/가챠상"
+        log_command="/가챠상",
+        bypass_weekly_limit=True
     )
 
 
