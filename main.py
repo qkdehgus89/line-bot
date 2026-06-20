@@ -189,17 +189,6 @@ def now_str():
     return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def parse_date(text: str):
-    parts = text.strip().split()
-    if len(parts) >= 2:
-        try:
-            datetime.strptime(parts[1], "%Y-%m-%d")
-            return parts[1]
-        except ValueError:
-            pass
-    return today()
-
-
 def parse_date_arg(text_value):
     value = (text_value or "").strip()
     if not value:
@@ -989,14 +978,6 @@ def weekly_settlement_text(source_id=None):
     return "\n".join(lines)
 
 
-def weekly_settlement(source_id=None):
-    return weekly_settlement_text(source_id)
-
-
-def weekly_reward_settlement(source_id=None):
-    return weekly_settlement_text(source_id)
-
-
 # =========================
 # 안정화 헬퍼
 # =========================
@@ -1029,17 +1010,6 @@ def one_to_one_command_notice(feature_name="해당 기능", command_hint=None):
     if command_hint:
         lines += ["", f"1:1에서 입력: {command_hint}"]
     return "\n".join(lines)
-
-
-def push_private_message(user_id, text_value, return_error=False):
-    """
-    LINE Push API는 사용하지 않습니다.
-    1:1 채팅에서는 reply로만 응답하고, 공개방에서는 1:1 직접 입력을 안내합니다.
-    """
-    user_id = str(user_id or "").strip()
-    print("[PUSH_DISABLED]", user_id)
-    error_summary = "PUSH_DISABLED: 꽃봇 1:1 채팅에서 직접 명령어를 입력해주세요."
-    return (False, error_summary) if return_error else False
 
 
 def queue_public_announcement(source_id, text_value, category="general", release_after_log_id=None):
@@ -1170,13 +1140,6 @@ def shop_private_guide_text():
         "/사용 구매번호"
     )
 
-
-def safe_call(label, func, *args, **kwargs):
-    try:
-        return func(*args, **kwargs)
-    except Exception as e:
-        print(f"{label}_ERROR:", repr(e))
-        return None
 
 def user_guide_text():
     return beginner_guide_text()
@@ -1798,23 +1761,6 @@ def collection_missing(source_id, date_str):
     return users_no_count, logs_no_count, counts_no_user
 
 
-def format_long_lines(title, lines, max_chars=4500):
-    msg = title + "\\n\\n"
-    used = len(msg)
-    output = [title, ""]
-
-    for line in lines:
-        extra = len(line) + 1
-        if used + extra > max_chars:
-            output.append("...")
-            output.append("내용이 길어서 일부만 표시됐습니다.")
-            break
-        output.append(line)
-        used += extra
-
-    return "\\n".join(output)
-
-
 def recent_chat_logs(source_id, limit=20):
     conn = db()
     cur = conn.cursor()
@@ -1918,26 +1864,6 @@ def all_registered_users_text():
     return "\n".join(lines)
 
 
-def set_gender(user_name_keyword, gender):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET gender = ? WHERE user_name LIKE ?", (gender, f"%{user_name_keyword}%"))
-    changed = cur.rowcount
-    conn.commit()
-    conn.close()
-    return changed
-
-
-def set_nomicl(user_name_keyword, value):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET is_nomicl = ? WHERE user_name LIKE ?", (value, f"%{user_name_keyword}%"))
-    changed = cur.rowcount
-    conn.commit()
-    conn.close()
-    return changed
-
-
 def get_user_by_id(user_id):
     conn = db()
     cur = conn.cursor()
@@ -1974,82 +1900,6 @@ def set_user_active_by_id_with_name(user_id, value):
 
     changed = set_user_active_by_id(user_id, value)
     return changed, user["user_name"]
-
-
-def set_user_active_by_name(keyword, value):
-    rows = find_users(keyword, limit=20)
-
-    if not rows:
-        return 0, []
-
-    conn = db()
-    cur = conn.cursor()
-
-    changed = 0
-    names = []
-
-    for row in rows:
-        cur.execute("""
-        UPDATE users
-        SET is_active = ?,
-            updated_at = ?
-        WHERE user_id = ?
-        """, (value, now_str(), row["user_id"]))
-
-        changed += cur.rowcount
-        names.append(row["user_name"])
-
-    conn.commit()
-    conn.close()
-
-    return changed, names
-
-
-
-def sync_users_from_history():
-    conn = db()
-    cur = conn.cursor()
-    inserted = 0
-    updated = 0
-
-    for table, time_col in [("counts", "date"), ("currency_logs", "created_at"), ("purchases", "created_at")]:
-        try:
-            cur.execute(f"""
-            SELECT user_id, user_name, MAX({time_col}) AS last_time
-            FROM {table}
-            WHERE user_id IS NOT NULL AND user_id != ''
-            GROUP BY user_id
-            """)
-            rows = cur.fetchall()
-        except Exception as e:
-            print("SYNC ERROR:", e)
-            continue
-
-        for row in rows:
-            cur.execute("SELECT user_id FROM users WHERE user_id = ?", (row["user_id"],))
-            if cur.fetchone():
-                cur.execute("""
-                UPDATE users
-                SET user_name = ?,
-                    is_active = COALESCE(is_active, 1),
-                    updated_at = ?
-                WHERE user_id = ?
-                """, (row["user_name"], now_str(), row["user_id"]))
-                updated += cur.rowcount
-            else:
-                cur.execute("""
-                INSERT INTO users (
-                    user_id, user_name, gender, is_nomicl, is_active,
-                    last_seen_source_id, updated_at
-                )
-                VALUES (?, ?, 'unknown', 0, 1, ?, ?)
-                """, (row["user_id"], row["user_name"], COUNT_SOURCE_ID, now_str()))
-                inserted += 1
-
-    conn.commit()
-    conn.close()
-    return inserted, updated
-
 
 
 # =========================
@@ -2546,18 +2396,6 @@ def currency_history(user_id, limit=10):
     return rows
 
 
-def reset_currency():
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM currency")
-    deleted_currency = cur.rowcount
-    cur.execute("DELETE FROM currency_logs")
-    deleted_logs = cur.rowcount
-    conn.commit()
-    conn.close()
-    return deleted_currency, deleted_logs
-
-
 # =========================
 # 상점 기능
 # =========================
@@ -2670,29 +2508,6 @@ def buy_item(user_id, user_name, item_name):
         f"보유 확인: /내보유\n"
         f"사용 신청: /사용 {purchase_id}"
     )
-
-
-def list_purchases(status=None, limit=30):
-    conn = db()
-    cur = conn.cursor()
-    if status:
-        cur.execute("""
-        SELECT id, user_name, item_name, price, status, created_at, used_at, used_by, use_note
-        FROM purchases
-        WHERE status = ?
-        ORDER BY id DESC
-        LIMIT ?
-        """, (status, limit))
-    else:
-        cur.execute("""
-        SELECT id, user_name, item_name, price, status, created_at, used_at, used_by, use_note
-        FROM purchases
-        ORDER BY id DESC
-        LIMIT ?
-        """, (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
 
 
 def list_user_purchases(user_id, status=None, limit=None):
@@ -3237,39 +3052,6 @@ def gacha_probability_text():
         gacha_weight_line("상", PIECE_GACHA_WEIGHTS["상"]),
     ]
     return "\n".join(lines)
-
-
-def get_gacha_type(user_id):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT gacha_type
-    FROM gacha_settings
-    WHERE user_id = ?
-    """, (user_id,))
-    row = cur.fetchone()
-    conn.close()
-
-    if not row:
-        return "random"
-
-    return row["gacha_type"]
-
-
-def set_gacha_type(user_id, user_name, gacha_type):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    INSERT INTO gacha_settings (user_id, user_name, gacha_type, updated_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(user_id)
-    DO UPDATE SET
-        user_name = excluded.user_name,
-        gacha_type = excluded.gacha_type,
-        updated_at = excluded.updated_at
-    """, (user_id, user_name, gacha_type, now_str()))
-    conn.commit()
-    conn.close()
 
 
 def add_reward_purchase(user_id, user_name, item_name):
@@ -6724,67 +6506,6 @@ def grant_jagiya_achievement_if_ready(user_id_1, user_name_1, user_id_2, user_na
 
 
 
-# =========================
-# 마니또/친밀도 활성화 보정
-# =========================
-def affinity_status_text(user_id, user_name):
-    week_start, week_end = event_week_key()
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT user_a, user_b, user_a_name, user_b_name, score
-    FROM affinity_scores
-    WHERE week_start = ? AND (user_a = ? OR user_b = ?)
-    ORDER BY score DESC, updated_at DESC
-    LIMIT 10
-    """, (week_start, user_id, user_id))
-    rows = cur.fetchall()
-    conn.close()
-
-    lines = ["💞 이번 주 친밀도", f"기간: {week_start} ~ {week_end}", ""]
-    if not rows:
-        lines.append("이번 주 친밀도 기록이 없습니다.")
-    else:
-        for i, row in enumerate(rows, 1):
-            other_name = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
-            lines.append(f"{i}. {other_name} - {row['score']}")
-
-    lines += ["", "운영진 확인: /운영진친밀도확인 닉네임"]
-    return "\n".join(lines)
-
-
-def cumulative_affinity_status_text(user_id, user_name):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT user_a, user_b, user_a_name, user_b_name, total_score, updated_at
-    FROM affinity_cumulative_scores
-    WHERE user_a = ? OR user_b = ?
-    ORDER BY total_score DESC, updated_at DESC
-    LIMIT 20
-    """, (user_id, user_id))
-    rows = cur.fetchall()
-    conn.close()
-
-    lines = ["🌱 누적 친밀도", f"대상: {user_name}", ""]
-    if not rows:
-        lines.append("누적 친밀도 기록이 없습니다.")
-    else:
-        for i, row in enumerate(rows, 1):
-            other_name = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
-            total = int(row["total_score"] or 0)
-            mark = " 💕" if total >= AFFINITY_CUMULATIVE_JAGIYA_SCORE else ""
-            lines.append(f"{i}. {other_name} - {total}{mark}")
-
-    lines += [
-        "",
-        "💕 자기야 업적",
-        f"상대와 누적 친밀도 {AFFINITY_CUMULATIVE_JAGIYA_SCORE} 달성 시",
-        f"각 {coin_text(AFFINITY_CUMULATIVE_JAGIYA_REWARD)} 지급",
-    ]
-    return "\n".join(lines)
-
-
 def operator_affinity_report_text(keyword="", min_score=50):
     keyword = (keyword or "").strip()
     target = None
@@ -7129,17 +6850,6 @@ def genealogy_text_with_coins():
 
     return "\n".join(lines).strip()
 
-# =========================
-# 출력 포맷
-# =========================
-def gender_icon(gender):
-    return ""
-
-
-def nomicl_text(is_nomicl):
-    return ""
-
-
 def format_rows(title, date_str, rows):
     lines = [title, f"날짜: {date_str}", ""]
     if not rows:
@@ -7163,101 +6873,6 @@ def format_total_rows(title, rows):
         lines.append(
             f"{i}. {row['user_name']} - {row['count']}"
         )
-    return "\n".join(lines)
-
-
-# =========================
-# 개인 메시지 / 내정보 통합
-# =========================
-def my_info_text(user_id, user_name):
-    balance = get_balance(user_id)
-    pity = get_gacha_pity_point(user_id)
-    week_start, week_end = gacha_week_range_for_today()
-    gacha_used = get_weekly_gacha_count(user_id)
-    gacha_remain = max(0, WEEKLY_GACHA_LIMIT - gacha_used)
-
-    lines = [
-        "📌 S.N.S 내정보",
-        "",
-        f"닉네임: {user_name}",
-        f"보유 코인: {coin_text(balance)}",
-        f"행운포인트: {pity} / 10",
-        "",
-        "🎰 이번 주 가챠",
-        f"기간: {week_start} ~ {week_end}",
-        f"사용: {gacha_used} / {WEEKLY_GACHA_LIMIT}회",
-        f"남음: {gacha_remain}회",
-        "이용시간: 토요일 00:00 ~ 21:00",
-    ]
-
-    try:
-        row, err = ensure_weekly_manitto(user_id, user_name)
-        if row and not err:
-            score = get_affinity_score(user_id, row["target_user_id"], row["week_start"])
-            reward_text = coin_text(row["reward"]) if row["reward"] else f"{coin_text(row['reward_min'])} ~ {coin_text(row['reward_max'])}"
-            lines += [
-                "",
-                "🎭 마니또",
-                f"타겟: {row['target_user_name']}",
-                f"진행도: {score} / {row['required_score']}",
-                f"보상: {reward_text}",
-                "상태: 완료" if row["completed"] else "상태: 진행중",
-            ]
-        elif err:
-            lines += ["", "🎭 마니또", err]
-    except Exception as e:
-        print("MY_INFO_MANITTO_ERROR:", e)
-
-    try:
-        w_start, _ = event_week_key()
-        conn = db()
-        cur = conn.cursor()
-        cur.execute("""
-        SELECT user_a, user_b, user_a_name, user_b_name, score
-        FROM affinity_scores
-        WHERE week_start = ? AND (user_a = ? OR user_b = ?)
-        ORDER BY score DESC, updated_at DESC
-        LIMIT 3
-        """, (w_start, user_id, user_id))
-        affinity_rows = cur.fetchall()
-        conn.close()
-        lines += ["", "💕 친밀도 TOP3"]
-        if not affinity_rows:
-            lines.append("이번 주 친밀도 기록이 없습니다.")
-        else:
-            for i, row in enumerate(affinity_rows, 1):
-                other = row["user_b_name"] if row["user_a"] == user_id else row["user_a_name"]
-                lines.append(f"{i}. {other} - {row['score']}")
-    except Exception as e:
-        print("MY_INFO_AFFINITY_ERROR:", e)
-
-    try:
-        piece_rows = get_all_gacha_pieces(user_id)
-        lines += ["", "🧩 조각"]
-        if not piece_rows:
-            lines.append("보유한 조각이 없습니다.")
-        else:
-            for row in piece_rows[:8]:
-                info = PIECE_INFO.get(row["piece_key"])
-                if info:
-                    lines.append(f"{info['label']} {row['count']} / {info['need']}")
-            if len(piece_rows) > 8:
-                lines.append(f"외 {len(piece_rows) - 8}개")
-    except Exception as e:
-        print("MY_INFO_PIECE_ERROR:", e)
-
-    try:
-        counts = purchase_status_counts(user_id)
-        lines += ["", "🎁 보유 상품"]
-        lines.append(f"미사용: {counts.get('owned', 0) + counts.get('pending', 0)}개")
-        lines.append(f"사용완료: {counts.get('used', 0) + counts.get('done', 0)}개")
-        if counts.get('cancel', 0):
-            lines.append(f"취소됨: {counts.get('cancel', 0)}개")
-        lines.append("자세히 보기: /내보유")
-    except Exception as e:
-        print("MY_INFO_PURCHASE_ERROR:", e)
-
-    lines += ["", "자세히 보기", "/내보유 /업적 /조각 /가챠횟수"]
     return "\n".join(lines)
 
 
@@ -7379,30 +6994,6 @@ def title_list_text():
     return "\n".join(lines)
 
 
-def title_text(user_id, user_name):
-    return (
-        f"👑 {user_name}\n\n"
-        "현재 칭호\n\n"
-        f"{get_public_title(user_id)}\n\n"
-        "※ 칭호는 업적, 럭키드로우, 코인, 출석, 친밀도 기록을 기준으로 자동 표시됩니다."
-    )
-
-
-def profile_text(target_user_id, target_user_name):
-    best_name, best_score = get_best_affinity(target_user_id)
-    lines = [
-        f"👤 {target_user_name}", "",
-        "👑 칭호", get_public_title(target_user_id), "",
-        "💰 코인", coin_text(get_balance(target_user_id)), "",
-        "🏆 업적", f"{get_achievement_count(target_user_id)}개", "",
-        "📅 출석", f"{get_attendance_count(target_user_id)}일", "",
-        "💕 최고 누적 친밀도",
-    ]
-    lines.append(f"{best_name} ({best_score})" if best_name else "누적 친밀도 기록 없음")
-    return "\n".join(lines)
-
-
-
 def admin_user_detail_text(keyword):
     rows = find_users(keyword, limit=5)
     if not rows:
@@ -7488,12 +7079,8 @@ def run_weekly_settlement_auto():
 
         if "weekly_settlement_text" in globals():
             result_text = weekly_settlement_text(COUNT_SOURCE_ID)
-        elif "weekly_settlement" in globals():
-            result_text = weekly_settlement(COUNT_SOURCE_ID)
         elif "settle_weekly_rewards" in globals():
             result_text = settle_weekly_rewards(COUNT_SOURCE_ID)
-        elif "weekly_reward_settlement" in globals():
-            result_text = weekly_reward_settlement(COUNT_SOURCE_ID)
         else:
             result_text = "⚠️ 자동 주간정산 실패\n\n주간정산 함수를 찾지 못했습니다."
 
@@ -7527,53 +7114,6 @@ def weekly_settlement_scheduler_loop():
 def start_weekly_settlement_scheduler():
     t = threading.Thread(target=weekly_settlement_scheduler_loop, daemon=True)
     t.start()
-
-
-
-
-
-# =========================
-# 운영 명령어 호환 함수
-# =========================
-def grant_user_title(user_id, user_name, title, created_by=None):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("UPDATE user_titles SET is_active = 0 WHERE user_id = ?", (user_id,))
-    cur.execute("""
-    INSERT INTO user_titles (user_id, user_name, title, is_active, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, 1, ?, ?, ?)
-    """, (user_id, user_name, title, created_by, now_str(), now_str()))
-    conn.commit()
-    conn.close()
-
-
-def remove_user_title(user_id):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("UPDATE user_titles SET is_active = 0, updated_at = ? WHERE user_id = ?", (now_str(), user_id))
-    conn.commit()
-    conn.close()
-
-
-def user_title_list_text():
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT user_name, title, created_at
-    FROM user_titles
-    WHERE is_active = 1
-    ORDER BY created_at DESC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-
-    lines = ["👑 칭호 목록", ""]
-    if not rows:
-        lines.append("활성 칭호가 없습니다.")
-    else:
-        for row in rows:
-            lines.append(f"{row['user_name']} - {row['title']}")
-    return "\n".join(lines)
 
 @app.route("/", methods=["GET"])
 def home():
