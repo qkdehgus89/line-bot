@@ -3165,6 +3165,14 @@ COIN_GACHA_WEIGHTS = {
     "상": [(52, "F"), (29, "D"), (10, "C"), (6, "B"), (2.5, "A"), (0.5, "S")],
 }
 
+PIECE_GACHA_WEIGHTS = {
+    "하": [(52, "F"), (24, "E"), (16, "D"), (6, "C"), (2, "B")],
+    "중": [(52, "F"), (20, "E"), (16, "D"), (8, "C"), (3, "B"), (1, "A")],
+    "상": [(52, "F"), (16, "E"), (16, "D"), (10, "C"), (4, "B"), (1.8, "A"), (0.2, "S")],
+}
+
+PIECE_STANDALONE_GACHA_WEIGHTS = [(52, "F"), (48, "piece")]
+
 KIMMEAT_SANG_GACHA_WEIGHTS = [
     (10, "F"),
     (20, "E"),
@@ -3198,6 +3206,37 @@ def weighted_pick(weighted_items):
             return item
 
     return weighted_items[-1][1]
+
+
+def percent_text(value):
+    value = float(value)
+    if value.is_integer():
+        return f"{int(value)}%"
+    return f"{value:g}%"
+
+
+def gacha_weight_line(label, weights):
+    return f"{label}: " + " / ".join(f"{grade} {percent_text(weight)}" for weight, grade in weights)
+
+
+def gacha_probability_text():
+    lines = [
+        "등급 분포",
+        "",
+        "코인 가챠",
+        gacha_weight_line("하", COIN_GACHA_WEIGHTS["하"]),
+        gacha_weight_line("중", COIN_GACHA_WEIGHTS["중"]),
+        gacha_weight_line("상", COIN_GACHA_WEIGHTS["상"]),
+        "",
+        "조각 가챠",
+        "조각가챠: F 52% / 조각 48%",
+        "",
+        "조각형 등급 분포",
+        gacha_weight_line("하", PIECE_GACHA_WEIGHTS["하"]),
+        gacha_weight_line("중", PIECE_GACHA_WEIGHTS["중"]),
+        gacha_weight_line("상", PIECE_GACHA_WEIGHTS["상"]),
+    ]
+    return "\n".join(lines)
 
 
 def get_gacha_type(user_id):
@@ -3394,18 +3433,7 @@ def gacha_grade(gacha_type, tier, coin_weights=None):
     if gacha_type == "coin":
         return weighted_pick(coin_weights or COIN_GACHA_WEIGHTS[tier])
 
-    # 조각형 / 랜덤형: 손해 구간 약 40%
-    if tier == "하":
-        return weighted_pick([
-            (40, "F"), (30, "E"), (20, "D"), (8, "C"), (2, "B")
-        ])
-    if tier == "중":
-        return weighted_pick([
-            (40, "F"), (25, "E"), (20, "D"), (10, "C"), (4, "B"), (1, "A")
-        ])
-    return weighted_pick([
-        (40, "F"), (20, "E"), (20, "D"), (12, "C"), (6, "B"), (1.8, "A"), (0.2, "S")
-    ])
+    return weighted_pick(PIECE_GACHA_WEIGHTS[tier])
 
 
 def random_piece_by_group(group=None):
@@ -3454,7 +3482,7 @@ def piece_prize_for(tier, grade):
         }
     elif tier == "중":
         table = {
-            "F": ("low", 1),
+            "F": None,
             "E": ("low", 3),
             "D": ("mid", 2),
             "C": ("high", 2),
@@ -3463,7 +3491,7 @@ def piece_prize_for(tier, grade):
         }
     else:
         table = {
-            "F": ("mid", 2),
+            "F": None,
             "E": ("mid", 5),
             "D": ("high", 5),
             "C": ("high", 10),
@@ -3483,7 +3511,7 @@ def piece_prize_for(tier, grade):
 
 def random_prize_kind(tier, grade):
     # 랜덤형은 코인/조각 혼합.
-    # F는 손해 구간이라 코인 소액 또는 꽝 위주.
+    # F는 낮은 등급이라 코인 소액 또는 꽝 위주.
     if grade == "F":
         return weighted_pick([(70, "coin"), (30, "piece")])
     return weighted_pick([(50, "coin"), (50, "piece")])
@@ -3707,6 +3735,7 @@ def gacha_system_text():
         "/상가챠 : 5코인\n\n"
         "결과 범위: 0배 ~ 2배\n"
         "결과에 따라 코인이 줄거나 늘어날 수 있습니다.\n\n"
+        f"{gacha_probability_text()}\n\n"
         "━━━━━━━━━━\n"
         "🧩 조각 가챠\n"
         "━━━━━━━━━━\n\n"
@@ -6051,7 +6080,7 @@ def run_piece_gacha(user_id, user_name):
         return False, f"코인이 부족합니다.\n\n필요: {coin_text(cost)}\n보유: {coin_text(balance)}"
     change_money(user_id, user_name, -cost, "조각가챠 이용", None, "가챠시스템")
     used_after = add_weekly_gacha_count(user_id, user_name)
-    if random.random() < 0.51:
+    if weighted_pick(PIECE_STANDALONE_GACHA_WEIGHTS) == "piece":
         piece_key = random_piece_by_group()
         add_simple_piece(user_id, user_name, piece_key, 1)
         label = PIECE_INFO[piece_key]["label"]
