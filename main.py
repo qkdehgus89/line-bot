@@ -135,7 +135,7 @@ def is_operator_command(text):
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
         "/찔러보기초기화", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
-        "/운영진친밀도", "/운영진친밀도확인", "/버전",
+        "/유저아이템보유", "/운영진친밀도", "/운영진친밀도확인", "/버전",
     }
 
     prefix_commands = [
@@ -1355,6 +1355,7 @@ def operator_commands_text():
 /상품추가 상품명 가격 설명
 /상품삭제 상품명
 /아이템지급 닉네임 상품명
+/유저아이템보유
 /사용 구매번호
 /사용처리 구매번호
 /구매취소 구매번호
@@ -2650,6 +2651,98 @@ def user_purchases_text(user_id, filter_mode="all"):
         "/내보유 미사용",
         "/내보유 사용",
     ]
+
+    return "\n".join(lines)
+
+
+def user_item_holdings_text():
+    """
+    운영진용 전체 미사용 아이템 보유 현황.
+    /내보유와 동일하게 owned/pending 상태를 미사용 아이템으로 봅니다.
+    """
+    conn = None
+    try:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT
+            p.user_id,
+            COALESCE(u.user_name, p.user_name, '알 수 없음') AS user_name,
+            p.item_name,
+            COUNT(*) AS cnt
+        FROM purchases p
+        LEFT JOIN users u ON u.user_id = p.user_id
+        WHERE p.status IN ('owned', 'pending')
+          AND p.user_id IS NOT NULL
+          AND p.user_id != ''
+          AND p.item_name IS NOT NULL
+          AND TRIM(p.item_name) != ''
+          AND COALESCE(u.is_active, 1) = 1
+          AND NOT EXISTS (
+              SELECT 1
+              FROM deleted_users d
+              WHERE d.original_user_id = p.user_id
+          )
+        GROUP BY
+            p.user_id,
+            COALESCE(u.user_name, p.user_name, '알 수 없음'),
+            p.item_name
+        ORDER BY
+            p.user_id ASC,
+            cnt DESC,
+            p.item_name ASC
+        """)
+        rows = cur.fetchall()
+    except Exception as e:
+        print("USER ITEM HOLDINGS ERROR:", e)
+        return "🎁 유저 아이템 보유 현황을 불러오지 못했습니다."
+    finally:
+        if conn:
+            conn.close()
+
+    if not rows:
+        return "🎁 유저 아이템 보유 현황\n\n현재 미사용 아이템을 가진 활성 유저가 없습니다."
+
+    users = {}
+    for row in rows:
+        uid = row["user_id"]
+        item_name = row["item_name"]
+        cnt = int(row["cnt"] or 0)
+        if cnt <= 0:
+            continue
+        if uid not in users:
+            users[uid] = {
+                "user_name": row["user_name"],
+                "total": 0,
+                "items": [],
+            }
+        users[uid]["total"] += cnt
+        users[uid]["items"].append((item_name, cnt))
+
+    ordered_users = sorted(
+        users.values(),
+        key=lambda info: (-info["total"], info["user_name"])
+    )
+    total_items = sum(info["total"] for info in ordered_users)
+
+    lines = [
+        "🎁 유저 아이템 보유 현황",
+        "",
+        f"보유 유저: {len(ordered_users)}명",
+        f"미사용 아이템: {total_items}개",
+        "기준: 미사용 상태(owned/pending)",
+    ]
+
+    for idx, info in enumerate(ordered_users, 1):
+        item_text = ", ".join(
+            f"{item_name} {cnt}개"
+            for item_name, cnt in sorted(info["items"], key=lambda x: (-x[1], x[0]))
+        )
+        lines += [
+            "",
+            f"{idx}. {info['user_name']} ({info['total']}개)",
+            item_text,
+        ]
 
     return "\n".join(lines)
 
@@ -7734,6 +7827,13 @@ def handle(event):
             reply(event.reply_token, operator_only_warning())
             return
         reply(event.reply_token, economy_status_text())
+        return
+
+    if text == "/유저아이템보유":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply_many(event.reply_token, split_text_messages(user_item_holdings_text()))
         return
 
     if text == "/조각정리":
