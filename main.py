@@ -1166,6 +1166,7 @@ def user_commands_text():
 /마디수
 /전체순위
 /주간랭킹
+/주사위
 
 ━━━━━━━━━━
 💰 재화
@@ -8222,6 +8223,15 @@ def handle(event):
             reply_many(event.reply_token, split_text_messages(user_commands_text()))
         else:
             reply(event.reply_token, one_to_one_command_notice("명령어", "/명령어"))
+        return
+
+    if text == "/주사위":
+        dice_value = random.randint(0, 99)
+        reply(
+            event.reply_token,
+            "🎲 주사위 결과\n\n"
+            f"{display_nickname(user_name)}님: {dice_value}"
+        )
         return
 
     if text == "/마디수":
