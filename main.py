@@ -6352,6 +6352,16 @@ def truth_game_pass(user_id, user_name):
                     None,
                     "진실게임"
                 )
+            if changed:
+                apply_money_change(
+                    cur,
+                    user_id,
+                    user_name,
+                    -TRUTH_GAME_COST,
+                    f"진실게임 패스 비용: {requester or '질문자'}",
+                    None,
+                    "진실게임"
+                )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -6363,13 +6373,15 @@ def truth_game_pass(user_id, user_name):
 
         refund_line = ""
         if requester_user_id and requester:
-            refund_line = f"\n지목자 환급: {coin_text(refund)}"
-        request_line = f"지목자: {requester}\n" if requester else ""
+            refund_line = f"\n질문자 환급: {coin_text(refund)}"
+        pass_cost_line = f"\n패스 비용: -{coin_text(TRUTH_GAME_COST)}"
+        request_line = f"질문자: {requester}\n" if requester else ""
         return (
             "🎭 진실게임 패스\n\n"
             f"{request_line}"
             f"{user_name}님이 질문을 패스했습니다."
             f"{refund_line}"
+            f"{pass_cost_line}"
         )
     except Exception as e:
         print("TRUTH_GAME_PASS_ERROR:", repr(e))
