@@ -1396,6 +1396,7 @@ def beginner_guide_text():
 /케미 닉네임
 - 하루 1회 이성에게 케미를 보낼 수 있습니다.
 - 서로 케미를 보낸 경우에만 공창에 익명 알림이 표시됩니다.
+- 매칭에 성공하면 본인 1:1창에만 성공 안내가 표시됩니다.
 
 ※ 노미클은 남자로 간주합니다.
 ※ 성별은 닉네임 인증 이모티콘과 저장된 족보를 기준으로 확인합니다.
@@ -5692,11 +5693,11 @@ def chemistry_signal(sender_user_id, sender_user_name, target_keyword, announce_
         cur.execute("""
         SELECT id
         FROM chemistry_signals
-        WHERE week_start = ?
+        WHERE date = ?
           AND sender_user_id = ?
           AND target_user_id = ?
         LIMIT 1
-        """, (week_start, target["user_id"], sender_user_id))
+        """, (date_str, target["user_id"], sender_user_id))
         mutual = cur.fetchone() is not None
         conn.commit()
         conn.close()
@@ -5705,24 +5706,29 @@ def chemistry_signal(sender_user_id, sender_user_name, target_keyword, announce_
             return (
                 "💞 케미 완료\n\n"
                 "케미가 기록되었습니다.\n"
-                "쌍방 케미가 되면 공창에 익명 알림이 표시됩니다."
+                "상대도 오늘 케미를 보낸 경우에만 매칭 알림이 표시됩니다."
             )
 
-        flag_key = f"chemistry_mutual_announced:{week_start}:{chemistry_pair_key(sender_user_id, target['user_id'])}"
+        flag_key = f"chemistry_mutual_announced:{date_str}:{chemistry_pair_key(sender_user_id, target['user_id'])}"
         if get_system_flag(flag_key):
-            return "💞 케미 완료\n\n이미 이번 주 쌍방 케미가 확인된 조합입니다."
+            return (
+                "💞 케미 매칭 성공\n\n"
+                "당신이 원하는 케미가 이루어졌습니다.\n"
+                "오늘 이미 공개 알림이 올라간 조합입니다."
+            )
 
-        public_message = "💞 쌍방 케미 발생!\n\n누군가가 서로 케미를 느꼈습니다."
+        public_message = "💞 케미 매칭 성사!\n\n누군가의 케미 매칭이 성사되었습니다."
         if announce_public and queue_public_announcement(COUNT_SOURCE_ID, public_message, "chemistry_mutual"):
             set_system_flag(flag_key, "1")
             return (
-                "💞 쌍방 케미 확인\n\n"
-                "공개창 익명 알림을 예약했습니다."
+                "💞 케미 매칭 성공\n\n"
+                "당신이 원하는 케미가 이루어졌습니다.\n"
+                "공개창에는 익명 매칭 알림만 표시됩니다."
             )
 
         return (
-            "💞 쌍방 케미 확인\n\n"
-            "기록은 완료되었습니다.\n"
+            "💞 케미 매칭 성공\n\n"
+            "당신이 원하는 케미가 이루어졌습니다.\n"
             "공개창 알림 예약 실패"
         )
     except Exception as e:
@@ -5732,7 +5738,7 @@ def chemistry_signal(sender_user_id, sender_user_name, target_keyword, announce_
 
 def mutual_chemistry_report_text():
     try:
-        week_start, week_end = event_week_key()
+        date_str = today()
         conn = db()
         cur = conn.cursor()
         cur.execute("""
@@ -5756,7 +5762,8 @@ def mutual_chemistry_report_text():
           ON ad.original_user_id = a.sender_user_id
         LEFT JOIN deleted_users bd
           ON bd.original_user_id = a.target_user_id
-        WHERE a.week_start = ?
+        WHERE a.date = ?
+          AND b.date = a.date
           AND a.sender_user_id < a.target_user_id
           AND COALESCE(au.is_active, 1) = 1
           AND COALESCE(bu.is_active, 1) = 1
@@ -5764,13 +5771,13 @@ def mutual_chemistry_report_text():
           AND bd.original_user_id IS NULL
         GROUP BY a.sender_user_id, a.target_user_id
         ORDER BY user_a_at DESC, user_b_at DESC
-        """, (week_start,))
+        """, (date_str,))
         rows = cur.fetchall()
         conn.close()
 
-        lines = ["💞 쌍방 케미 확인", f"기간: {week_start} ~ {week_end}", ""]
+        lines = ["💞 오늘 쌍방 케미 확인", f"기준일: {date_str}", ""]
         if not rows:
-            lines.append("이번 주 쌍방 케미가 없습니다.")
+            lines.append("오늘 쌍방 케미가 없습니다.")
         else:
             for i, row in enumerate(rows, 1):
                 lines.append(
