@@ -1275,6 +1275,7 @@ def user_commands_text():
 /진실게임 순한맛 닉네임
 /진실답변 내용
 /진실패스
+/진실취소
 
 ━━━━━━━━━━
 🏆 업적
@@ -5960,6 +5961,33 @@ def get_pending_truth_game(user_id):
     return row
 
 
+def get_pending_truth_game_by_requester(requester_user_id, target_user_id=None):
+    conn = db()
+    cur = conn.cursor()
+    if target_user_id:
+        cur.execute("""
+        SELECT *
+        FROM truth_game_sessions
+        WHERE requester_user_id = ?
+          AND user_id = ?
+          AND status = 'pending'
+        ORDER BY id DESC
+        LIMIT 1
+        """, (requester_user_id, target_user_id))
+    else:
+        cur.execute("""
+        SELECT *
+        FROM truth_game_sessions
+        WHERE requester_user_id = ?
+          AND status = 'pending'
+        ORDER BY id DESC
+        LIMIT 1
+        """, (requester_user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
 def truth_game_question_count(user_id):
     try:
         conn = db()
@@ -6048,6 +6076,7 @@ def truth_game_setup_text():
         "/진실게임 썸맛 꼬북\n"
         "/진실게임 매운맛 밍구\n"
         "/진실게임 위험맛 무화\n\n"
+        "질문 취소: /진실취소\n\n"
         f"난이도: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
     )
 
@@ -6206,12 +6235,17 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
 
         pending = get_pending_truth_game(target["user_id"])
         if pending:
+            cancel_line = ""
+            if pending["requester_user_id"] == user_id:
+                cancel_line = "\n취소: /진실취소"
             return (
                 "🎭 진행 중인 진실게임이 있습니다.\n\n"
                 f"대상: {pending['user_name']}\n"
+                f"질문자: {pending['requester_user_name'] or '-'}\n"
                 f"난이도: {pending['category']}\n"
                 f"질문: {pending['question']}\n"
                 f"{pending['user_name']}님이 먼저 답변하거나 패스해야 합니다."
+                f"{cancel_line}"
             )
 
         if get_balance(user_id) < TRUTH_GAME_COST:
@@ -6254,7 +6288,8 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
             f"지목: {target_name}님\n"
             f"난이도: {category}\n"
             f"질문: {question}\n"
-            f"{target_name}님은 /진실답변 내용 으로 답변하거나 /진실패스 로 넘길 수 있습니다."
+            f"{target_name}님은 /진실답변 내용 으로 답변하거나 /진실패스 로 넘길 수 있습니다.\n"
+            "질문자는 /진실취소 로 취소할 수 있습니다."
         )
         if achievement_notice:
             result_text += "\n\n" + achievement_notice
@@ -6317,6 +6352,85 @@ def truth_game_answer(user_id, user_name, answer_text):
     except Exception as e:
         print("TRUTH_GAME_ANSWER_ERROR:", repr(e))
         return "🎭 진실게임 답변 처리 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요."
+
+
+def truth_game_cancel(requester_user_id, requester_user_name, target_keyword=""):
+    try:
+        if not requester_user_id:
+            return "🎭 진실게임 취소 안내\n\n사용자 정보를 확인하지 못했어요. 잠시 후 다시 시도해 주세요."
+
+        target_keyword = str(target_keyword or "").strip()
+        target_user_id = None
+        if target_keyword:
+            target, err = resolve_active_user_by_nickname(target_keyword, purpose="대상")
+            if err:
+                return "🎭 진실게임 취소 안내\n\n" + err
+            target_user_id = target["user_id"]
+
+        pending = get_pending_truth_game_by_requester(requester_user_id, target_user_id)
+        if not pending:
+            answer_pending = get_pending_truth_game(requester_user_id)
+            if answer_pending:
+                return (
+                    "🎭 진실게임 취소 안내\n\n"
+                    "이 질문은 내가 건 질문이 아니라 취소할 수 없어요.\n"
+                    "답변하려면 /진실답변 내용, 넘기려면 /진실패스 를 사용해 주세요."
+                )
+            return (
+                "🎭 진실게임 취소 안내\n\n"
+                "내가 걸어둔 진행 중 질문이 없어요.\n"
+                "특정 대상 질문을 취소하려면 /진실취소 닉네임 으로 입력해 주세요."
+            )
+
+        refund = int(pending["cost"] or TRUTH_GAME_COST)
+        conn = db()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+            UPDATE truth_game_sessions
+            SET status = 'cancelled',
+                answered_at = ?,
+                answer_text = ?,
+                requester_user_name = ?
+            WHERE id = ? AND status = 'pending' AND requester_user_id = ?
+            """, (
+                now_str(),
+                "질문자가 취소했습니다.",
+                requester_user_name,
+                pending["id"],
+                requester_user_id,
+            ))
+            changed = cur.rowcount
+            if changed and refund > 0:
+                apply_money_change(
+                    cur,
+                    requester_user_id,
+                    requester_user_name,
+                    refund,
+                    f"진실게임 질문 취소 환급: {pending['user_name']}",
+                    None,
+                    "진실게임"
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        if not changed:
+            return "🎭 진실게임 취소 안내\n\n이미 처리된 질문이라 취소할 수 없어요."
+
+        return (
+            "🎭 진실게임 취소 완료\n\n"
+            f"대상: {pending['user_name']}\n"
+            f"난이도: {pending['category']}\n"
+            f"질문: {pending['question']}\n"
+            f"환급: {coin_text(refund)}"
+        )
+    except Exception as e:
+        print("TRUTH_GAME_CANCEL_ERROR:", repr(e))
+        return "🎭 진실게임 취소 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요."
 
 
 def truth_game_pass(user_id, user_name):
@@ -6481,6 +6595,7 @@ def truth_game_user_history_text(keyword, limit=20):
             "pending": "진행중",
             "answered": "답변완료",
             "passed": "패스",
+            "cancelled": "취소",
         }
 
         for i, row in enumerate(rows, 1):
@@ -6500,6 +6615,8 @@ def truth_game_user_history_text(keyword, limit=20):
                 lines.append(f"   답변: {row['answer_text'] or '-'}")
             elif row["status"] == "passed":
                 lines.append("   답변: 패스")
+            elif row["status"] == "cancelled":
+                lines.append("   답변: 질문자 취소")
             else:
                 lines.append("   답변: 아직 없음")
             lines.append(f"   생성: {row['created_at']}")
@@ -9309,6 +9426,11 @@ def handle(event):
 
     if text == "/진실패스":
         reply_many(event.reply_token, split_text_messages(truth_game_pass(user_id, user_name)))
+        return
+
+    if text == "/진실취소" or text.startswith("/진실취소 "):
+        target_keyword = text.replace("/진실취소", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(truth_game_cancel(user_id, user_name, target_keyword)))
         return
 
     if text == "/주간랭킹":
