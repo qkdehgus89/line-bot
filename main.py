@@ -132,7 +132,8 @@ def is_operator_command(text):
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
         "/설렘픽초기화", "/설렘픽정산", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
         "/유저아이템보유", "/유저아이템삭제", "/운영진친밀도", "/운영진친밀도확인",
-        "/진실질문", "/진실목록", "/진실기록", "/진실질문추가", "/버전",
+        "/진실질문", "/진실목록", "/진실기록", "/진실질문추가",
+        "/코인검증", "/정산검증", "/최근오류", "/버전",
     }
 
     prefix_commands = [
@@ -144,6 +145,7 @@ def is_operator_command(text):
         "/마디수 ", "/경고누적일 ", "/단벙참여확인 ", "/단벙참석확인 ",
         "/운영진친밀도 ", "/운영진친밀도확인 ",
         "/진실질문 ", "/진실기록 ", "/진실질문추가 ",
+        "/코인검증 ", "/최근오류 ",
     ]
 
     return text in exact_commands or any(text.startswith(prefix) for prefix in prefix_commands)
@@ -214,6 +216,22 @@ def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def log_error(context, error):
+    detail = repr(error)
+    print(f"{context}:", detail)
+    try:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        INSERT INTO bot_errors (context, detail, created_at)
+        VALUES (?, ?, ?)
+        """, (str(context), detail[:1800], now_str()))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print("BOT_ERROR_LOG_WRITE_ERROR:", repr(e))
 
 
 def init_db():
@@ -446,6 +464,28 @@ def init_db():
     CREATE TABLE IF NOT EXISTS system_flags (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS bot_errors (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        context TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS settlement_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        week_end TEXT NOT NULL,
+        status TEXT NOT NULL,
+        summary TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(date, week_start, week_end)
     )
     """)
 
@@ -793,6 +833,48 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    DELETE FROM heart_picks
+    WHERE id NOT IN (
+        SELECT MIN(id)
+        FROM heart_picks
+        GROUP BY date, sender_user_id
+    )
+    """)
+
+    cur.execute("""
+    DELETE FROM chemistry_signals
+    WHERE id NOT IN (
+        SELECT MIN(id)
+        FROM chemistry_signals
+        GROUP BY date, sender_user_id
+    )
+    """)
+
+    cur.execute("""
+    DELETE FROM danbung_attendance
+    WHERE id NOT IN (
+        SELECT MIN(id)
+        FROM danbung_attendance
+        GROUP BY date, COALESCE(event_name, ''), user_id
+    )
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_heart_picks_daily_sender
+    ON heart_picks (date, sender_user_id)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_chemistry_signals_daily_sender
+    ON chemistry_signals (date, sender_user_id)
+    """)
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_danbung_attendance_daily_event_user
+    ON danbung_attendance (date, COALESCE(event_name, ''), user_id)
+    """)
+
 
     # 기존 정수 코인 DB를 0.1 단위 포인트 시스템으로 1회 변환
     cur.execute("SELECT value FROM system_flags WHERE key = 'currency_scaled_v1'")
@@ -1007,7 +1089,7 @@ def weekly_settlement_text(source_id=None):
             heart_paid = settle_heart_pick_rewards(week_start, week_end)
         except Exception as e:
             heart_error = repr(e)
-            print("WEEKLY_HEART_PICK_SETTLEMENT_ERROR:", heart_error)
+            log_error("WEEKLY_HEART_PICK_SETTLEMENT_ERROR", e)
 
     if not paid and not heart_paid and not heart_error:
         return (
@@ -1408,6 +1490,7 @@ def operator_commands_text():
 /지급 닉네임 금액
 /차감 닉네임 금액
 /코인내역 닉네임
+/코인검증 닉네임
 /경제현황
 
 ━━━━━━━━━━
@@ -1474,6 +1557,8 @@ def operator_commands_text():
 /수집상태
 /최근로그
 /수집누락
+/정산검증
+/최근오류
 /경고
 /경고누적일
 /경고누적일 최소횟수
@@ -2430,27 +2515,30 @@ def charge_danbung_attendance(user_id, user_name, event_name=""):
             f"필요: {coin_text(cost)}"
         )
 
-    new_balance = change_money(
-        user_id,
-        user_name,
-        -cost,
-        "단벙 참여",
-        None,
-        "단벙"
-    )
+    conn = db()
+    cur = conn.cursor()
     try:
-        conn = db()
-        cur = conn.cursor()
         cur.execute("""
-        INSERT INTO danbung_attendance (
+        INSERT OR IGNORE INTO danbung_attendance (
             date, event_name, user_id, user_name, cost, created_at
         )
         VALUES (?, ?, ?, ?, ?, ?)
         """, (today(), event_name, user_id, user_name, cost, now_str()))
+        if cur.rowcount == 0:
+            conn.close()
+            return False, (
+                "💠 단벙 참여 처리 안내\n\n"
+                f"단벙: {event_name}\n"
+                "이미 오늘 이 단벙에 참여 처리되어 있습니다."
+            )
+        new_balance = apply_money_change(cur, user_id, user_name, -cost, f"단벙 참여: {event_name}", None, "단벙")
         conn.commit()
         conn.close()
     except Exception as e:
-        print("DANBUNG_ATTENDANCE_LOG_ERROR:", repr(e))
+        conn.rollback()
+        conn.close()
+        log_error("DANBUNG_ATTENDANCE_LOG_ERROR", e)
+        return False, "💠 단벙 참여 처리 중 문제가 생겼어요. 최근오류를 확인해 주세요."
 
     return True, (
         "💠 단벙 참여 처리 완료\n\n"
@@ -2672,35 +2760,32 @@ def buy_item(user_id, user_name, item_name):
     conn = db()
     cur = conn.cursor()
 
-    cur.execute("""
-    UPDATE currency
-    SET balance = balance - ?,
-        updated_at = ?
-    WHERE user_id = ?
-    """, (item["price"], now_str(), user_id))
+    try:
+        new_balance = apply_money_change(
+            cur,
+            user_id,
+            user_name,
+            -item["price"],
+            f"상점 구매: {item['name']}",
+            None,
+            "상점"
+        )
 
-    cur.execute("""
-    INSERT INTO currency_logs (
-        user_id, user_name, amount, reason,
-        staff_user_id, staff_user_name, created_at
-    )
-    VALUES (?, ?, ?, ?, NULL, NULL, ?)
-    """, (user_id, user_name, -item["price"], f"상점 구매: {item['name']}", now_str()))
+        cur.execute("""
+        INSERT INTO purchases (
+            user_id, user_name, item_name, price, status, created_at
+        )
+        VALUES (?, ?, ?, ?, 'owned', ?)
+        """, (user_id, user_name, item["name"], item["price"], now_str()))
 
-    cur.execute("""
-    INSERT INTO purchases (
-        user_id, user_name, item_name, price, status, created_at
-    )
-    VALUES (?, ?, ?, ?, 'owned', ?)
-    """, (user_id, user_name, item["name"], item["price"], now_str()))
-
-    purchase_id = cur.lastrowid
-
-    cur.execute("SELECT balance FROM currency WHERE user_id = ?", (user_id,))
-    new_balance = cur.fetchone()["balance"]
-
-    conn.commit()
-    conn.close()
+        purchase_id = cur.lastrowid
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("BUY_ITEM_ERROR", e)
+        return False, "🛒 구매 처리 중 문제가 생겼어요. 최근오류를 확인해 주세요."
+    finally:
+        conn.close()
 
     return True, (
         f"🛒 구매 완료\n\n"
@@ -3250,35 +3335,38 @@ def attendance_check(date_str, user_id, user_name):
     conn = db()
     cur = conn.cursor()
 
-    cur.execute("""
-    SELECT reward
-    FROM attendance
-    WHERE date = ?
-      AND user_id = ?
-    """, (date_str, user_id))
+    try:
+        cur.execute("""
+        INSERT OR IGNORE INTO attendance (date, user_id, user_name, reward, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """, (date_str, user_id, user_name, reward, now_str()))
 
-    if cur.fetchone():
+        if cur.rowcount == 0:
+            cur.execute("SELECT COALESCE(balance, 0) AS balance FROM currency WHERE user_id = ?", (user_id,))
+            row = cur.fetchone()
+            conn.close()
+            return False, int(row["balance"] or 0) if row else 0
+
+        balance = apply_money_change(
+            cur,
+            user_id,
+            user_name,
+            reward,
+            f"출석체크 {date_str}",
+            None,
+            "출석시스템"
+        )
+        conn.commit()
         conn.close()
-        return False, get_balance(user_id)
-
-    cur.execute("""
-    INSERT INTO attendance (date, user_id, user_name, reward, created_at)
-    VALUES (?, ?, ?, ?, ?)
-    """, (date_str, user_id, user_name, reward, now_str()))
-
-    conn.commit()
-    conn.close()
-
-    balance = change_money(
-        user_id,
-        user_name,
-        reward,
-        f"출석체크 {date_str}",
-        None,
-        "출석시스템"
-    )
-
-    return True, balance
+        return True, balance
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        log_error("ATTENDANCE_CHECK_ERROR", e)
+        try:
+            return False, get_balance(user_id)
+        except Exception:
+            return False, 0
 
 
 def claimed_missions(date_str, user_id):
@@ -3327,37 +3415,45 @@ def claim_missions(date_str, source_id, user_id, user_name):
     total_reward = 0
     claimed_names = []
 
-    for mission in claimable:
-        cur.execute("""
-        INSERT OR IGNORE INTO mission_claims (
-            date, user_id, mission_key, user_name, reward, created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            date_str,
-            user_id,
-            mission["key"],
-            user_name,
-            mission["reward"],
-            now_str()
-        ))
+    try:
+        for mission in claimable:
+            cur.execute("""
+            INSERT OR IGNORE INTO mission_claims (
+                date, user_id, mission_key, user_name, reward, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                date_str,
+                user_id,
+                mission["key"],
+                user_name,
+                mission["reward"],
+                now_str()
+            ))
 
-        if cur.rowcount > 0:
-            total_reward += mission["reward"]
-            claimed_names.append(f"{mission['required']}마디")
+            if cur.rowcount > 0:
+                total_reward += mission["reward"]
+                claimed_names.append(f"{mission['required']}마디")
 
-    conn.commit()
+        if total_reward > 0:
+            apply_money_change(
+                cur,
+                user_id,
+                user_name,
+                total_reward,
+                f"일일미션 보상: {', '.join(claimed_names)}",
+                None,
+                "미션시스템"
+            )
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        log_error("CLAIM_MISSIONS_ERROR", e)
+        return 0, count, []
+
     conn.close()
-
-    if total_reward > 0:
-        change_money(
-            user_id,
-            user_name,
-            total_reward,
-            f"일일미션 보상: {', '.join(claimed_names)}",
-            None,
-            "미션시스템"
-        )
 
     return total_reward, count, claimed_names
 
@@ -3553,16 +3649,10 @@ def get_all_gacha_pieces(user_id):
     return rows
 
 
-
-def add_gacha_pity_point(user_id, user_name):
+def apply_gacha_pity_point(cur, user_id, user_name):
     """
-    코인형 가챠 F등급 보정:
-    F등급 1회 = 행운포인트 1
-    10포인트 달성 시 1코인 자동 지급 후 10포인트 차감.
+    코인형 가챠 F등급 보정 포인트를 같은 거래 안에서 처리합니다.
     """
-    conn = db()
-    cur = conn.cursor()
-
     cur.execute("""
     INSERT INTO gacha_pity (user_id, user_name, pity_points, updated_at)
     VALUES (?, ?, 1, ?)
@@ -3578,10 +3668,9 @@ def add_gacha_pity_point(user_id, user_name):
     FROM gacha_pity
     WHERE user_id = ?
     """, (user_id,))
-    pity_points = cur.fetchone()["pity_points"]
+    pity_points = int(cur.fetchone()["pity_points"] or 0)
 
     bonus_paid = 0
-
     if pity_points >= 10:
         bonus_paid = pity_points // 10
         pity_points = pity_points % 10
@@ -3593,11 +3682,8 @@ def add_gacha_pity_point(user_id, user_name):
         WHERE user_id = ?
         """, (pity_points, now_str(), user_id))
 
-    conn.commit()
-    conn.close()
-
-    if bonus_paid > 0:
-        change_money(
+        apply_money_change(
+            cur,
             user_id,
             user_name,
             bonus_paid * 10,
@@ -3607,6 +3693,26 @@ def add_gacha_pity_point(user_id, user_name):
         )
 
     return pity_points, bonus_paid
+
+
+def add_gacha_pity_point(user_id, user_name):
+    """
+    코인형 가챠 F등급 보정:
+    F등급 1회 = 행운포인트 1
+    10포인트 달성 시 1코인 자동 지급 후 10포인트 차감.
+    """
+    conn = db()
+    cur = conn.cursor()
+    try:
+        result = apply_gacha_pity_point(cur, user_id, user_name)
+        conn.commit()
+        return result
+    except Exception as e:
+        conn.rollback()
+        log_error("GACHA_PITY_ERROR", e)
+        return get_gacha_pity_point(user_id), 0
+    finally:
+        conn.close()
 
 
 def get_gacha_pity_point(user_id):
@@ -3753,9 +3859,25 @@ def add_weekly_gacha_count(user_id, user_name):
     """
     가챠 성공 이용 후 이번 주 사용 횟수 +1.
     """
-    week_start, week_end = gacha_week_range_for_today()
     conn = db()
     cur = conn.cursor()
+    try:
+        count = apply_weekly_gacha_count(cur, user_id, user_name)
+        conn.commit()
+        return count
+    except Exception as e:
+        conn.rollback()
+        log_error("GACHA_COUNT_ERROR", e)
+        return get_weekly_gacha_count(user_id)
+    finally:
+        conn.close()
+
+
+def apply_weekly_gacha_count(cur, user_id, user_name):
+    """
+    이번 주 가챠 이용 횟수를 같은 거래 안에서 1회 증가시킵니다.
+    """
+    week_start, week_end = gacha_week_range_for_today()
     cur.execute("""
     INSERT INTO gacha_weekly_counts (
         week_start, week_end, user_id, user_name, count, updated_at
@@ -3768,9 +3890,14 @@ def add_weekly_gacha_count(user_id, user_name):
         count = count + 1,
         updated_at = excluded.updated_at
     """, (week_start, week_end, user_id, user_name, now_str()))
-    conn.commit()
-    conn.close()
-    return get_weekly_gacha_count(user_id)
+    cur.execute("""
+    SELECT count
+    FROM gacha_weekly_counts
+    WHERE week_start = ?
+      AND user_id = ?
+    """, (week_start, user_id))
+    row = cur.fetchone()
+    return int(row["count"] or 0) if row else 0
 
 
 def gacha_count_status_text(user_id):
@@ -3795,8 +3922,6 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
 
     gacha_type = "coin"
     cost = GACHA_COSTS[tier]
-    balance = get_balance(user_id)
-
     used_count = get_weekly_gacha_count(user_id)
     if used_count >= WEEKLY_GACHA_LIMIT and not bypass_weekly_limit:
         return False, (
@@ -3806,23 +3931,60 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
             "확인: /가챠횟수"
         )
 
-    if balance < cost:
-        return False, (
-            f"코인이 부족합니다.\n\n"
-            f"필요: {coin_text(cost)}\n"
-            f"보유: {coin_text(balance)}"
-        )
-
     log_label = log_command or f"{tier} 가챠"
-    change_money(user_id, user_name, -cost, f"{log_label} 이용", None, "가챠시스템")
-    if bypass_weekly_limit and used_count >= WEEKLY_GACHA_LIMIT:
-        weekly_used_after = WEEKLY_GACHA_LIMIT
-    else:
-        weekly_used_after = add_weekly_gacha_count(user_id, user_name)
-        if bypass_weekly_limit:
-            weekly_used_after = min(weekly_used_after, WEEKLY_GACHA_LIMIT)
-
     grade = gacha_grade(gacha_type, tier, coin_weights=coin_weights)
+    prize = coin_prize_for(tier, grade)
+    pity_points = None
+    bonus_paid = 0
+    weekly_used_after = used_count
+    final_balance = 0
+
+    conn = db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT COALESCE(balance, 0) AS balance FROM currency WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        balance = int(row["balance"] or 0) if row else 0
+        if balance < cost:
+            return False, (
+                f"코인이 부족합니다.\n\n"
+                f"필요: {coin_text(cost)}\n"
+                f"보유: {coin_text(balance)}"
+            )
+
+        final_balance = apply_money_change(cur, user_id, user_name, -cost, f"{log_label} 이용", None, "가챠시스템")
+
+        if bypass_weekly_limit and used_count >= WEEKLY_GACHA_LIMIT:
+            weekly_used_after = WEEKLY_GACHA_LIMIT
+        else:
+            weekly_used_after = apply_weekly_gacha_count(cur, user_id, user_name)
+            if bypass_weekly_limit:
+                weekly_used_after = min(weekly_used_after, WEEKLY_GACHA_LIMIT)
+
+        if prize > 0:
+            final_balance = apply_money_change(
+                cur,
+                user_id,
+                user_name,
+                prize,
+                f"{log_label} {grade}등급 코인 보상",
+                None,
+                "가챠시스템"
+            )
+
+        if grade == "F":
+            pity_points, bonus_paid = apply_gacha_pity_point(cur, user_id, user_name)
+            if bonus_paid > 0:
+                final_balance += bonus_paid * 10
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("RUN_GACHA_ERROR", e)
+        return False, "🎰 가챠 처리 중 문제가 생겼어요. 최근오류를 확인해 주세요."
+    finally:
+        conn.close()
+
     lines = [
         f"🎰 {tier}급 가챠 결과",
         "",
@@ -3831,78 +3993,24 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
         "",
     ]
 
-    if gacha_type == "coin":
-        prize = coin_prize_for(tier, grade)
-
-        if prize > 0:
-            change_money(user_id, user_name, prize, f"{log_label} {grade}등급 코인 보상", None, "가챠시스템")
-            lines.append(f"획득: 💰{coin_text(prize)}")
-        else:
-            lines.append("획득: 꽝")
-            lines.append("다음 기회에...")
-
-        if grade == "F":
-            pity_points, bonus_paid = add_gacha_pity_point(user_id, user_name)
-            lines.append("")
-            lines.append("🎁 행운포인트 +1")
-            lines.append(f"현재 행운포인트: {pity_points} / 10")
-
-            if bonus_paid > 0:
-                lines.append("")
-                lines.append(f"🎉 행운포인트 보상 +{coin_text(bonus_paid * 10)}")
-
-    elif gacha_type == "piece":
-        prize = piece_prize_for(tier, grade)
-        if prize is None:
-            lines.append("획득: 꽝")
-            lines.append("다음 기회에...")
-        else:
-            piece_key, amount = prize
-            result = add_gacha_piece(user_id, user_name, piece_key, amount)
-            lines.append(f"획득: {result['label']} x{amount}")
-            lines.append(f"진행도: {result['current']} / {result['need']}")
-
-            if result["completed"]:
-                lines.append("")
-                lines.append("🎉 조각 완성!")
-                for item, purchase_id in zip(result["completed"], result["purchase_ids"]):
-                    lines.append(f"{item} 획득 / 구매번호 #{purchase_id}")
-                if result.get("blacksmith_paid"):
-                    lines.append("🔨 대장장이 최초 완성 보상 +2코인")
-
+    if prize > 0:
+        lines.append(f"획득: 💰{coin_text(prize)}")
     else:
-        kind = random_prize_kind(tier, grade)
+        lines.append("획득: 꽝")
+        lines.append("다음 기회에...")
 
-        if kind == "coin":
-            prize = coin_prize_for(tier, grade)
-            if prize > 0:
-                change_money(user_id, user_name, prize, f"{log_label} {grade}등급 코인 보상", None, "가챠시스템")
-                lines.append(f"획득: 💰{coin_text(prize)}")
-            else:
-                lines.append("획득: 꽝")
-                lines.append("다음 기회에...")
-        else:
-            prize = piece_prize_for(tier, grade)
-            if prize is None:
-                lines.append("획득: 꽝")
-                lines.append("다음 기회에...")
-            else:
-                piece_key, amount = prize
-                result = add_gacha_piece(user_id, user_name, piece_key, amount)
-                lines.append(f"획득: {result['label']} x{amount}")
-                lines.append(f"진행도: {result['current']} / {result['need']}")
+    if grade == "F":
+        lines.append("")
+        lines.append("🎁 행운포인트 +1")
+        lines.append(f"현재 행운포인트: {pity_points or 0} / 10")
 
-                if result["completed"]:
-                    lines.append("")
-                    lines.append("🎉 조각 완성!")
-                    for item, purchase_id in zip(result["completed"], result["purchase_ids"]):
-                        lines.append(f"{item} 획득 / 구매번호 #{purchase_id}")
-                    if result.get("blacksmith_paid"):
-                        lines.append("🔨 대장장이 최초 완성 보상 +2코인")
+        if bonus_paid > 0:
+            lines.append("")
+            lines.append(f"🎉 행운포인트 보상 +{coin_text(bonus_paid * 10)}")
 
     lines.append("")
     lines.append(f"이번 주 가챠: {weekly_used_after} / {WEEKLY_GACHA_LIMIT}회")
-    lines.append(f"현재 잔액: {coin_text(get_balance(user_id))}")
+    lines.append(f"현재 잔액: {coin_text(final_balance)}")
 
     return True, "\n".join(lines)
 
@@ -3982,35 +4090,43 @@ def grant_hidden_reward_once(date_str, mission_key, user_id, user_name, reward, 
     conn = db()
     cur = conn.cursor()
 
-    cur.execute("""
-    INSERT OR IGNORE INTO hidden_rewards (
-        date, mission_key, user_id, user_name, reward, meta, created_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        date_str,
-        mission_key,
-        user_id,
-        user_name,
-        reward,
-        meta,
-        now_str()
-    ))
-
-    inserted = cur.rowcount
-    conn.commit()
-    conn.close()
-
-    if inserted:
-        change_money(
+    try:
+        cur.execute("""
+        INSERT OR IGNORE INTO hidden_rewards (
+            date, mission_key, user_id, user_name, reward, meta, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            date_str,
+            mission_key,
             user_id,
             user_name,
             reward,
-            reason,
-            None,
-            "히든이벤트"
-        )
+            meta,
+            now_str()
+        ))
 
+        inserted = cur.rowcount
+        if inserted:
+            apply_money_change(
+                cur,
+                user_id,
+                user_name,
+                reward,
+                reason,
+                None,
+                "히든이벤트"
+            )
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("GRANT_HIDDEN_REWARD_ERROR", e)
+        inserted = 0
+    finally:
+        conn.close()
+
+    if inserted:
         return hidden_reward_message("🎉 히든 미션 달성!", reason, user_name, reward)
 
     return None
@@ -4126,36 +4242,43 @@ def grant_daily_chat_jackpot(date_str, source_id, seq, user_id, user_name, rewar
     conn = db()
     cur = conn.cursor()
 
-    cur.execute("""
-    INSERT OR IGNORE INTO hidden_rewards (
-        date, mission_key, user_id, user_name, reward, meta, created_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        date_str,
-        mission_key,
-        user_id,
-        user_name,
-        reward,
-        meta or f"source_id={source_id};seq={seq}",
-        now_str()
-    ))
+    try:
+        cur.execute("""
+        INSERT OR IGNORE INTO hidden_rewards (
+            date, mission_key, user_id, user_name, reward, meta, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            date_str,
+            mission_key,
+            user_id,
+            user_name,
+            reward,
+            meta or f"source_id={source_id};seq={seq}",
+            now_str()
+        ))
 
-    inserted = cur.rowcount
-    conn.commit()
-    conn.close()
+        inserted = cur.rowcount
+        if inserted:
+            apply_money_change(
+                cur,
+                user_id,
+                user_name,
+                reward,
+                reason,
+                None,
+                "채팅잭팟"
+            )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("GRANT_DAILY_CHAT_JACKPOT_ERROR", e)
+        inserted = 0
+    finally:
+        conn.close()
 
     if not inserted:
         return False
-
-    change_money(
-        user_id,
-        user_name,
-        reward,
-        reason,
-        None,
-        "채팅잭팟"
-    )
 
     return hidden_reward_message("🎉 히든 보상 달성!", reason, user_name, reward)
 
@@ -4412,34 +4535,42 @@ def grant_attendance_streak_reward_once(date_str, user_id, user_name, streak_day
 
     conn = db()
     cur = conn.cursor()
-    cur.execute("""
-    INSERT OR IGNORE INTO attendance_streak_rewards (
-        user_id, user_name, streak_days, reward, achieved_date, created_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        user_id,
-        user_name,
-        streak_days,
-        reward,
-        date_str,
-        now_str()
-    ))
-    inserted = cur.rowcount > 0
-    conn.commit()
-    conn.close()
+    try:
+        cur.execute("""
+        INSERT OR IGNORE INTO attendance_streak_rewards (
+            user_id, user_name, streak_days, reward, achieved_date, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            user_name,
+            streak_days,
+            reward,
+            date_str,
+            now_str()
+        ))
+        inserted = cur.rowcount > 0
+        if inserted:
+            apply_money_change(
+                cur,
+                user_id,
+                user_name,
+                reward,
+                f"연속출석 보상: {streak_days}일 연속 출석",
+                None,
+                "출석시스템"
+            )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("ATTENDANCE_STREAK_REWARD_ERROR", e)
+        inserted = False
+    finally:
+        conn.close()
 
     if not inserted:
         return False
 
-    change_money(
-        user_id,
-        user_name,
-        reward,
-        f"연속출석 보상: {streak_days}일 연속 출석",
-        None,
-        "출석시스템"
-    )
     print(
         "ATTENDANCE_STREAK_REWARD:",
         user_id,
@@ -4577,49 +4708,54 @@ def settle_weekly_rewards(source_id, week_start, week_end):
     conn = db()
     cur = conn.cursor()
 
-    for idx, row in enumerate(rows, 1):
-        reward = weekly_reward_amount(idx)
-        if reward <= 0:
-            continue
+    try:
+        for idx, row in enumerate(rows, 1):
+            reward = weekly_reward_amount(idx)
+            if reward <= 0:
+                continue
 
-        cur.execute("""
-        INSERT OR IGNORE INTO weekly_rewards (
-            week_start, week_end, user_id, user_name,
-            rank, count, reward, created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            week_start,
-            week_end,
-            row["user_id"],
-            row["user_name"],
-            idx,
-            row["total_count"],
-            reward,
-            now_str()
-        ))
+            cur.execute("""
+            INSERT OR IGNORE INTO weekly_rewards (
+                week_start, week_end, user_id, user_name,
+                rank, count, reward, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                week_start,
+                week_end,
+                row["user_id"],
+                row["user_name"],
+                idx,
+                row["total_count"],
+                reward,
+                now_str()
+            ))
 
-        if cur.rowcount > 0:
-            paid.append({
-                "rank": idx,
-                "user_id": row["user_id"],
-                "user_name": row["user_name"],
-                "count": row["total_count"],
-                "reward": reward,
-            })
+            if cur.rowcount > 0:
+                apply_money_change(
+                    cur,
+                    row["user_id"],
+                    row["user_name"],
+                    reward,
+                    f"주간 마디수 랭킹 보상 {week_start}~{week_end} {idx}위",
+                    None,
+                    "주간정산"
+                )
+                paid.append({
+                    "rank": idx,
+                    "user_id": row["user_id"],
+                    "user_name": row["user_name"],
+                    "count": row["total_count"],
+                    "reward": reward,
+                })
 
-    conn.commit()
-    conn.close()
-
-    for item in paid:
-        change_money(
-            item["user_id"],
-            item["user_name"],
-            item["reward"],
-            f"주간 마디수 랭킹 보상 {week_start}~{week_end} {item['rank']}위",
-            None,
-            "주간정산"
-        )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("SETTLE_WEEKLY_REWARDS_ERROR", e)
+        paid = []
+    finally:
+        conn.close()
 
     return paid
 
@@ -4646,32 +4782,32 @@ def buy_lucky_draw_ticket(user_id, user_name):
 
     conn = db()
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM sns_lucky_draw_results WHERE week_start = ?", (week_start,))
-    if cur.fetchone():
+    try:
+        cur.execute("SELECT 1 FROM sns_lucky_draw_results WHERE week_start = ?", (week_start,))
+        if cur.fetchone():
+            return False, "이번 주 S.N.S 럭키드로우는 이미 추첨 완료되었습니다."
+
+        cur.execute("SELECT COALESCE(balance, 0) AS balance FROM currency WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        balance = int(row["balance"] or 0) if row else 0
+        if balance < EVENT_TICKET_PRICE:
+            return False, f"코인이 부족합니다.\n\n필요: {coin_text(EVENT_TICKET_PRICE)}\n보유: {coin_text(balance)}"
+
+        cur.execute("""
+        INSERT OR IGNORE INTO sns_lucky_draw_entries (week_start, week_end, user_id, user_name, tickets, created_at)
+        VALUES (?, ?, ?, ?, 1, ?)
+        """, (week_start, week_end, user_id, user_name, now_str()))
+        if cur.rowcount == 0:
+            return False, "이미 이번 주 S.N.S 럭키드로우에 참여했습니다.\n구매 제한: 1인 1장"
+
+        apply_money_change(cur, user_id, user_name, -EVENT_TICKET_PRICE, "S.N.S 럭키드로우 티켓 구매", None, "S.N.S이벤트")
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("BUY_LUCKY_DRAW_TICKET_ERROR", e)
+        return False, "🎟️ 럭키드로우 구매 처리 중 문제가 생겼어요. 최근오류를 확인해 주세요."
+    finally:
         conn.close()
-        return False, "이번 주 S.N.S 럭키드로우는 이미 추첨 완료되었습니다."
-
-    cur.execute("SELECT tickets FROM sns_lucky_draw_entries WHERE week_start = ? AND user_id = ?", (week_start, user_id))
-    if cur.fetchone():
-        conn.close()
-        return False, "이미 이번 주 S.N.S 럭키드로우에 참여했습니다.\n구매 제한: 1인 1장"
-
-    conn.close()
-
-    balance = get_balance(user_id)
-    if balance < EVENT_TICKET_PRICE:
-        return False, f"코인이 부족합니다.\n\n필요: {coin_text(EVENT_TICKET_PRICE)}\n보유: {coin_text(balance)}"
-
-    change_money(user_id, user_name, -EVENT_TICKET_PRICE, "S.N.S 럭키드로우 티켓 구매", None, "S.N.S이벤트")
-
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    INSERT INTO sns_lucky_draw_entries (week_start, week_end, user_id, user_name, tickets, created_at)
-    VALUES (?, ?, ?, ?, 1, ?)
-    """, (week_start, week_end, user_id, user_name, now_str()))
-    conn.commit()
-    conn.close()
 
     return True, lucky_draw_status_text(week_start, week_end, title="🎟️ S.N.S 럭키드로우 참여 완료")
 
@@ -4721,63 +4857,72 @@ def settle_lucky_draw(settled_by="자동추첨"):
     week_start, week_end = event_week_key()
     conn = db()
     cur = conn.cursor()
+    try:
+        cur.execute("SELECT 1 FROM sns_lucky_draw_results WHERE week_start = ?", (week_start,))
+        if cur.fetchone():
+            return False, "이번 주 S.N.S 럭키드로우는 이미 추첨 완료되었습니다."
 
-    cur.execute("SELECT 1 FROM sns_lucky_draw_results WHERE week_start = ?", (week_start,))
-    if cur.fetchone():
-        conn.close()
-        return False, "이번 주 S.N.S 럭키드로우는 이미 추첨 완료되었습니다."
-
-    cur.execute("""
-    SELECT e.user_id, e.user_name, e.tickets
-    FROM sns_lucky_draw_entries e
-    JOIN users u ON u.user_id = e.user_id
-    WHERE e.week_start = ? AND e.week_end = ? AND COALESCE(u.is_active, 1) = 1
-    ORDER BY e.created_at ASC
-    """, (week_start, week_end))
-    rows = cur.fetchall()
-
-    if not rows:
-        conn.close()
-        return False, "이번 주 S.N.S 럭키드로우 참여자가 없습니다."
-
-    total_sales = len(rows) * EVENT_TICKET_PRICE
-    payout_pool = EVENT_BASE_PRIZE + int(total_sales * EVENT_PAYOUT_RATE)
-    burned = max(0, total_sales - int(total_sales * EVENT_PAYOUT_RATE))
-
-    shuffled = list(rows)
-    random.shuffle(shuffled)
-    if len(shuffled) == 1:
-        ranks = [(1, shuffled[0], payout_pool)]
-    elif len(shuffled) == 2:
-        ranks = [
-            (1, shuffled[0], int(round(payout_pool * 0.60))),
-            (2, shuffled[1], payout_pool - int(round(payout_pool * 0.60))),
-        ]
-    else:
-        p1 = int(round(payout_pool * 0.60))
-        p2 = int(round(payout_pool * 0.25))
-        p3 = payout_pool - p1 - p2
-        ranks = [(1, shuffled[0], p1), (2, shuffled[1], p2), (3, shuffled[2], p3)]
-
-    main_winner = ranks[0][1]
-    cur.execute("""
-    INSERT INTO sns_lucky_draw_results (
-        week_start, week_end, winner_user_id, winner_user_name,
-        participants, total_sales, prize, burned, settled_by, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (week_start, week_end, main_winner["user_id"], main_winner["user_name"], len(rows), total_sales, payout_pool, burned, settled_by, now_str()))
-
-    for rank, winner, prize in ranks:
         cur.execute("""
-        INSERT INTO sns_lucky_draw_prizes (week_start, week_end, rank, winner_user_id, winner_user_name, prize, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (week_start, week_end, rank, winner["user_id"], winner["user_name"], prize, now_str()))
+        SELECT e.user_id, e.user_name, e.tickets
+        FROM sns_lucky_draw_entries e
+        JOIN users u ON u.user_id = e.user_id
+        WHERE e.week_start = ? AND e.week_end = ? AND COALESCE(u.is_active, 1) = 1
+        ORDER BY e.created_at ASC
+        """, (week_start, week_end))
+        rows = cur.fetchall()
 
-    conn.commit()
-    conn.close()
+        if not rows:
+            return False, "이번 주 S.N.S 럭키드로우 참여자가 없습니다."
 
-    for rank, winner, prize in ranks:
-        change_money(winner["user_id"], winner["user_name"], prize, f"S.N.S 럭키드로우 {rank}등 {week_start}~{week_end}", None, settled_by)
+        total_sales = len(rows) * EVENT_TICKET_PRICE
+        payout_pool = EVENT_BASE_PRIZE + int(total_sales * EVENT_PAYOUT_RATE)
+        burned = max(0, total_sales - int(total_sales * EVENT_PAYOUT_RATE))
+
+        shuffled = list(rows)
+        random.shuffle(shuffled)
+        if len(shuffled) == 1:
+            ranks = [(1, shuffled[0], payout_pool)]
+        elif len(shuffled) == 2:
+            ranks = [
+                (1, shuffled[0], int(round(payout_pool * 0.60))),
+                (2, shuffled[1], payout_pool - int(round(payout_pool * 0.60))),
+            ]
+        else:
+            p1 = int(round(payout_pool * 0.60))
+            p2 = int(round(payout_pool * 0.25))
+            p3 = payout_pool - p1 - p2
+            ranks = [(1, shuffled[0], p1), (2, shuffled[1], p2), (3, shuffled[2], p3)]
+
+        main_winner = ranks[0][1]
+        cur.execute("""
+        INSERT INTO sns_lucky_draw_results (
+            week_start, week_end, winner_user_id, winner_user_name,
+            participants, total_sales, prize, burned, settled_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (week_start, week_end, main_winner["user_id"], main_winner["user_name"], len(rows), total_sales, payout_pool, burned, settled_by, now_str()))
+
+        for rank, winner, prize in ranks:
+            cur.execute("""
+            INSERT INTO sns_lucky_draw_prizes (week_start, week_end, rank, winner_user_id, winner_user_name, prize, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (week_start, week_end, rank, winner["user_id"], winner["user_name"], prize, now_str()))
+            apply_money_change(
+                cur,
+                winner["user_id"],
+                winner["user_name"],
+                prize,
+                f"S.N.S 럭키드로우 {rank}등 {week_start}~{week_end}",
+                None,
+                settled_by
+            )
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("SETTLE_LUCKY_DRAW_ERROR", e)
+        return False, "🎉 럭키드로우 정산 중 문제가 생겼어요. 최근오류를 확인해 주세요."
+    finally:
+        conn.close()
 
     lines = [
         "🎉 S.N.S 럭키드로우 추첨 결과", "",
@@ -4906,17 +5051,24 @@ EXCLUDED_ACHIEVEMENT_KEYS = {"".join(("boun", "ty_complete"))}
 def grant_achievement_once(user_id, user_name, achievement_key, achievement_name, reward=0, meta=""):
     conn = db()
     cur = conn.cursor()
-    cur.execute("""
-    INSERT OR IGNORE INTO achievements (
-        user_id, user_name, achievement_key, achievement_name, reward, meta, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (user_id, user_name, achievement_key, achievement_name, reward, meta, now_str()))
-    inserted = cur.rowcount
-    conn.commit()
-    conn.close()
+    try:
+        cur.execute("""
+        INSERT OR IGNORE INTO achievements (
+            user_id, user_name, achievement_key, achievement_name, reward, meta, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, user_name, achievement_key, achievement_name, reward, meta, now_str()))
+        inserted = cur.rowcount
 
-    if inserted and reward > 0:
-        change_money(user_id, user_name, reward, f"업적 보상: {achievement_name}", None, "업적시스템")
+        if inserted and reward > 0:
+            apply_money_change(cur, user_id, user_name, reward, f"업적 보상: {achievement_name}", None, "업적시스템")
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("ACHIEVEMENT_GRANT_ERROR", e)
+        inserted = 0
+    finally:
+        conn.close()
 
     return bool(inserted)
 
@@ -5539,46 +5691,51 @@ def settle_heart_pick_rewards(week_start=None, week_end=None):
 
     conn = db()
     cur = conn.cursor()
-    for idx, row in enumerate(rows, 1):
-        reward = heart_pick_reward_amount(idx)
-        if reward <= 0:
-            continue
-        cur.execute("""
-        INSERT OR IGNORE INTO heart_pick_rewards (
-            week_start, week_end, user_id, user_name,
-            rank, pick_count, reward, created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            week_start,
-            week_end,
-            row["user_id"],
-            row["user_name"],
-            idx,
-            row["pick_count"],
-            reward,
-            now_str()
-        ))
-        if cur.rowcount > 0:
-            paid.append({
-                "rank": idx,
-                "user_id": row["user_id"],
-                "user_name": row["user_name"],
-                "pick_count": row["pick_count"],
-                "reward": reward,
-            })
-    conn.commit()
-    conn.close()
-
-    for item in paid:
-        change_money(
-            item["user_id"],
-            item["user_name"],
-            item["reward"],
-            f"설렘픽 랭킹 보상 {week_start}~{week_end} {item['rank']}위",
-            None,
-            "설렘픽"
-        )
+    try:
+        for idx, row in enumerate(rows, 1):
+            reward = heart_pick_reward_amount(idx)
+            if reward <= 0:
+                continue
+            cur.execute("""
+            INSERT OR IGNORE INTO heart_pick_rewards (
+                week_start, week_end, user_id, user_name,
+                rank, pick_count, reward, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                week_start,
+                week_end,
+                row["user_id"],
+                row["user_name"],
+                idx,
+                row["pick_count"],
+                reward,
+                now_str()
+            ))
+            if cur.rowcount > 0:
+                apply_money_change(
+                    cur,
+                    row["user_id"],
+                    row["user_name"],
+                    reward,
+                    f"설렘픽 랭킹 보상 {week_start}~{week_end} {idx}위",
+                    None,
+                    "설렘픽"
+                )
+                paid.append({
+                    "rank": idx,
+                    "user_id": row["user_id"],
+                    "user_name": row["user_name"],
+                    "pick_count": row["pick_count"],
+                    "reward": reward,
+                })
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("SETTLE_HEART_PICK_REWARDS_ERROR", e)
+        paid = []
+    finally:
+        conn.close()
 
     return paid
 
@@ -7208,47 +7365,81 @@ def run_piece_gacha(user_id, user_name):
     if used_count >= WEEKLY_GACHA_LIMIT:
         return False, f"🎰 이번 주 가챠 횟수를 모두 사용했습니다.\n\n사용: {used_count} / {WEEKLY_GACHA_LIMIT}회"
     cost = 10
-    balance = get_balance(user_id)
-    if balance < cost:
-        return False, f"코인이 부족합니다.\n\n필요: {coin_text(cost)}\n보유: {coin_text(balance)}"
-    change_money(user_id, user_name, -cost, "조각가챠 이용", None, "가챠시스템")
-    used_after = add_weekly_gacha_count(user_id, user_name)
-    if weighted_pick(PIECE_STANDALONE_GACHA_WEIGHTS) == "piece":
-        piece_key = random_piece_by_group()
-        add_simple_piece(user_id, user_name, piece_key, 1)
-        label = PIECE_INFO[piece_key]["label"]
-        result = f"획득: {label} x1"
-    else:
-        result = "획득: 꽝"
-    return True, f"🧩 조각가챠 결과\n\n{result}\n\n이번 주 가챠: {used_after} / {WEEKLY_GACHA_LIMIT}회\n현재 잔액: {coin_text(get_balance(user_id))}"
+    result_kind = weighted_pick(PIECE_STANDALONE_GACHA_WEIGHTS)
+    piece_key = random_piece_by_group() if result_kind == "piece" else None
+    final_balance = 0
+
+    conn = db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT COALESCE(balance, 0) AS balance FROM currency WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        balance = int(row["balance"] or 0) if row else 0
+        if balance < cost:
+            return False, f"코인이 부족합니다.\n\n필요: {coin_text(cost)}\n보유: {coin_text(balance)}"
+
+        final_balance = apply_money_change(cur, user_id, user_name, -cost, "조각가챠 이용", None, "가챠시스템")
+        used_after = apply_weekly_gacha_count(cur, user_id, user_name)
+
+        if piece_key:
+            cur.execute("""
+            INSERT INTO gacha_pieces (user_id, piece_key, count, updated_at)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT(user_id, piece_key)
+            DO UPDATE SET count = count + 1, updated_at = excluded.updated_at
+            """, (user_id, piece_key, now_str()))
+            label = PIECE_INFO[piece_key]["label"]
+            result = f"획득: {label} x1"
+        else:
+            result = "획득: 꽝"
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("RUN_PIECE_GACHA_ERROR", e)
+        return False, "🧩 조각가챠 처리 중 문제가 생겼어요. 최근오류를 확인해 주세요."
+    finally:
+        conn.close()
+
+    return True, f"🧩 조각가챠 결과\n\n{result}\n\n이번 주 가챠: {used_after} / {WEEKLY_GACHA_LIMIT}회\n현재 잔액: {coin_text(final_balance)}"
 
 
 def blacksmith_exchange(user_id, user_name):
     conn = db()
     cur = conn.cursor()
     paid = []
-    for key, info in PIECE_INFO.items():
-        cur.execute("SELECT count FROM gacha_pieces WHERE user_id = ? AND piece_key = ?", (user_id, key))
-        row = cur.fetchone()
-        count = int(row["count"] or 0) if row else 0
-        sets = count // int(info["need"])
-        if sets <= 0:
-            continue
-        used = sets * int(info["need"])
-        remain = count - used
-        cur.execute("UPDATE gacha_pieces SET count = ?, updated_at = ? WHERE user_id = ? AND piece_key = ?", (remain, now_str(), user_id, key))
-        reward = sets * int(info["reward"])
-        paid.append((info["label"], sets, reward))
-    conn.commit()
-    conn.close()
-    if not paid:
-        return "🔨 대장장이\n\n교환 가능한 조각이 없습니다.\n\n철/은/금 조각은 각 10개 단위로 교환됩니다."
-    total = sum(x[2] for x in paid)
-    change_money(user_id, user_name, total, "대장장이 조각 교환", None, "대장장이")
+    final_balance = 0
+    try:
+        for key, info in PIECE_INFO.items():
+            cur.execute("SELECT count FROM gacha_pieces WHERE user_id = ? AND piece_key = ?", (user_id, key))
+            row = cur.fetchone()
+            count = int(row["count"] or 0) if row else 0
+            sets = count // int(info["need"])
+            if sets <= 0:
+                continue
+            used = sets * int(info["need"])
+            remain = count - used
+            cur.execute("UPDATE gacha_pieces SET count = ?, updated_at = ? WHERE user_id = ? AND piece_key = ?", (remain, now_str(), user_id, key))
+            reward = sets * int(info["reward"])
+            paid.append((info["label"], sets, reward))
+
+        if not paid:
+            return "🔨 대장장이\n\n교환 가능한 조각이 없습니다.\n\n철/은/금 조각은 각 10개 단위로 교환됩니다."
+
+        total = sum(x[2] for x in paid)
+        final_balance = apply_money_change(cur, user_id, user_name, total, "대장장이 조각 교환", None, "대장장이")
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("BLACKSMITH_EXCHANGE_ERROR", e)
+        return "🔨 대장장이 처리 중 문제가 생겼어요. 최근오류를 확인해 주세요."
+    finally:
+        conn.close()
+
     lines = ["🔨 대장장이 교환 완료", ""]
     for label, sets, reward in paid:
         lines.append(f"{label} 10개 x{sets}세트 → {coin_text(reward)}")
-    lines += ["", f"총 지급: {coin_text(total)}", f"현재 보유: {coin_text(get_balance(user_id))}"]
+    lines += ["", f"총 지급: {coin_text(total)}", f"현재 보유: {coin_text(final_balance)}"]
     return "\n".join(lines)
 
 
@@ -7628,30 +7819,38 @@ def complete_manitto_if_ready(hunter_user_id, hunter_user_name, partner_user_id)
     conn = db()
     cur = conn.cursor()
     week_start, week_end = event_week_key()
-    cur.execute("""
-    UPDATE manitto_assignments
-    SET completed = 1,
-        completed_at = ?,
-        updated_at = ?
-    WHERE week_start = ?
-      AND hunter_user_id = ?
-      AND completed = 0
-    """, (now_str(), now_str(), week_start, hunter_user_id))
-    changed = cur.rowcount
-    conn.commit()
-    conn.close()
+    try:
+        cur.execute("""
+        UPDATE manitto_assignments
+        SET completed = 1,
+            completed_at = ?,
+            updated_at = ?
+        WHERE week_start = ?
+          AND hunter_user_id = ?
+          AND completed = 0
+        """, (now_str(), now_str(), week_start, hunter_user_id))
+        changed = cur.rowcount
+
+        if changed:
+            apply_money_change(
+                cur,
+                hunter_user_id,
+                hunter_user_name,
+                reward,
+                f"마니또 성공: {row['target_user_name']}",
+                None,
+                "마니또"
+            )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("COMPLETE_MANITTO_ERROR", e)
+        changed = 0
+    finally:
+        conn.close()
 
     if not changed:
         return None
-
-    change_money(
-        hunter_user_id,
-        hunter_user_name,
-        reward,
-        f"마니또 성공: {row['target_user_name']}",
-        None,
-        "마니또"
-    )
 
     try:
         grant_achievement_once(
@@ -7856,9 +8055,9 @@ def operator_affinity_report_text(keyword="", min_score=50):
     target = None
 
     if keyword:
-        target = find_user(keyword)
-        if not target:
-            return "대상 유저를 찾을 수 없습니다."
+        target, err = resolve_active_user_by_nickname(keyword, purpose="대상")
+        if err:
+            return err
 
     week_start, week_end = event_week_key()
     conn = db()
@@ -8352,16 +8551,9 @@ def admin_user_detail_text(keyword):
 
 
 def grant_item_to_user(keyword, item_name, staff_name):
-    rows = find_users(keyword, limit=5)
-    if not rows:
-        return False, f"대상을 찾을 수 없습니다.\n검색어: {keyword}"
-    if len(rows) > 1:
-        lines = [f"검색 결과가 여러 명입니다: {keyword}", ""]
-        for i, row in enumerate(rows, 1):
-            lines.append(f"{i}. {row['user_name']}")
-        lines.append("\n더 정확한 닉네임으로 다시 입력해주세요.")
-        return False, "\n".join(lines)
-    target = rows[0]
+    target, err = resolve_active_user_by_nickname(keyword, purpose="대상")
+    if err:
+        return False, err
     purchase_id = add_reward_purchase(target["user_id"], target["user_name"], item_name)
     return True, (
         "🎁 아이템 지급 완료\n\n"
@@ -8384,13 +8576,14 @@ def run_weekly_settlement_auto():
     system_flags로 중복 실행을 방지합니다.
     """
     date_str = today()
+    week_start, week_end = week_range_for_today()
     flag_key = f"auto_weekly_settlement:{date_str}"
 
     try:
         if get_system_flag(flag_key):
             return
     except Exception as e:
-        print("AUTO_WEEKLY_FLAG_READ_ERROR:", repr(e))
+        log_error("AUTO_WEEKLY_FLAG_READ_ERROR", e)
         return
 
     try:
@@ -8403,6 +8596,7 @@ def run_weekly_settlement_auto():
         else:
             result_text = "⚠️ 자동 주간정산 실패\n\n주간정산 함수를 찾지 못했습니다."
 
+        record_settlement_run(date_str, week_start, week_end, "done", result_text)
         set_system_flag(flag_key, "done")
 
         notify_text = "🏆 자동 주간정산 완료\n\n" + str(result_text)
@@ -8410,7 +8604,11 @@ def run_weekly_settlement_auto():
         print("AUTO_WEEKLY_SETTLEMENT_DONE:", date_str)
 
     except Exception as e:
-        print("AUTO_WEEKLY_SETTLEMENT_ERROR:", repr(e))
+        log_error("AUTO_WEEKLY_SETTLEMENT_ERROR", e)
+        try:
+            record_settlement_run(date_str, week_start, week_end, "error", repr(e))
+        except Exception as record_error:
+            log_error("AUTO_WEEKLY_SETTLEMENT_RECORD_ERROR", record_error)
 
 
 def weekly_settlement_scheduler_loop():
@@ -8426,7 +8624,7 @@ def weekly_settlement_scheduler_loop():
             else:
                 time.sleep(20)
         except Exception as e:
-            print("WEEKLY_SETTLEMENT_SCHEDULER_ERROR:", repr(e))
+            log_error("WEEKLY_SETTLEMENT_SCHEDULER_ERROR", e)
             time.sleep(60)
 
 
@@ -8450,7 +8648,7 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     except Exception as e:
-        print("ERROR:", e)
+        log_error("CALLBACK_ERROR", e)
         abort(500)
 
     return "OK"
@@ -8489,6 +8687,148 @@ def economy_status_text():
         f"평균 보유: {coin_text(avg)}",
         f"최고 보유자: {(top['user_name'] + ' ' + coin_text(top['balance'])) if top else '-'}",
     ])
+
+
+def coin_audit_text(keyword):
+    try:
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return "사용법: /코인검증 닉네임"
+
+        target, err = resolve_active_user_by_nickname(keyword, purpose="대상")
+        if err:
+            return "💰 코인검증 실패\n\n" + err
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("SELECT COALESCE(balance, 0) AS balance FROM currency WHERE user_id = ?", (target["user_id"],))
+        balance_row = cur.fetchone()
+        balance = int(balance_row["balance"] or 0) if balance_row else 0
+
+        cur.execute("""
+        SELECT
+            COALESCE(SUM(amount), 0) AS log_total,
+            COUNT(*) AS log_count,
+            MAX(created_at) AS last_log
+        FROM currency_logs
+        WHERE user_id = ?
+        """, (target["user_id"],))
+        log_row = cur.fetchone()
+        log_total = int(log_row["log_total"] or 0) if log_row else 0
+        log_count = int(log_row["log_count"] or 0) if log_row else 0
+        last_log = log_row["last_log"] if log_row else None
+        conn.close()
+
+        diff = balance - log_total
+        status = "정상" if diff == 0 else "확인 필요"
+        return "\n".join([
+            "💰 코인검증",
+            "",
+            f"대상: {target['user_name']}",
+            f"현재 잔액: {coin_text(balance)}",
+            f"로그 합계: {coin_text(log_total)}",
+            f"차이: {coin_text(diff)}",
+            f"로그 수: {log_count}건",
+            f"최근 로그: {last_log or '-'}",
+            "",
+            f"상태: {status}",
+        ])
+    except Exception as e:
+        log_error("COIN_AUDIT_ERROR", e)
+        return "💰 코인검증 중 문제가 생겼어요. 최근오류를 확인해 주세요."
+
+
+def recent_errors_text(limit=10):
+    try:
+        limit = max(1, min(30, int(limit or 10)))
+    except Exception:
+        limit = 10
+
+    try:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT context, detail, created_at
+        FROM bot_errors
+        ORDER BY id DESC
+        LIMIT ?
+        """, (limit,))
+        rows = cur.fetchall()
+        conn.close()
+
+        lines = ["🧯 최근오류", ""]
+        if not rows:
+            lines.append("저장된 오류 로그가 없습니다.")
+        else:
+            for i, row in enumerate(rows, 1):
+                detail = str(row["detail"] or "")
+                if len(detail) > 180:
+                    detail = detail[:180] + "..."
+                lines.append(f"{i}. {row['created_at']} / {row['context']}")
+                lines.append(f"   {detail}")
+        return "\n".join(lines)
+    except Exception as e:
+        print("RECENT_ERRORS_TEXT_ERROR:", repr(e))
+        return "🧯 최근오류를 불러오지 못했습니다."
+
+
+def record_settlement_run(date_str, week_start, week_end, status, summary):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO settlement_runs (
+        date, week_start, week_end, status, summary, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(date, week_start, week_end)
+    DO UPDATE SET
+        status = excluded.status,
+        summary = excluded.summary,
+        created_at = excluded.created_at
+    """, (date_str, week_start, week_end, status, str(summary)[:1800], now_str()))
+    conn.commit()
+    conn.close()
+
+
+def settlement_audit_text():
+    try:
+        week_start, week_end = week_range_for_today()
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) AS cnt, COALESCE(SUM(reward), 0) AS total FROM weekly_rewards WHERE week_start = ? AND week_end = ?", (week_start, week_end))
+        weekly = cur.fetchone()
+        cur.execute("SELECT COUNT(*) AS cnt, COALESCE(SUM(reward), 0) AS total FROM heart_pick_rewards WHERE week_start = ? AND week_end = ?", (week_start, week_end))
+        heart = cur.fetchone()
+        cur.execute("SELECT COUNT(*) AS cnt, COALESCE(SUM(prize), 0) AS total FROM sns_lucky_draw_prizes WHERE week_start = ? AND week_end = ?", (week_start, week_end))
+        lucky_prizes = cur.fetchone()
+        cur.execute("SELECT participants, prize, burned, created_at FROM sns_lucky_draw_results WHERE week_start = ? AND week_end = ?", (week_start, week_end))
+        lucky = cur.fetchone()
+        cur.execute("SELECT status, summary, created_at FROM settlement_runs WHERE week_start = ? AND week_end = ? ORDER BY id DESC LIMIT 1", (week_start, week_end))
+        run = cur.fetchone()
+        conn.close()
+
+        lines = [
+            "🧾 정산검증",
+            f"기간: {week_start} ~ {week_end}",
+            "",
+            f"마디수 보상: {int(weekly['cnt'] or 0)}건 / {coin_text(int(weekly['total'] or 0))}",
+            f"설렘픽 보상: {int(heart['cnt'] or 0)}건 / {coin_text(int(heart['total'] or 0))}",
+            f"럭키드로우 보상: {int(lucky_prizes['cnt'] or 0)}건 / {coin_text(int(lucky_prizes['total'] or 0))}",
+        ]
+        if lucky:
+            lines.append(f"럭키드로우 결과: 참여 {int(lucky['participants'] or 0)}명 / 풀 {coin_text(int(lucky['prize'] or 0))} / 소각 {coin_text(int(lucky['burned'] or 0))}")
+            lines.append(f"럭키드로우 추첨: {lucky['created_at']}")
+        else:
+            lines.append("럭키드로우 결과: 아직 없음")
+
+        if run:
+            lines += ["", f"자동정산 기록: {run['status']} / {run['created_at']}"]
+        else:
+            lines += ["", "자동정산 기록: 아직 없음"]
+
+        return "\n".join(lines)
+    except Exception as e:
+        log_error("SETTLEMENT_AUDIT_ERROR", e)
+        return "🧾 정산검증 중 문제가 생겼어요. 최근오류를 확인해 주세요."
 
 
 def snapshot_user_data(user_id):
@@ -8680,13 +9020,13 @@ def handle(event):
             if message_type == "text":
                 process_mentions(date_str, source_id, user_id, user_name, message_text)
         except Exception as e:
-            print("MENTION_PROCESS_ERROR:", e)
+            log_error("MENTION_PROCESS_ERROR", e)
 
         try:
             if source_id == COUNT_SOURCE_ID:
                 public_notices.extend(pop_public_announcements(source_id, current_chat_log_id))
         except Exception as e:
-            print("PUBLIC_ANNOUNCEMENT_ERROR:", e)
+            log_error("PUBLIC_ANNOUNCEMENT_ERROR", e)
 
         # 히든 미션 자동 체크
         try:
@@ -8700,7 +9040,7 @@ def handle(event):
             for achievement_name, reward in check_chatter_achievements(date_str, source_id, user_id, user_name):
                 public_notices.append(achievement_message(achievement_name, user_name, reward))
         except Exception as e:
-            print("HIDDEN_REWARD_ERROR:", e)
+            log_error("HIDDEN_REWARD_ERROR", e)
 
     if not isinstance(event.message, TextMessageContent):
         if public_notices:
@@ -8748,13 +9088,13 @@ def handle(event):
             reply_many(event.reply_token, split_text_messages(notice_text))
             return
     except Exception as e:
-        print("AFFINITY_PROCESS_ERROR:", e)
+        log_error("AFFINITY_PROCESS_ERROR", e)
 
     # 토요일 21시 자동 스케줄러가 기본 처리합니다. 메시지 수신 시에도 보조 확인합니다.
     try:
         maybe_auto_lucky_draw()
     except Exception as e:
-        print("SNS_LUCKY_AUTO_ERROR:", e)
+        log_error("SNS_LUCKY_AUTO_ERROR", e)
 
 
     # =========================
@@ -8814,7 +9154,7 @@ def handle(event):
         conn = db()
         cur = conn.cursor()
         counts = []
-        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "chemistry_signals", "chemistry_rewards", "public_announcements", "truth_game_sessions", "truth_game_questions", "truth_game_resets"]:
+        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "weekly_rewards", "settlement_runs", "bot_errors", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "sns_lucky_draw_entries", "sns_lucky_draw_results", "sns_lucky_draw_prizes", "chemistry_signals", "chemistry_rewards", "public_announcements", "truth_game_sessions", "truth_game_questions", "truth_game_resets"]:
             try:
                 cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                 counts.append(f"{table}: {cur.fetchone()['cnt']}")
@@ -9067,6 +9407,29 @@ def handle(event):
         reply(event.reply_token, economy_status_text())
         return
 
+    if text == "/코인검증" or text.startswith("/코인검증 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        keyword = text.replace("/코인검증", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(coin_audit_text(keyword)))
+        return
+
+    if text == "/정산검증":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply_many(event.reply_token, split_text_messages(settlement_audit_text()))
+        return
+
+    if text == "/최근오류" or text.startswith("/최근오류 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        raw_limit = text.replace("/최근오류", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(recent_errors_text(raw_limit or 10)))
+        return
+
     if text == "/유저아이템보유":
         if not is_staff(user_id):
             reply(event.reply_token, operator_only_warning())
@@ -9108,9 +9471,9 @@ def handle(event):
         if len(parts) < 3:
             reply(event.reply_token, "사용법: /지급 닉네임 금액")
             return
-        target = find_user(parts[1])
-        if not target:
-            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+        target, err = resolve_active_user_by_nickname(parts[1], purpose="대상")
+        if err:
+            reply_many(event.reply_token, split_text_messages(err))
             return
         try:
             amount = coin_to_points(parts[2])
@@ -9129,9 +9492,9 @@ def handle(event):
         if len(parts) < 3:
             reply(event.reply_token, "사용법: /차감 닉네임 금액")
             return
-        target = find_user(parts[1])
-        if not target:
-            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+        target, err = resolve_active_user_by_nickname(parts[1], purpose="대상")
+        if err:
+            reply_many(event.reply_token, split_text_messages(err))
             return
         try:
             amount = coin_to_points(parts[2])
@@ -9162,9 +9525,9 @@ def handle(event):
             return
         parts = text.split(maxsplit=1)
         keyword = parts[1].strip()
-        target = find_user(keyword)
-        if not target:
-            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+        target, err = resolve_active_user_by_nickname(keyword, purpose="대상")
+        if err:
+            reply_many(event.reply_token, split_text_messages(err))
             return
         rows = currency_history(target["user_id"], limit=10)
         lines = [f"💰 코인내역: {target['user_name']}", ""]
@@ -9253,9 +9616,9 @@ def handle(event):
         if len(parts) < 3:
             reply(event.reply_token, "사용법: /아이템지급 닉네임 상품명")
             return
-        target = find_user(parts[1])
-        if not target:
-            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+        target, err = resolve_active_user_by_nickname(parts[1], purpose="대상")
+        if err:
+            reply_many(event.reply_token, split_text_messages(err))
             return
         purchase_id = add_reward_purchase(target["user_id"], target["user_name"], parts[2])
         reply(event.reply_token, f"🎁 아이템 지급 완료\n\n대상: {target['user_name']}\n상품: {parts[2]}\n구매번호: {purchase_id}")
@@ -9638,7 +10001,7 @@ def handle(event):
             return
 
         if text in ["/상가챠", "/중가챠", "/하가챠"]:
-            tier = text[1]
+            tier = text.replace("/", "", 1).replace("가챠", "", 1)
             success, message = run_gacha(user_id, user_name, tier)
             if success:
                 grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, tier)
@@ -9720,7 +10083,7 @@ if MemberLeftEvent is not None:
                     print("MEMBER LEFT:", source_id, left_user_id)
 
         except Exception as e:
-            print("MEMBER LEFT ERROR:", e)
+            log_error("MEMBER_LEFT_ERROR", e)
 
 
 if MemberJoinedEvent is not None:
@@ -9738,7 +10101,7 @@ if MemberJoinedEvent is not None:
                     print("MEMBER JOINED:", source_id, joined_user_id)
 
         except Exception as e:
-            print("MEMBER JOINED ERROR:", e)
+            log_error("MEMBER_JOINED_ERROR", e)
 
 
 # 럭키드로우 자동 정산 스케줄러 시작
@@ -9751,7 +10114,7 @@ try:
     if os.getenv("DISABLE_AUTO_WEEKLY_SETTLEMENT", "0") != "1":
         start_weekly_settlement_scheduler()
 except Exception as e:
-    print("START_WEEKLY_SETTLEMENT_SCHEDULER_ERROR:", repr(e))
+    log_error("START_WEEKLY_SETTLEMENT_SCHEDULER_ERROR", e)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
