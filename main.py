@@ -1385,6 +1385,21 @@ def beginner_guide_text():
 /상점
 /마니또
 
+━━━━━━━━━━
+
+💘 설렘픽 / 케미
+
+/설렘픽 닉네임
+- 하루 1회 이성에게 익명 투표할 수 있습니다.
+- 설렘픽 랭킹 1~3등은 주간 정산 보상을 받습니다.
+
+/케미 닉네임
+- 하루 1회 이성에게 케미를 보낼 수 있습니다.
+- 서로 케미를 보낸 경우에만 공창에 익명 알림이 표시됩니다.
+
+※ 노미클은 남자로 간주합니다.
+※ 성별은 닉네임 인증 이모티콘과 저장된 족보를 기준으로 확인합니다.
+
 좋은 인연과 즐거운 대화를 만들어보세요 😀"""
 
 def operator_commands_text():
@@ -1529,11 +1544,151 @@ def display_nickname(user_name):
     return normalize_mention_name(user_name) or str(user_name or "").strip()
 
 
+def gender_name_keys(user_name):
+    keys = set()
+    for value in [
+        clean_keyword(user_name),
+        normalize_mention_name(user_name),
+        normalize_match_text(user_name),
+    ]:
+        value = str(value or "").strip()
+        if not value:
+            continue
+        keys.add(value)
+        without_age = re.sub(r"^\d+", "", value)
+        if without_age:
+            keys.add(without_age)
+    return keys
+
+
+def gender_from_text_markers(text_value):
+    text_value = str(text_value or "")
+    clean = clean_keyword(text_value)
+    tokens = [token.lower() for token in re.findall(r"[0-9A-Za-z가-힣]+", text_value)]
+
+    # 노미클은 남자로 간주합니다.
+    if "🔰" in text_value or "노미클" in clean:
+        return "male"
+
+    if "🔸" in text_value or "🔻" in text_value or "여미클" in clean or "여자" in clean or "여성" in clean or "여" in tokens:
+        return "female"
+
+    if "🔹" in text_value or "남미클" in clean or "남자" in clean or "남성" in clean or "남" in tokens:
+        return "male"
+
+    return None
+
+
+def gender_from_user_row(user_row):
+    if not user_row:
+        return None
+
+    try:
+        if int(user_row["is_nomicl"] or 0) == 1:
+            return "male"
+    except Exception:
+        pass
+
+    try:
+        gender = str(user_row["gender"] or "").strip().lower()
+    except Exception:
+        gender = ""
+
+    if gender in ("male", "m", "man", "남", "남자", "남성", "nomicl", "노미클"):
+        return "male"
+    if gender in ("female", "f", "woman", "여", "여자", "여성"):
+        return "female"
+
+    return None
+
+
+def gender_from_genealogy(user_name):
+    try:
+        target_keys = gender_name_keys(user_name)
+        if not target_keys:
+            return None
+
+        content = normalize_genealogy_content(get_genealogy_content())
+        if not content:
+            return None
+
+        for line in content.splitlines():
+            first_key = genealogy_first_member_key(line)
+            if not first_key:
+                continue
+            line_keys = gender_name_keys(first_key)
+            if not target_keys.intersection(line_keys):
+                continue
+
+            gender = gender_from_text_markers(line)
+            if gender:
+                return gender
+    except Exception as e:
+        print("GENEALOGY_GENDER_ERROR:", repr(e))
+    return None
+
+
+def effective_user_gender(user_row, fallback_name=None):
+    user_name = fallback_name
+    if user_row:
+        try:
+            user_name = user_row["user_name"] or user_name
+        except Exception:
+            pass
+
+    return (
+        gender_from_text_markers(user_name)
+        or gender_from_user_row(user_row)
+        or gender_from_genealogy(user_name)
+    )
+
+
+def gender_label(gender):
+    if gender == "male":
+        return "남성"
+    if gender == "female":
+        return "여성"
+    return "확인불가"
+
+
+def opposite_gender_check(sender_user_id, sender_user_name, target):
+    sender_row = get_user_by_id(sender_user_id)
+    sender = dict(sender_row) if sender_row else {"user_id": sender_user_id, "user_name": sender_user_name}
+    if sender_user_name:
+        sender["user_name"] = sender_user_name
+
+    sender_gender = effective_user_gender(sender, sender_user_name)
+    target_gender = effective_user_gender(target, target.get("user_name") if target else None)
+
+    if not sender_gender or not target_gender:
+        return False, (
+            "성별을 확인할 수 없어 선택할 수 없습니다.\n"
+            "닉네임 인증 이모티콘 또는 족보 등록 상태를 확인해주세요.\n"
+            "노미클은 남자로 간주합니다."
+        )
+
+    if sender_gender == target_gender:
+        return False, (
+            "이성에게만 사용할 수 있습니다.\n\n"
+            f"내 성별: {gender_label(sender_gender)}\n"
+            f"상대 성별: {gender_label(target_gender)}\n"
+            "노미클은 남자로 간주합니다."
+        )
+
+    return True, None
+
+
 def active_user_rows_for_matching():
     conn = db()
     cur = conn.cursor()
     cur.execute("""
-    SELECT u.user_id, u.user_name, u.updated_at, COALESCE(u.is_active, 1) AS is_active
+    SELECT
+        u.user_id,
+        u.user_name,
+        u.gender,
+        u.is_nomicl,
+        u.updated_at,
+        COALESCE(u.is_active, 1) AS is_active
     FROM users u
     LEFT JOIN deleted_users d
       ON d.original_user_id = u.user_id
@@ -1939,7 +2094,12 @@ def get_user_by_id(user_id):
     conn = db()
     cur = conn.cursor()
     cur.execute("""
-    SELECT user_id, user_name, COALESCE(is_active, 1) AS is_active
+    SELECT
+        user_id,
+        user_name,
+        gender,
+        is_nomicl,
+        COALESCE(is_active, 1) AS is_active
     FROM users
     WHERE user_id = ?
     """, (user_id,))
@@ -5215,6 +5375,10 @@ def heart_pick(sender_user_id, sender_user_name, target_keyword, announce_public
         if target["user_id"] == sender_user_id:
             return "💘 설렘픽 실패\n\n자기 자신에게는 투표할 수 없습니다."
 
+        ok_gender, gender_err = opposite_gender_check(sender_user_id, sender_user_name, target)
+        if not ok_gender:
+            return "💘 설렘픽 실패\n\n" + gender_err
+
         date_str = today()
         week_start, _ = event_week_key()
         conn = db()
@@ -5491,6 +5655,10 @@ def chemistry_signal(sender_user_id, sender_user_name, target_keyword, announce_
             return "💞 케미 실패\n\n" + err
         if target["user_id"] == sender_user_id:
             return "💞 케미 실패\n\n자기 자신에게는 케미를 보낼 수 없습니다."
+
+        ok_gender, gender_err = opposite_gender_check(sender_user_id, sender_user_name, target)
+        if not ok_gender:
+            return "💞 케미 실패\n\n" + gender_err
 
         date_str = today()
         week_start, _ = event_week_key()
