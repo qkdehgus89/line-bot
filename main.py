@@ -374,6 +374,21 @@ def init_db():
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS chemistry_rewards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        matched_user_id TEXT NOT NULL,
+        matched_user_name TEXT NOT NULL,
+        reward INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(date, user_id)
+    )
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS public_announcements (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         source_id TEXT NOT NULL,
@@ -1398,6 +1413,7 @@ def beginner_guide_text():
 - 하루 1회 이성에게 케미를 보낼 수 있습니다.
 - 서로 케미를 보낸 경우에만 공창에 익명 알림이 표시됩니다.
 - 매칭에 성공하면 본인 1:1창에만 성공 안내가 표시됩니다.
+- 최초 케미 성공 보상은 1코인, 이후 성공 보상은 0.2코인입니다.
 
 /케미확인
 - 오늘 내가 보낸 케미의 매칭 성공 여부와 나에게 온 요청 수를 확인할 수 있습니다.
@@ -5646,6 +5662,88 @@ def chemistry_pair_key(user_a, user_b):
     return f"{a}:{b}"
 
 
+CHEMISTRY_FIRST_MATCH_REWARD = 10   # 1코인
+CHEMISTRY_REPEAT_MATCH_REWARD = 2   # 0.2코인
+
+
+def chemistry_reward_amount_for_user(cur, user_id):
+    cur.execute("""
+    SELECT COUNT(*) AS cnt
+    FROM chemistry_rewards
+    WHERE user_id = ?
+    """, (user_id,))
+    row = cur.fetchone()
+    return CHEMISTRY_FIRST_MATCH_REWARD if int(row["cnt"] or 0) == 0 else CHEMISTRY_REPEAT_MATCH_REWARD
+
+
+def grant_chemistry_match_rewards(date_str, week_start, sender, target):
+    """
+    케미 매칭 성사 시 양쪽 모두에게 보상 지급.
+    각 유저 기준 최초 매칭은 1코인, 이후 매칭은 0.2코인입니다.
+    """
+    paid = []
+    conn = None
+    try:
+        conn = db()
+        cur = conn.cursor()
+        pairs = [
+            (sender["user_id"], sender["user_name"], target["user_id"], target["user_name"]),
+            (target["user_id"], target["user_name"], sender["user_id"], sender["user_name"]),
+        ]
+
+        for user_id, user_name, matched_user_id, matched_user_name in pairs:
+            reward = chemistry_reward_amount_for_user(cur, user_id)
+            cur.execute("""
+            INSERT OR IGNORE INTO chemistry_rewards (
+                date, week_start,
+                user_id, user_name,
+                matched_user_id, matched_user_name,
+                reward, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                date_str, week_start,
+                user_id, user_name,
+                matched_user_id, matched_user_name,
+                reward, now_str()
+            ))
+            if cur.rowcount > 0:
+                paid.append({
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "reward": reward,
+                })
+
+        conn.commit()
+    except Exception as e:
+        print("CHEMISTRY_REWARD_RECORD_ERROR:", repr(e))
+        paid = []
+    finally:
+        if conn:
+            conn.close()
+
+    for item in paid:
+        try:
+            change_money(
+                item["user_id"],
+                item["user_name"],
+                item["reward"],
+                f"케미 매칭 보상 {date_str}",
+                None,
+                "케미"
+            )
+        except Exception as e:
+            print("CHEMISTRY_REWARD_PAY_ERROR:", item.get("user_id"), repr(e))
+
+    return paid
+
+
+def chemistry_reward_line_for_user(paid, user_id):
+    for item in paid:
+        if item["user_id"] == user_id:
+            return f"\n보상: +{coin_text(item['reward'])}"
+    return "\n보상: 이미 지급 완료"
+
+
 def chemistry_signal(sender_user_id, sender_user_name, target_keyword, announce_public=False):
     try:
         if not sender_user_id:
@@ -5713,12 +5811,17 @@ def chemistry_signal(sender_user_id, sender_user_name, target_keyword, announce_
                 "상대도 오늘 케미를 보낸 경우에만 매칭 알림이 표시됩니다."
             )
 
+        sender_info = {"user_id": sender_user_id, "user_name": sender_user_name}
+        reward_paid = grant_chemistry_match_rewards(date_str, week_start, sender_info, target)
+        reward_line = chemistry_reward_line_for_user(reward_paid, sender_user_id)
+
         flag_key = f"chemistry_mutual_announced:{date_str}:{chemistry_pair_key(sender_user_id, target['user_id'])}"
         if get_system_flag(flag_key):
             return (
                 "💞 케미 매칭 성공\n\n"
                 "당신이 원하는 케미가 이루어졌습니다.\n"
                 "오늘 이미 공개 알림이 올라간 조합입니다."
+                f"{reward_line}"
             )
 
         public_message = "💞 케미 매칭 성사!\n\n누군가의 케미 매칭이 성사되었습니다."
@@ -5728,12 +5831,14 @@ def chemistry_signal(sender_user_id, sender_user_name, target_keyword, announce_
                 "💞 케미 매칭 성공\n\n"
                 "당신이 원하는 케미가 이루어졌습니다.\n"
                 "공개창에는 익명 매칭 알림만 표시됩니다."
+                f"{reward_line}"
             )
 
         return (
             "💞 케미 매칭 성공\n\n"
             "당신이 원하는 케미가 이루어졌습니다.\n"
             "공개창 알림 예약 실패"
+            f"{reward_line}"
         )
     except Exception as e:
         print("CHEMISTRY_SIGNAL_ERROR:", repr(e))
@@ -5822,6 +5927,17 @@ def personal_chemistry_check_text(user_id):
         received = cur.fetchone()
         received_count = int(received["cnt"] or 0) if received else 0
 
+        cur.execute("""
+        SELECT reward
+        FROM chemistry_rewards
+        WHERE date = ?
+          AND user_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """, (date_str, user_id))
+        reward_row = cur.fetchone()
+        reward_line = f"오늘 케미 보상: {coin_text(reward_row['reward'])}\n" if reward_row else ""
+
         if not sent:
             conn.close()
             return (
@@ -5829,6 +5945,7 @@ def personal_chemistry_check_text(user_id):
                 f"기준일: {date_str}\n"
                 "내가 보낸 케미: 아직 참여하지 않음\n"
                 f"나에게 온 케미 요청: {received_count}명\n\n"
+                f"{reward_line}"
                 "꽃봇 1:1에서 /케미 닉네임 을 입력해 참여할 수 있습니다."
             )
 
@@ -5849,6 +5966,7 @@ def personal_chemistry_check_text(user_id):
                 f"기준일: {date_str}\n"
                 "내가 보낸 케미: 매칭 성공\n"
                 f"나에게 온 케미 요청: {received_count}명\n\n"
+                f"{reward_line}"
                 "당신이 원하는 케미가 이루어졌습니다."
             )
 
@@ -5857,6 +5975,7 @@ def personal_chemistry_check_text(user_id):
             f"기준일: {date_str}\n"
             "내가 보낸 케미: 아직 미성공\n"
             f"나에게 온 케미 요청: {received_count}명\n\n"
+            f"{reward_line}"
             "상대도 오늘 같은 케미를 보내면 매칭됩니다."
         )
     except Exception as e:
@@ -6242,6 +6361,8 @@ def find_delete_candidates(keyword, limit=20):
         ("heart_pick_rewards", "user_id", "user_name"),
         ("chemistry_signals", "sender_user_id", "sender_user_name"),
         ("chemistry_signals", "target_user_id", "target_user_name"),
+        ("chemistry_rewards", "user_id", "user_name"),
+        ("chemistry_rewards", "matched_user_id", "matched_user_name"),
         ("affinity_scores", "user_a", "user_a_name"),
         ("affinity_scores", "user_b", "user_b_name"),
         ("manitto_assignments", "hunter_user_id", "hunter_user_name"),
@@ -6334,6 +6455,8 @@ def delete_users_by_ids(targets):
             ("heart_pick_rewards", "user_id"),
             ("chemistry_signals", "sender_user_id"),
             ("chemistry_signals", "target_user_id"),
+            ("chemistry_rewards", "user_id"),
+            ("chemistry_rewards", "matched_user_id"),
             ("truth_game_sessions", "requester_user_id"),
             ("affinity_scores", "user_a"),
             ("affinity_scores", "user_b"),
@@ -7969,7 +8092,7 @@ def snapshot_user_data(user_id):
         "users", "currency", "currency_logs", "purchases", "attendance", "attendance_streak_rewards", "danbung_attendance", "mission_claims",
         "hidden_rewards", "gacha_settings", "gacha_pity", "gacha_pieces", "gacha_weekly_counts",
         "weekly_rewards", "sns_lucky_draw_entries", "achievements", "chat_logs", "counts",
-        "heart_pick_rewards", "truth_game_sessions",
+        "heart_pick_rewards", "chemistry_rewards", "truth_game_sessions",
     ]
     snap = {}
     for table in tables:
@@ -7987,6 +8110,7 @@ def snapshot_user_data(user_id):
         ("heart_picks", "target_user_id"),
         ("chemistry_signals", "sender_user_id"),
         ("chemistry_signals", "target_user_id"),
+        ("chemistry_rewards", "matched_user_id"),
         ("truth_game_sessions", "requester_user_id"),
         ("affinity_scores", "user_a"),
         ("affinity_scores", "user_b"),
@@ -8284,7 +8408,7 @@ def handle(event):
         conn = db()
         cur = conn.cursor()
         counts = []
-        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "chemistry_signals", "public_announcements", "truth_game_sessions"]:
+        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "chemistry_signals", "chemistry_rewards", "public_announcements", "truth_game_sessions"]:
             try:
                 cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                 counts.append(f"{table}: {cur.fetchone()['cnt']}")
