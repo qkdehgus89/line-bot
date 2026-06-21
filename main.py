@@ -6083,16 +6083,23 @@ def grant_truth_answer_achievement_if_ready(user_id, user_name):
 
 def truth_game_setup_text():
     return (
-        "🎭 진실게임 설정\n\n"
-        "난이도와 상대를 선택해주세요.\n\n"
+        "🎭 진실게임 가이드\n\n"
+        "난이도와 상대를 지목하면 질문이 하나 뽑혀요.\n\n"
         "사용법\n"
-        "/진실게임 난이도 닉네임\n\n"
-        "예시\n"
-        "/진실게임 순한맛 미트\n"
-        "/진실게임 썸맛 꼬북\n"
-        "/진실게임 매운맛 밍구\n"
-        "/진실게임 위험맛 무화\n\n"
-        "질문 취소: /진실취소\n\n"
+        "/진실게임 난이도 닉네임\n"
+        "예: /진실게임 썸맛 미트\n\n"
+        "진행\n"
+        f"- 질문 비용: {coin_text(TRUTH_GAME_COST)}\n"
+        f"- 답변 완료: 답변자에게 {coin_text(TRUTH_GAME_COST)} 지급\n"
+        f"- 패스: 질문자 {coin_text(TRUTH_GAME_COST)} 환급 / 패스한 사람 {coin_text(TRUTH_GAME_COST)} 차감\n"
+        "- 취소: 질문자는 /진실취소 로 취소 가능\n\n"
+        "참고\n"
+        "- 자기 자신은 지목할 수 없어요.\n"
+        "- 이미 받았던 질문은 같은 난이도에서 다시 나오지 않아요.\n"
+        "- 다시 처음부터 받고 싶으면 /진실게임초기화\n\n"
+        "답변 명령어\n"
+        "/진실답변 내용\n"
+        "/진실패스\n\n"
         f"난이도: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
     )
 
