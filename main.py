@@ -6449,6 +6449,8 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
             f"지목: {target_name}님\n"
             f"난이도: {category}\n"
             f"질문: {question}\n"
+            f"질문 비용: -{coin_text(TRUTH_GAME_COST)}\n"
+            f"현재 보유: {coin_text(get_balance(user_id))}\n\n"
             f"{target_name}님은 /진실답변 내용 으로 답변하거나 /진실패스 로 넘길 수 있습니다.\n"
             "질문자는 /진실취소 로 취소할 수 있습니다."
         )
