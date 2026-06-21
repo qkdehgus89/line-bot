@@ -383,6 +383,16 @@ def init_db():
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS truth_game_resets (
+        user_id TEXT PRIMARY KEY,
+        user_name TEXT NOT NULL,
+        reset_at TEXT NOT NULL,
+        reset_count INTEGER NOT NULL DEFAULT 0,
+        reset_after_session_id INTEGER NOT NULL DEFAULT 0
+    )
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS currency (
         user_id TEXT PRIMARY KEY,
         balance INTEGER NOT NULL DEFAULT 0,
@@ -753,6 +763,11 @@ def init_db():
     ]:
         if col not in truth_game_cols:
             cur.execute(f"ALTER TABLE truth_game_sessions ADD COLUMN {col} {col_type}")
+
+    cur.execute("PRAGMA table_info(truth_game_resets)")
+    truth_game_reset_cols = {row["name"] for row in cur.fetchall()}
+    if "reset_after_session_id" not in truth_game_reset_cols:
+        cur.execute("ALTER TABLE truth_game_resets ADD COLUMN reset_after_session_id INTEGER NOT NULL DEFAULT 0")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS deleted_users (
@@ -1276,6 +1291,7 @@ def user_commands_text():
 /진실답변 내용
 /진실패스
 /진실취소
+/진실게임초기화
 
 ━━━━━━━━━━
 🏆 업적
@@ -6114,7 +6130,49 @@ def parse_truth_game_args(raw_args):
     return target_keyword, difficulty, None
 
 
-def truth_game_question_pool(difficulty=None):
+def truth_game_seen_question_keys(user_id, difficulty=None):
+    try:
+        if not user_id:
+            return set()
+
+        difficulty = str(difficulty or "").strip()
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT reset_at, reset_after_session_id
+        FROM truth_game_resets
+        WHERE user_id = ?
+        """, (user_id,))
+        reset_row = cur.fetchone()
+        reset_at = reset_row["reset_at"] if reset_row else None
+        reset_after_session_id = int(reset_row["reset_after_session_id"] or 0) if reset_row else 0
+
+        where_parts = ["requester_user_id = ?"]
+        params = [user_id]
+        if reset_after_session_id > 0:
+            where_parts.append("id > ?")
+            params.append(reset_after_session_id)
+        elif reset_at:
+            where_parts.append("created_at > ?")
+            params.append(reset_at)
+        if difficulty:
+            where_parts.append("category = ?")
+            params.append(difficulty)
+
+        cur.execute(f"""
+        SELECT category, question
+        FROM truth_game_sessions
+        WHERE {' AND '.join(where_parts)}
+        """, params)
+        rows = cur.fetchall()
+        conn.close()
+        return {(row["category"], row["question"]) for row in rows}
+    except Exception as e:
+        print("TRUTH_GAME_SEEN_QUESTION_ERROR:", repr(e))
+        return set()
+
+
+def truth_game_question_pool(difficulty=None, exclude_seen_for_user=None):
     difficulty = str(difficulty or "").strip()
     pool = [
         item for item in TRUTH_GAME_QUESTIONS
@@ -6150,7 +6208,92 @@ def truth_game_question_pool(difficulty=None):
     except Exception as e:
         print("TRUTH_GAME_QUESTION_POOL_ERROR:", repr(e))
 
+    if exclude_seen_for_user:
+        seen = truth_game_seen_question_keys(exclude_seen_for_user, difficulty)
+        if seen:
+            pool = [item for item in pool if item not in seen]
+
     return pool
+
+
+def truth_game_refund_exhausted_question(user_id, user_name, difficulty):
+    try:
+        conn = db()
+        cur = conn.cursor()
+        try:
+            apply_money_change(
+                cur,
+                user_id,
+                user_name,
+                -TRUTH_GAME_COST,
+                f"진실게임 질문 소진 확인: {difficulty}",
+                None,
+                "진실게임"
+            )
+            apply_money_change(
+                cur,
+                user_id,
+                user_name,
+                TRUTH_GAME_COST,
+                f"진실게임 질문 소진 즉시 환급: {difficulty}",
+                None,
+                "진실게임"
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    except Exception as e:
+        print("TRUTH_GAME_EXHAUSTED_REFUND_ERROR:", repr(e))
+
+
+def truth_game_reset_user_questions(user_id, user_name):
+    try:
+        if not user_id:
+            return "🎭 진실게임 초기화 안내\n\n사용자 정보를 확인하지 못했어요. 잠시 후 다시 시도해 주세요."
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT COALESCE(MAX(id), 0) AS max_id
+        FROM truth_game_sessions
+        WHERE requester_user_id = ?
+        """, (user_id,))
+        reset_after_session_id = int(cur.fetchone()["max_id"] or 0)
+        cur.execute("SELECT reset_count FROM truth_game_resets WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        reset_at = now_str()
+        if row:
+            cur.execute("""
+            UPDATE truth_game_resets
+            SET user_name = ?,
+                reset_at = ?,
+                reset_count = reset_count + 1,
+                reset_after_session_id = ?
+            WHERE user_id = ?
+            """, (user_name, reset_at, reset_after_session_id, user_id))
+            reset_count = int(row["reset_count"] or 0) + 1
+        else:
+            cur.execute("""
+            INSERT INTO truth_game_resets (
+                user_id, user_name, reset_at, reset_count, reset_after_session_id
+            ) VALUES (?, ?, ?, 1, ?)
+            """, (user_id, user_name, reset_at, reset_after_session_id))
+            reset_count = 1
+        conn.commit()
+        conn.close()
+
+        return (
+            "🎭 진실게임 초기화 완료\n\n"
+            "이제 이전에 받았던 질문도 다시 나올 수 있어요.\n"
+            "기존 진실게임 기록은 삭제하지 않고 그대로 남겨뒀습니다.\n"
+            f"초기화 횟수: {reset_count}회"
+        )
+    except Exception as e:
+        print("TRUTH_GAME_RESET_ERROR:", repr(e))
+        return "🎭 진실게임 초기화 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요."
 
 
 def add_truth_game_question(raw_args, staff_user_id, staff_user_name):
@@ -6255,9 +6398,20 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
                 f"현재 보유: {coin_text(get_balance(user_id))}"
             )
 
-        question_pool = truth_game_question_pool(difficulty)
-        if not question_pool:
+        all_question_pool = truth_game_question_pool(difficulty)
+        if not all_question_pool:
             return "🎭 진실게임 안내\n\n지금 사용할 수 있는 질문이 없어요."
+
+        question_pool = truth_game_question_pool(difficulty, exclude_seen_for_user=user_id)
+        if not question_pool:
+            truth_game_refund_exhausted_question(user_id, user_name, difficulty)
+            return (
+                "🎭 진실게임 안내\n\n"
+                f"{difficulty} 질문은 전부 받아봤어요.\n"
+                "새 질문은 향후 추가될 예정입니다.\n"
+                f"코인은 바로 환급 처리했어요. 현재 보유: {coin_text(get_balance(user_id))}\n\n"
+                "다시 처음부터 받고 싶다면 /진실게임초기화 를 입력해 주세요."
+            )
         category, question = random.choice(question_pool)
 
         conn = db()
@@ -6673,6 +6827,7 @@ def find_delete_candidates(keyword, limit=20):
         ("achievements", "user_id", "user_name"),
         ("truth_game_sessions", "user_id", "user_name"),
         ("truth_game_sessions", "requester_user_id", "requester_user_name"),
+        ("truth_game_resets", "user_id", "user_name"),
         ("chat_last_speakers", "user_id", "user_name"),
         ("mention_logs", "sender_user_id", "sender_user_name"),
         ("mention_logs", "target_user_id", "target_user_name"),
@@ -6755,6 +6910,7 @@ def delete_users_by_ids(targets):
         "sns_lucky_draw_entries",
         "achievements",
         "truth_game_sessions",
+        "truth_game_resets",
         "chat_last_speakers",
     ]
 
@@ -8333,7 +8489,7 @@ def snapshot_user_data(user_id):
         "users", "currency", "currency_logs", "purchases", "attendance", "attendance_streak_rewards", "danbung_attendance", "mission_claims",
         "hidden_rewards", "gacha_settings", "gacha_pity", "gacha_pieces", "gacha_weekly_counts",
         "weekly_rewards", "sns_lucky_draw_entries", "achievements", "chat_logs", "counts",
-        "heart_pick_rewards", "chemistry_rewards", "truth_game_sessions",
+        "heart_pick_rewards", "chemistry_rewards", "truth_game_sessions", "truth_game_resets",
     ]
     snap = {}
     for table in tables:
@@ -8649,7 +8805,7 @@ def handle(event):
         conn = db()
         cur = conn.cursor()
         counts = []
-        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "chemistry_signals", "chemistry_rewards", "public_announcements", "truth_game_sessions", "truth_game_questions"]:
+        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "chemistry_signals", "chemistry_rewards", "public_announcements", "truth_game_sessions", "truth_game_questions", "truth_game_resets"]:
             try:
                 cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                 counts.append(f"{table}: {cur.fetchone()['cnt']}")
@@ -9405,6 +9561,10 @@ def handle(event):
             reply(event.reply_token, "이 명령어는 지금 사용할 수 없어요.")
             return
         reply_many(event.reply_token, split_text_messages(mutual_chemistry_report_text()))
+        return
+
+    if text == "/진실게임초기화":
+        reply_many(event.reply_token, split_text_messages(truth_game_reset_user_questions(user_id, user_name)))
         return
 
     if text == "/진실게임" or text.startswith("/진실게임 ") or text == "/진실질문" or text.startswith("/진실질문 "):
