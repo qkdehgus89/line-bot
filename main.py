@@ -135,7 +135,8 @@ def is_operator_command(text):
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
         "/설렘픽초기화", "/설렘픽정산", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
-        "/유저아이템보유", "/유저아이템삭제", "/운영진친밀도", "/운영진친밀도확인", "/버전",
+        "/유저아이템보유", "/유저아이템삭제", "/운영진친밀도", "/운영진친밀도확인",
+        "/진실질문", "/진실목록", "/진실기록", "/진실질문추가", "/버전",
     }
 
     prefix_commands = [
@@ -146,6 +147,7 @@ def is_operator_command(text):
         "/유저아이템삭제 ",
         "/마디수 ", "/경고누적일 ", "/단벙참여확인 ", "/단벙참석확인 ",
         "/운영진친밀도 ", "/운영진친밀도확인 ",
+        "/진실질문 ", "/진실기록 ", "/진실질문추가 ",
     ]
 
     return text in exact_commands or any(text.startswith(prefix) for prefix in prefix_commands)
@@ -414,6 +416,19 @@ def init_db():
         created_at TEXT NOT NULL,
         answered_at TEXT,
         answer_text TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS truth_game_questions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL,
+        question TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT,
+        created_by_name TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(category, question)
     )
     """)
 
@@ -1312,10 +1327,8 @@ def user_commands_text():
 ━━━━━━━━━━
 /진실게임
 /진실게임 순한맛 닉네임
-/진실질문 썸맛 닉네임
 /진실답변 내용
 /진실패스
-/진실목록
 
 ━━━━━━━━━━
 🏆 업적
@@ -1481,6 +1494,14 @@ def operator_commands_text():
 /운영진친밀도 닉네임
 /운영진친밀도확인
 /운영진친밀도확인 닉네임
+
+━━━━━━━━━━
+🎭 진실게임 관리
+━━━━━━━━━━
+/진실질문 난이도 닉네임
+/진실질문추가 난이도 질문내용
+/진실목록
+/진실기록 닉네임
 
 ━━━━━━━━━━
 ⚙️ 시스템
@@ -4951,6 +4972,8 @@ ACHIEVEMENT_CATALOG = [
     ("first_gacha", "🎰 첫 가챠", "가챠를 처음 이용", 2),
     ("first_lucky", "🎟️ 첫 럭키드로우", "S.N.S 럭키드로우 첫 참여", 2),
     ("first_manitto", "🎭 첫 마니또", "마니또를 처음 성공", 5),
+    ("truth_question_10", "난 니가 궁금해!", "진실게임 질문 10회 지목", 20),
+    ("truth_answer_10", "척척박사", "진실게임 답변 10회 완료", 10),
     ("affinity_50", "💞 친밀한 시작", "한 상대와 누적 친밀도 50 달성", 2),
     ("affinity_100", "💗 가까운 사이", "한 상대와 누적 친밀도 100 달성", 5),
     ("affinity_300", "💖 단짝", "한 상대와 누적 친밀도 300 달성", 10),
@@ -5121,7 +5144,10 @@ MENTION_SUFFIXES = (
 )
 
 TRUTH_GAME_COST = 2       # 0.2코인
-TRUTH_GAME_PASS_COST = 1  # 0.1코인
+TRUTH_QUESTION_ACHIEVEMENT_REQUIRED = 10
+TRUTH_QUESTION_ACHIEVEMENT_REWARD = 20  # 2코인
+TRUTH_ANSWER_ACHIEVEMENT_REQUIRED = 10
+TRUTH_ANSWER_ACHIEVEMENT_REWARD = 10    # 1코인
 TRUTH_GAME_DIFFICULTIES = ("순한맛", "썸맛", "매운맛", "위험맛")
 TRUTH_GAME_QUESTIONS = [
     ("순한맛", "요즘 공창에서 제일 반가운 사람은?"),
@@ -5998,6 +6024,83 @@ def get_pending_truth_game(user_id):
     return row
 
 
+def truth_game_question_count(user_id):
+    try:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT COUNT(*) AS cnt
+        FROM truth_game_sessions
+        WHERE requester_user_id = ?
+        """, (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        return int(row["cnt"] or 0) if row else 0
+    except Exception as e:
+        print("TRUTH_GAME_QUESTION_COUNT_ERROR:", repr(e))
+        return 0
+
+
+def truth_game_answer_count(user_id):
+    try:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT COUNT(*) AS cnt
+        FROM truth_game_sessions
+        WHERE user_id = ?
+          AND status = 'answered'
+        """, (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        return int(row["cnt"] or 0) if row else 0
+    except Exception as e:
+        print("TRUTH_GAME_ANSWER_COUNT_ERROR:", repr(e))
+        return 0
+
+
+def grant_truth_question_achievement_if_ready(user_id, user_name):
+    try:
+        count = truth_game_question_count(user_id)
+        if count < TRUTH_QUESTION_ACHIEVEMENT_REQUIRED:
+            return ""
+        achievement_name = "난 니가 궁금해!"
+        if grant_achievement_once(
+            user_id,
+            user_name,
+            "truth_question_10",
+            achievement_name,
+            TRUTH_QUESTION_ACHIEVEMENT_REWARD,
+            f"truth_questions={count}",
+        ):
+            return achievement_message(achievement_name, user_name, TRUTH_QUESTION_ACHIEVEMENT_REWARD)
+        return ""
+    except Exception as e:
+        print("TRUTH_GAME_QUESTION_ACHIEVEMENT_ERROR:", repr(e))
+        return ""
+
+
+def grant_truth_answer_achievement_if_ready(user_id, user_name):
+    try:
+        count = truth_game_answer_count(user_id)
+        if count < TRUTH_ANSWER_ACHIEVEMENT_REQUIRED:
+            return ""
+        achievement_name = "척척박사"
+        if grant_achievement_once(
+            user_id,
+            user_name,
+            "truth_answer_10",
+            achievement_name,
+            TRUTH_ANSWER_ACHIEVEMENT_REWARD,
+            f"truth_answers={count}",
+        ):
+            return achievement_message(achievement_name, user_name, TRUTH_ANSWER_ACHIEVEMENT_REWARD)
+        return ""
+    except Exception as e:
+        print("TRUTH_GAME_ANSWER_ACHIEVEMENT_ERROR:", repr(e))
+        return ""
+
+
 def truth_game_setup_text():
     return (
         "🎭 진실게임 설정\n\n"
@@ -6046,6 +6149,102 @@ def parse_truth_game_args(raw_args):
     return target_keyword, difficulty, None
 
 
+def truth_game_question_pool(difficulty=None):
+    difficulty = str(difficulty or "").strip()
+    pool = [
+        item for item in TRUTH_GAME_QUESTIONS
+        if not difficulty or item[0] == difficulty
+    ]
+
+    try:
+        conn = db()
+        cur = conn.cursor()
+        if difficulty:
+            cur.execute("""
+            SELECT category, question
+            FROM truth_game_questions
+            WHERE is_active = 1
+              AND category = ?
+            ORDER BY id ASC
+            """, (difficulty,))
+        else:
+            cur.execute("""
+            SELECT category, question
+            FROM truth_game_questions
+            WHERE is_active = 1
+            ORDER BY id ASC
+            """)
+        rows = cur.fetchall()
+        conn.close()
+        existing = {(category, question) for category, question in pool}
+        for row in rows:
+            item = (row["category"], row["question"])
+            if item not in existing:
+                pool.append(item)
+                existing.add(item)
+    except Exception as e:
+        print("TRUTH_GAME_QUESTION_POOL_ERROR:", repr(e))
+
+    return pool
+
+
+def add_truth_game_question(raw_args, staff_user_id, staff_user_name):
+    try:
+        raw_args = str(raw_args or "").strip()
+        if not raw_args:
+            return (
+                "🎭 진실질문 추가 실패\n\n"
+                "사용법: /진실질문추가 난이도 질문내용\n"
+                f"난이도: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
+            )
+
+        parts = raw_args.split(maxsplit=1)
+        if len(parts) < 2:
+            return (
+                "🎭 진실질문 추가 실패\n\n"
+                "난이도와 질문내용을 함께 입력해주세요.\n"
+                "예: /진실질문추가 썸맛 요즘 가장 눈이 가는 사람은?"
+            )
+
+        category, question = parts[0].strip(), parts[1].strip()
+        if category not in TRUTH_GAME_DIFFICULTIES:
+            return (
+                "🎭 진실질문 추가 실패\n\n"
+                "난이도를 확인해주세요.\n"
+                f"사용 가능: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
+            )
+        if len(question) < 5:
+            return "🎭 진실질문 추가 실패\n\n질문은 5글자 이상으로 입력해주세요."
+        if len(question) > 120:
+            return "🎭 진실질문 추가 실패\n\n질문은 120글자 이하로 입력해주세요."
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        INSERT OR IGNORE INTO truth_game_questions (
+            category, question, is_active, created_by, created_by_name, created_at
+        ) VALUES (?, ?, 1, ?, ?, ?)
+        """, (category, question, staff_user_id, staff_user_name, now_str()))
+        inserted = cur.rowcount
+        conn.commit()
+        conn.close()
+
+        if not inserted:
+            return (
+                "🎭 진실질문 추가 실패\n\n"
+                "이미 등록된 질문입니다."
+            )
+
+        return (
+            "🎭 진실질문 추가 완료\n\n"
+            f"난이도: {category}\n"
+            f"질문: {question}"
+        )
+    except Exception as e:
+        print("TRUTH_GAME_QUESTION_ADD_ERROR:", repr(e))
+        return "🎭 진실질문 추가 중 오류가 발생했습니다."
+
+
 def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
     try:
         if not user_id:
@@ -6086,10 +6285,9 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
                 f"현재 보유: {coin_text(get_balance(user_id))}"
             )
 
-        question_pool = [
-            item for item in TRUTH_GAME_QUESTIONS
-            if not difficulty or item[0] == difficulty
-        ]
+        question_pool = truth_game_question_pool(difficulty)
+        if not question_pool:
+            return "🎭 진실게임 실패\n\n사용 가능한 질문이 없습니다."
         category, question = random.choice(question_pool)
         change_money(user_id, user_name, -TRUTH_GAME_COST, "진실게임 질문 뽑기", None, "진실게임")
 
@@ -6109,13 +6307,17 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
         conn.close()
 
         target_name = display_nickname(target["user_name"])
-        return (
+        achievement_notice = grant_truth_question_achievement_if_ready(user_id, user_name)
+        result_text = (
             "🎭 진실게임 시작\n\n"
             f"지목: {target_name}님\n"
             f"난이도: {category}\n"
             f"질문: {question}\n"
             f"{target_name}님은 /진실답변 내용 으로 답변하거나 /진실패스 로 넘길 수 있습니다."
         )
+        if achievement_notice:
+            result_text += "\n\n" + achievement_notice
+        return result_text
     except Exception as e:
         print("TRUTH_GAME_START_ERROR:", repr(e))
         return "🎭 진실게임 시작 중 오류가 발생했습니다."
@@ -6151,9 +6353,10 @@ def truth_game_answer(user_id, user_name, answer_text):
             return "🎭 진실게임 답변 실패\n\n진행 중인 질문이 없습니다."
 
         change_money(user_id, user_name, TRUTH_GAME_COST, "진실게임 답변 보상", None, "진실게임")
+        achievement_notice = grant_truth_answer_achievement_if_ready(user_id, user_name)
         requester = pending["requester_user_name"] if "requester_user_name" in pending.keys() else None
         request_line = f"지목자: {requester}\n" if requester else ""
-        return (
+        result_text = (
             "🎭 진실게임 답변\n\n"
             f"{request_line}"
             f"질문: {pending['question']}\n\n"
@@ -6161,6 +6364,9 @@ def truth_game_answer(user_id, user_name, answer_text):
             f"{answer_text}\n\n"
             f"답변 보상: {coin_text(TRUTH_GAME_COST)}"
         )
+        if achievement_notice:
+            result_text += "\n\n" + achievement_notice
+        return result_text
     except Exception as e:
         print("TRUTH_GAME_ANSWER_ERROR:", repr(e))
         return "🎭 진실게임 답변 처리 중 오류가 발생했습니다."
@@ -6258,6 +6464,87 @@ def truth_game_list_text(limit=10):
     except Exception as e:
         print("TRUTH_GAME_LIST_ERROR:", repr(e))
         return "🎭 진실게임 목록 조회 중 오류가 발생했습니다."
+
+
+def truth_game_user_history_text(keyword, limit=20):
+    try:
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return "사용법: /진실기록 닉네임"
+
+        target, err = resolve_active_user_by_nickname(keyword, purpose="대상")
+        if err:
+            return "🎭 진실기록 조회 실패\n\n" + err
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT
+            id,
+            user_id,
+            user_name,
+            requester_user_id,
+            requester_user_name,
+            question,
+            category,
+            status,
+            created_at,
+            answered_at,
+            answer_text
+        FROM truth_game_sessions
+        WHERE user_id = ?
+           OR requester_user_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """, (target["user_id"], target["user_id"], limit))
+        rows = cur.fetchall()
+        conn.close()
+
+        target_name = target["user_name"]
+        lines = [
+            "🎭 진실기록",
+            f"대상: {target_name}",
+            "",
+        ]
+
+        if not rows:
+            lines.append("진실게임 기록이 없습니다.")
+            return "\n".join(lines)
+
+        status_labels = {
+            "pending": "진행중",
+            "answered": "답변완료",
+            "passed": "패스",
+        }
+
+        for i, row in enumerate(rows, 1):
+            if row["user_id"] == target["user_id"]:
+                role = "답변 대상"
+                other_line = f"지목자: {row['requester_user_name'] or '-'}"
+            else:
+                role = "질문자"
+                other_line = f"지목 대상: {row['user_name'] or '-'}"
+
+            status = status_labels.get(row["status"], row["status"])
+            lines.append(f"{i}. #{row['id']} {role} / {status}")
+            lines.append(f"   {other_line}")
+            lines.append(f"   난이도: {row['category']}")
+            lines.append(f"   질문: {row['question']}")
+            if row["status"] == "answered":
+                lines.append(f"   답변: {row['answer_text'] or '-'}")
+            elif row["status"] == "passed":
+                lines.append("   답변: 패스")
+            else:
+                lines.append("   답변: 아직 없음")
+            lines.append(f"   생성: {row['created_at']}")
+            if row["answered_at"]:
+                lines.append(f"   처리: {row['answered_at']}")
+            lines.append("")
+
+        return "\n".join(lines).strip()
+    except Exception as e:
+        print("TRUTH_GAME_USER_HISTORY_ERROR:", repr(e))
+        return "🎭 진실기록 조회 중 오류가 발생했습니다."
 
 
 def grant_blacksmith_if_first(user_id, user_name, piece_key):
@@ -8408,7 +8695,7 @@ def handle(event):
         conn = db()
         cur = conn.cursor()
         counts = []
-        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "chemistry_signals", "chemistry_rewards", "public_announcements", "truth_game_sessions"]:
+        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "chemistry_signals", "chemistry_rewards", "public_announcements", "truth_game_sessions", "truth_game_questions"]:
             try:
                 cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                 counts.append(f"{table}: {cur.fetchone()['cnt']}")
@@ -8903,6 +9190,29 @@ def handle(event):
         reply_many(event.reply_token, split_text_messages(lucky_draw_status_text()))
         return
 
+    if text == "/진실질문추가" or text.startswith("/진실질문추가 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        raw_args = text.replace("/진실질문추가", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(add_truth_game_question(raw_args, user_id, user_name)))
+        return
+
+    if text == "/진실기록" or text.startswith("/진실기록 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        keyword = text.replace("/진실기록", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(truth_game_user_history_text(keyword)))
+        return
+
+    if text == "/진실목록":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply_many(event.reply_token, split_text_messages(truth_game_list_text(limit=10)))
+        return
+
     # =========================
     # 유저 명령어
     # =========================
@@ -9162,10 +9472,6 @@ def handle(event):
 
     if text == "/진실패스":
         reply_many(event.reply_token, split_text_messages(truth_game_pass(user_id, user_name)))
-        return
-
-    if text == "/진실목록":
-        reply_many(event.reply_token, split_text_messages(truth_game_list_text(limit=10)))
         return
 
     if text == "/주간랭킹":
