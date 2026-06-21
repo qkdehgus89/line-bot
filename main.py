@@ -134,7 +134,7 @@ def is_operator_command(text):
         "/운영명령어", "/방정보", "/DB상태", "/수집상태", "/최근로그", "/수집누락", "/전체유저",
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
-        "/찔러보기초기화", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
+        "/설렘픽초기화", "/설렘픽정산", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
         "/유저아이템보유", "/유저아이템삭제", "/운영진친밀도", "/운영진친밀도확인", "/버전",
     }
 
@@ -321,6 +321,47 @@ def init_db():
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS anonymous_pokes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        sender_user_id TEXT NOT NULL,
+        sender_user_name TEXT NOT NULL,
+        target_user_id TEXT NOT NULL,
+        target_user_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS heart_picks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        sender_user_id TEXT NOT NULL,
+        sender_user_name TEXT NOT NULL,
+        target_user_id TEXT NOT NULL,
+        target_user_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS heart_pick_rewards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        week_start TEXT NOT NULL,
+        week_end TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        rank INTEGER NOT NULL,
+        pick_count INTEGER NOT NULL,
+        reward INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(week_start, rank)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS chemistry_signals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT NOT NULL,
         week_start TEXT NOT NULL,
@@ -964,18 +1005,38 @@ def weekly_settlement_text(source_id=None):
     source_id = source_id or COUNT_SOURCE_ID
     week_start, week_end = week_range_for_today()
     paid = settle_weekly_rewards(source_id, week_start, week_end)
+    heart_paid = []
+    heart_error = None
+    if "settle_heart_pick_rewards" in globals():
+        try:
+            heart_paid = settle_heart_pick_rewards(week_start, week_end)
+        except Exception as e:
+            heart_error = repr(e)
+            print("WEEKLY_HEART_PICK_SETTLEMENT_ERROR:", heart_error)
 
-    if not paid:
+    if not paid and not heart_paid and not heart_error:
         return (
             "🏆 주간정산\n\n"
             f"기간: {week_start} ~ {week_end}\n"
-            "새로 지급할 주간 보상이 없습니다.\n"
+            "새로 지급할 주간 보상이나 설렘픽 보상이 없습니다.\n"
             "이미 정산했거나 랭킹 데이터가 없습니다."
         )
 
     lines = ["🏆 주간정산 완료", f"기간: {week_start} ~ {week_end}", ""]
-    for item in paid:
-        lines.append(f"{item['rank']}위 {item['user_name']} - {item['count']}마디 / {coin_text(item['reward'])}")
+    if paid:
+        lines.append("마디수 랭킹")
+        for item in paid:
+            lines.append(f"{item['rank']}위 {item['user_name']} - {item['count']}마디 / {coin_text(item['reward'])}")
+    if heart_paid:
+        if paid:
+            lines.append("")
+        lines.append("설렘픽 랭킹")
+        for item in heart_paid:
+            lines.append(f"{item['rank']}위 {item['user_name']} - {item['pick_count']}표 / {coin_text(item['reward'])}")
+    if heart_error:
+        if paid or heart_paid:
+            lines.append("")
+        lines.append("설렘픽 정산 오류가 발생했습니다. 로그를 확인해주세요.")
     return "\n".join(lines)
 
 
@@ -1219,11 +1280,16 @@ def user_commands_text():
 /언급랭킹 닉네임
 
 ━━━━━━━━━━
-👀 찔러보기
+💘 설렘픽
 ━━━━━━━━━━
-/찔러보기 닉네임 (1:1)
-/찔러보기현황
-/찔러보기랭킹
+/설렘픽 닉네임 (1:1)
+/설렘픽현황
+/설렘픽랭킹
+
+━━━━━━━━━━
+💞 케미
+━━━━━━━━━━
+/케미 닉네임 (1:1)
 
 ━━━━━━━━━━
 🎭 진실게임
@@ -1373,7 +1439,8 @@ def operator_commands_text():
 ━━━━━━━━━━
 👀 이벤트 관리
 ━━━━━━━━━━
-/찔러보기초기화
+/설렘픽초기화
+/설렘픽정산
 /운영진친밀도
 /운영진친밀도 닉네임
 /운영진친밀도확인
@@ -4865,7 +4932,7 @@ def check_chatter_achievements(date_str, source_id, user_id, user_name):
 
 
 # =========================
-# 인기인 / 찔러보기 / 진실게임
+# 인기인 / 설렘픽 / 케미 / 진실게임
 # =========================
 MENTION_SUFFIXES = (
     "님", "아", "야", "이", "가", "은", "는", "을", "를",
@@ -5122,20 +5189,31 @@ def mention_ranking_text(keyword, date_str, source_id):
         return "👑 언급랭킹 조회 중 오류가 발생했습니다."
 
 
-def anonymous_poke(sender_user_id, sender_user_name, target_keyword, announce_public=False):
+HEART_PICK_REWARDS = {
+    1: 20,  # 2코인
+    2: 10,  # 1코인
+    3: 5,   # 0.5코인
+}
+
+
+def heart_pick_reward_amount(rank):
+    return HEART_PICK_REWARDS.get(int(rank), 0)
+
+
+def heart_pick(sender_user_id, sender_user_name, target_keyword, announce_public=False):
     try:
         if not sender_user_id:
-            return "👀 찔러보기 실패\n\n사용자 정보를 확인할 수 없습니다."
+            return "💘 설렘픽 실패\n\n사용자 정보를 확인할 수 없습니다."
 
         target_keyword = str(target_keyword or "").strip()
         if not target_keyword:
-            return "👀 찔러보기 실패\n\n사용법: /찔러보기 닉네임"
+            return "💘 설렘픽 실패\n\n사용법: /설렘픽 닉네임"
 
         target, err = resolve_active_user_by_nickname(target_keyword, purpose="대상")
         if err:
-            return "👀 찔러보기 실패\n\n" + err
+            return "💘 설렘픽 실패\n\n" + err
         if target["user_id"] == sender_user_id:
-            return "👀 찔러보기 실패\n\n자기 자신은 찔러볼 수 없습니다."
+            return "💘 설렘픽 실패\n\n자기 자신에게는 투표할 수 없습니다."
 
         date_str = today()
         week_start, _ = event_week_key()
@@ -5144,29 +5222,17 @@ def anonymous_poke(sender_user_id, sender_user_name, target_keyword, announce_pu
 
         cur.execute("""
         SELECT id
-        FROM anonymous_pokes
+        FROM heart_picks
         WHERE date = ? AND sender_user_id = ?
         ORDER BY id DESC
         LIMIT 1
         """, (date_str, sender_user_id))
         if cur.fetchone():
             conn.close()
-            return "👀 찔러보기 실패\n\n찔러보기는 하루 1회만 가능합니다."
+            return "💘 설렘픽 실패\n\n설렘픽은 하루 1회만 가능합니다."
 
         cur.execute("""
-        SELECT target_user_id
-        FROM anonymous_pokes
-        WHERE sender_user_id = ?
-        ORDER BY id DESC
-        LIMIT 1
-        """, (sender_user_id,))
-        last = cur.fetchone()
-        if last and last["target_user_id"] == target["user_id"]:
-            conn.close()
-            return "👀 찔러보기 실패\n\n같은 대상에게 연속으로 찔러보기는 할 수 없습니다."
-
-        cur.execute("""
-        INSERT INTO anonymous_pokes (
+        INSERT INTO heart_picks (
             date, week_start,
             sender_user_id, sender_user_name,
             target_user_id, target_user_name,
@@ -5181,36 +5247,32 @@ def anonymous_poke(sender_user_id, sender_user_name, target_keyword, announce_pu
         conn.commit()
         conn.close()
 
-        target_name = display_nickname(target["user_name"])
-        public_message = (
-            f"👀 누군가가 {target_name}님을 찔러보았습니다.\n\n"
-            f"오늘 {target_name}님을 궁금해하는 사람이 있습니다."
-        )
+        public_message = "누군가가 설렘픽 투표를 했습니다."
         if not announce_public:
             return public_message
 
-        ok = queue_public_announcement(COUNT_SOURCE_ID, public_message, "anonymous_poke")
+        ok = queue_public_announcement(COUNT_SOURCE_ID, public_message, "heart_pick")
         if ok:
             return (
-                "👀 찔러보기 완료\n\n"
-                "공개창 알림을 예약했습니다.\n"
+                "💘 설렘픽 완료\n\n"
+                "투표가 기록되었습니다.\n"
                 "다음 공창 메시지에 익명 알림이 표시됩니다."
             )
 
         return (
-            "👀 찔러보기 완료\n\n"
-            "기록은 완료되었습니다.\n"
+            "💘 설렘픽 완료\n\n"
+            "투표는 기록되었습니다.\n"
             "공창 알림 예약 실패"
         )
     except Exception as e:
-        print("ANONYMOUS_POKE_ERROR:", repr(e))
-        return "👀 찔러보기 처리 중 오류가 발생했습니다."
+        print("HEART_PICK_ERROR:", repr(e))
+        return "💘 설렘픽 처리 중 오류가 발생했습니다."
 
 
-def anonymous_poke_status_text(user_id, user_name):
+def heart_pick_status_text(user_id, user_name):
     try:
         if not user_id:
-            return "👀 찔러보기 현황 조회 실패\n\n사용자 정보를 확인할 수 없습니다."
+            return "💘 설렘픽 현황 조회 실패\n\n사용자 정보를 확인할 수 없습니다."
 
         date_str = today()
         week_start, week_end = event_week_key()
@@ -5218,7 +5280,7 @@ def anonymous_poke_status_text(user_id, user_name):
         cur = conn.cursor()
         cur.execute("""
         SELECT target_user_name, created_at
-        FROM anonymous_pokes
+        FROM heart_picks
         WHERE date = ? AND sender_user_id = ?
         ORDER BY id DESC
         LIMIT 1
@@ -5227,75 +5289,171 @@ def anonymous_poke_status_text(user_id, user_name):
 
         cur.execute("""
         SELECT COUNT(*) AS cnt
-        FROM anonymous_pokes
+        FROM heart_picks
         WHERE week_start = ? AND target_user_id = ?
         """, (week_start, user_id))
         received = cur.fetchone()
         conn.close()
 
         lines = [
-            "👀 찔러보기 현황",
+            "💘 설렘픽 현황",
             f"대상: {user_name}",
             f"기간: {week_start} ~ {week_end}",
             "",
         ]
         if sent:
-            lines.append(f"오늘 찔러보기: 완료 ({display_nickname(sent['target_user_name'])}님)")
+            lines.append(f"오늘 투표: 완료 ({display_nickname(sent['target_user_name'])}님)")
         else:
-            lines.append("오늘 찔러보기: 아직 사용하지 않음")
-        lines.append(f"이번 주 받은 찔러보기: {int(received['cnt'] or 0) if received else 0}회")
+            lines.append("오늘 투표: 아직 사용하지 않음")
+        lines.append(f"이번 주 받은 설렘픽: {int(received['cnt'] or 0) if received else 0}표")
         return "\n".join(lines)
     except Exception as e:
-        print("ANONYMOUS_POKE_STATUS_ERROR:", repr(e))
-        return "👀 찔러보기 현황 조회 중 오류가 발생했습니다."
+        print("HEART_PICK_STATUS_ERROR:", repr(e))
+        return "💘 설렘픽 현황 조회 중 오류가 발생했습니다."
 
 
-def anonymous_poke_ranking_text():
+def heart_pick_ranking_rows(week_start=None, limit=10):
+    week_start = week_start or event_week_key()[0]
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT
+        p.target_user_id AS user_id,
+        tu.user_name,
+        COUNT(*) AS pick_count
+    FROM heart_picks p
+    JOIN users tu
+      ON tu.user_id = p.target_user_id
+    JOIN users su
+      ON su.user_id = p.sender_user_id
+    LEFT JOIN deleted_users td
+      ON td.original_user_id = p.target_user_id
+    LEFT JOIN deleted_users sd
+      ON sd.original_user_id = p.sender_user_id
+    WHERE p.week_start = ?
+      AND COALESCE(tu.is_active, 1) = 1
+      AND COALESCE(su.is_active, 1) = 1
+      AND td.original_user_id IS NULL
+      AND sd.original_user_id IS NULL
+    GROUP BY p.target_user_id
+    ORDER BY pick_count DESC, tu.user_name ASC
+    LIMIT ?
+    """, (week_start, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def heart_pick_ranking_text():
     try:
         week_start, week_end = event_week_key()
-        conn = db()
-        cur = conn.cursor()
-        cur.execute("""
-        SELECT
-            u.user_name,
-            COUNT(*) AS poke_count
-        FROM anonymous_pokes p
-        JOIN users u
-          ON u.user_id = p.target_user_id
-        LEFT JOIN deleted_users d
-          ON d.original_user_id = p.target_user_id
-        WHERE p.week_start = ?
-          AND COALESCE(u.is_active, 1) = 1
-          AND d.original_user_id IS NULL
-        GROUP BY p.target_user_id
-        ORDER BY poke_count DESC, u.user_name ASC
-        LIMIT 10
-        """, (week_start,))
-        rows = cur.fetchall()
-        conn.close()
+        rows = heart_pick_ranking_rows(week_start, limit=10)
 
-        lines = ["👀 이번주 찔림 랭킹", f"기간: {week_start} ~ {week_end}", ""]
+        lines = [
+            "💘 이번주 설렘픽 랭킹",
+            f"기간: {week_start} ~ {week_end}",
+            "보상: 1등 2코인 / 2등 1코인 / 3등 0.5코인",
+            "",
+        ]
         if not rows:
-            lines.append("아직 찔러보기 기록이 없습니다.")
+            lines.append("아직 설렘픽 기록이 없습니다.")
         else:
             for i, row in enumerate(rows, 1):
-                lines.append(f"{medal_icon(i)} {display_nickname(row['user_name'])} {row['poke_count']}회")
+                reward = heart_pick_reward_amount(i)
+                reward_text = f" / 보상 {coin_text(reward)}" if reward > 0 else ""
+                lines.append(f"{medal_icon(i)} {display_nickname(row['user_name'])} {row['pick_count']}표{reward_text}")
         return "\n".join(lines)
     except Exception as e:
-        print("ANONYMOUS_POKE_RANKING_ERROR:", repr(e))
-        return "👀 찔러보기 랭킹 조회 중 오류가 발생했습니다."
+        print("HEART_PICK_RANKING_ERROR:", repr(e))
+        return "💘 설렘픽 랭킹 조회 중 오류가 발생했습니다."
 
 
-def reset_today_anonymous_pokes(date_str=None):
+def settle_heart_pick_rewards(week_start=None, week_end=None):
+    if not week_start or not week_end:
+        week_start, week_end = event_week_key()
+    rows = heart_pick_ranking_rows(week_start, limit=3)
+    paid = []
+
+    conn = db()
+    cur = conn.cursor()
+    for idx, row in enumerate(rows, 1):
+        reward = heart_pick_reward_amount(idx)
+        if reward <= 0:
+            continue
+        cur.execute("""
+        INSERT OR IGNORE INTO heart_pick_rewards (
+            week_start, week_end, user_id, user_name,
+            rank, pick_count, reward, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            week_start,
+            week_end,
+            row["user_id"],
+            row["user_name"],
+            idx,
+            row["pick_count"],
+            reward,
+            now_str()
+        ))
+        if cur.rowcount > 0:
+            paid.append({
+                "rank": idx,
+                "user_id": row["user_id"],
+                "user_name": row["user_name"],
+                "pick_count": row["pick_count"],
+                "reward": reward,
+            })
+    conn.commit()
+    conn.close()
+
+    for item in paid:
+        change_money(
+            item["user_id"],
+            item["user_name"],
+            item["reward"],
+            f"설렘픽 랭킹 보상 {week_start}~{week_end} {item['rank']}위",
+            None,
+            "설렘픽"
+        )
+
+    return paid
+
+
+def heart_pick_settlement_text():
+    try:
+        week_start, week_end = event_week_key()
+        paid = settle_heart_pick_rewards(week_start, week_end)
+        if not paid:
+            return (
+                "💘 설렘픽 정산\n\n"
+                f"기간: {week_start} ~ {week_end}\n"
+                "새로 지급할 설렘픽 보상이 없습니다.\n"
+                "이미 정산했거나 랭킹 데이터가 없습니다."
+            )
+
+        lines = ["💘 설렘픽 정산 완료", f"기간: {week_start} ~ {week_end}", ""]
+        for item in paid:
+            lines.append(
+                f"{item['rank']}위 {display_nickname(item['user_name'])} "
+                f"{item['pick_count']}표 / {coin_text(item['reward'])}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        print("HEART_PICK_SETTLEMENT_ERROR:", repr(e))
+        return "💘 설렘픽 정산 중 오류가 발생했습니다."
+
+
+def reset_today_heart_picks(date_str=None):
     date_str = date_str or today()
     try:
         conn = db()
         cur = conn.cursor()
-        cur.execute("DELETE FROM anonymous_pokes WHERE date = ?", (date_str,))
+        cur.execute("DELETE FROM heart_picks WHERE date = ?", (date_str,))
         deleted = cur.rowcount
         cur.execute("""
         DELETE FROM public_announcements
-        WHERE category = 'anonymous_poke'
+        WHERE category = 'heart_pick'
           AND delivered_at IS NULL
           AND substr(created_at, 1, 10) = ?
         """, (date_str,))
@@ -5303,15 +5461,158 @@ def reset_today_anonymous_pokes(date_str=None):
         conn.commit()
         conn.close()
         return (
-            "👀 찔러보기 초기화 완료\n\n"
+            "💘 설렘픽 초기화 완료\n\n"
             f"기준일: {date_str}\n"
-            f"삭제된 기록: {deleted}건\n\n"
+            f"삭제된 투표: {deleted}건\n"
             f"삭제된 대기 알림: {queued_deleted}건\n\n"
-            "오늘 찔러보기 횟수가 초기화되었습니다."
+            "오늘 설렘픽 횟수가 초기화되었습니다."
         )
     except Exception as e:
-        print("ANONYMOUS_POKE_RESET_ERROR:", repr(e))
-        return "👀 찔러보기 초기화 중 오류가 발생했습니다."
+        print("HEART_PICK_RESET_ERROR:", repr(e))
+        return "💘 설렘픽 초기화 중 오류가 발생했습니다."
+
+
+def chemistry_pair_key(user_a, user_b):
+    a, b = sorted([str(user_a), str(user_b)])
+    return f"{a}:{b}"
+
+
+def chemistry_signal(sender_user_id, sender_user_name, target_keyword, announce_public=False):
+    try:
+        if not sender_user_id:
+            return "💞 케미 실패\n\n사용자 정보를 확인할 수 없습니다."
+
+        target_keyword = str(target_keyword or "").strip()
+        if not target_keyword:
+            return "💞 케미 실패\n\n사용법: /케미 닉네임"
+
+        target, err = resolve_active_user_by_nickname(target_keyword, purpose="대상")
+        if err:
+            return "💞 케미 실패\n\n" + err
+        if target["user_id"] == sender_user_id:
+            return "💞 케미 실패\n\n자기 자신에게는 케미를 보낼 수 없습니다."
+
+        date_str = today()
+        week_start, _ = event_week_key()
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT id
+        FROM chemistry_signals
+        WHERE date = ? AND sender_user_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """, (date_str, sender_user_id))
+        if cur.fetchone():
+            conn.close()
+            return "💞 케미 실패\n\n케미는 하루 1회만 가능합니다."
+
+        cur.execute("""
+        INSERT INTO chemistry_signals (
+            date, week_start,
+            sender_user_id, sender_user_name,
+            target_user_id, target_user_name,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            date_str, week_start,
+            sender_user_id, sender_user_name,
+            target["user_id"], target["user_name"],
+            now_str()
+        ))
+
+        cur.execute("""
+        SELECT id
+        FROM chemistry_signals
+        WHERE week_start = ?
+          AND sender_user_id = ?
+          AND target_user_id = ?
+        LIMIT 1
+        """, (week_start, target["user_id"], sender_user_id))
+        mutual = cur.fetchone() is not None
+        conn.commit()
+        conn.close()
+
+        if not mutual:
+            return (
+                "💞 케미 완료\n\n"
+                "케미가 기록되었습니다.\n"
+                "쌍방 케미가 되면 공창에 익명 알림이 표시됩니다."
+            )
+
+        flag_key = f"chemistry_mutual_announced:{week_start}:{chemistry_pair_key(sender_user_id, target['user_id'])}"
+        if get_system_flag(flag_key):
+            return "💞 케미 완료\n\n이미 이번 주 쌍방 케미가 확인된 조합입니다."
+
+        public_message = "💞 쌍방 케미 발생!\n\n누군가가 서로 케미를 느꼈습니다."
+        if announce_public and queue_public_announcement(COUNT_SOURCE_ID, public_message, "chemistry_mutual"):
+            set_system_flag(flag_key, "1")
+            return (
+                "💞 쌍방 케미 확인\n\n"
+                "공개창 익명 알림을 예약했습니다."
+            )
+
+        return (
+            "💞 쌍방 케미 확인\n\n"
+            "기록은 완료되었습니다.\n"
+            "공개창 알림 예약 실패"
+        )
+    except Exception as e:
+        print("CHEMISTRY_SIGNAL_ERROR:", repr(e))
+        return "💞 케미 처리 중 오류가 발생했습니다."
+
+
+def mutual_chemistry_report_text():
+    try:
+        week_start, week_end = event_week_key()
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT
+            a.sender_user_id AS user_a,
+            au.user_name AS user_a_name,
+            a.target_user_id AS user_b,
+            bu.user_name AS user_b_name,
+            MAX(a.created_at) AS user_a_at,
+            MAX(b.created_at) AS user_b_at
+        FROM chemistry_signals a
+        JOIN chemistry_signals b
+          ON b.week_start = a.week_start
+         AND b.sender_user_id = a.target_user_id
+         AND b.target_user_id = a.sender_user_id
+        JOIN users au
+          ON au.user_id = a.sender_user_id
+        JOIN users bu
+          ON bu.user_id = a.target_user_id
+        LEFT JOIN deleted_users ad
+          ON ad.original_user_id = a.sender_user_id
+        LEFT JOIN deleted_users bd
+          ON bd.original_user_id = a.target_user_id
+        WHERE a.week_start = ?
+          AND a.sender_user_id < a.target_user_id
+          AND COALESCE(au.is_active, 1) = 1
+          AND COALESCE(bu.is_active, 1) = 1
+          AND ad.original_user_id IS NULL
+          AND bd.original_user_id IS NULL
+        GROUP BY a.sender_user_id, a.target_user_id
+        ORDER BY user_a_at DESC, user_b_at DESC
+        """, (week_start,))
+        rows = cur.fetchall()
+        conn.close()
+
+        lines = ["💞 쌍방 케미 확인", f"기간: {week_start} ~ {week_end}", ""]
+        if not rows:
+            lines.append("이번 주 쌍방 케미가 없습니다.")
+        else:
+            for i, row in enumerate(rows, 1):
+                lines.append(
+                    f"{i}. {display_nickname(row['user_a_name'])} ↔ "
+                    f"{display_nickname(row['user_b_name'])}"
+                )
+        return "\n".join(lines)
+    except Exception as e:
+        print("MUTUAL_CHEMISTRY_REPORT_ERROR:", repr(e))
+        return "💞 쌍방 케미 확인 중 오류가 발생했습니다."
 
 
 def get_pending_truth_game(user_id):
@@ -5687,6 +5988,11 @@ def find_delete_candidates(keyword, limit=20):
         ("mention_logs", "target_user_id", "target_user_name"),
         ("anonymous_pokes", "sender_user_id", "sender_user_name"),
         ("anonymous_pokes", "target_user_id", "target_user_name"),
+        ("heart_picks", "sender_user_id", "sender_user_name"),
+        ("heart_picks", "target_user_id", "target_user_name"),
+        ("heart_pick_rewards", "user_id", "user_name"),
+        ("chemistry_signals", "sender_user_id", "sender_user_name"),
+        ("chemistry_signals", "target_user_id", "target_user_name"),
         ("affinity_scores", "user_a", "user_a_name"),
         ("affinity_scores", "user_b", "user_b_name"),
         ("manitto_assignments", "hunter_user_id", "hunter_user_name"),
@@ -5774,6 +6080,11 @@ def delete_users_by_ids(targets):
             ("mention_logs", "target_user_id"),
             ("anonymous_pokes", "sender_user_id"),
             ("anonymous_pokes", "target_user_id"),
+            ("heart_picks", "sender_user_id"),
+            ("heart_picks", "target_user_id"),
+            ("heart_pick_rewards", "user_id"),
+            ("chemistry_signals", "sender_user_id"),
+            ("chemistry_signals", "target_user_id"),
             ("truth_game_sessions", "requester_user_id"),
             ("affinity_scores", "user_a"),
             ("affinity_scores", "user_b"),
@@ -7409,7 +7720,7 @@ def snapshot_user_data(user_id):
         "users", "currency", "currency_logs", "purchases", "attendance", "attendance_streak_rewards", "danbung_attendance", "mission_claims",
         "hidden_rewards", "gacha_settings", "gacha_pity", "gacha_pieces", "gacha_weekly_counts",
         "weekly_rewards", "sns_lucky_draw_entries", "achievements", "chat_logs", "counts",
-        "truth_game_sessions",
+        "heart_pick_rewards", "truth_game_sessions",
     ]
     snap = {}
     for table in tables:
@@ -7423,6 +7734,10 @@ def snapshot_user_data(user_id):
         ("mention_logs", "target_user_id"),
         ("anonymous_pokes", "sender_user_id"),
         ("anonymous_pokes", "target_user_id"),
+        ("heart_picks", "sender_user_id"),
+        ("heart_picks", "target_user_id"),
+        ("chemistry_signals", "sender_user_id"),
+        ("chemistry_signals", "target_user_id"),
         ("truth_game_sessions", "requester_user_id"),
         ("affinity_scores", "user_a"),
         ("affinity_scores", "user_b"),
@@ -7720,7 +8035,7 @@ def handle(event):
         conn = db()
         cur = conn.cursor()
         counts = []
-        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "anonymous_pokes", "public_announcements", "truth_game_sessions"]:
+        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "chemistry_signals", "public_announcements", "truth_game_sessions"]:
             try:
                 cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                 counts.append(f"{table}: {cur.fetchone()['cnt']}")
@@ -7730,11 +8045,18 @@ def handle(event):
         reply(event.reply_token, "🗄️ DB 상태\n\n" + "\n".join(counts))
         return
 
-    if text == "/찔러보기초기화":
+    if text == "/설렘픽초기화":
         if not is_staff(user_id):
             reply(event.reply_token, operator_only_warning())
             return
-        reply(event.reply_token, reset_today_anonymous_pokes(date_str))
+        reply(event.reply_token, reset_today_heart_picks(date_str))
+        return
+
+    if text == "/설렘픽정산":
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        reply_many(event.reply_token, split_text_messages(heart_pick_settlement_text()))
         return
 
     if text == "/운영진친밀도" or text.startswith("/운영진친밀도 ") or text == "/운영진친밀도확인" or text.startswith("/운영진친밀도확인 "):
@@ -8410,20 +8732,35 @@ def handle(event):
         reply_many(event.reply_token, split_text_messages(mention_ranking_text(keyword, date_str, rank_source_id)))
         return
 
-    if text == "/찔러보기" or text.startswith("/찔러보기 "):
+    if text == "/설렘픽" or text.startswith("/설렘픽 "):
         if not is_private_chat(event):
-            reply(event.reply_token, one_to_one_command_notice("찔러보기", "/찔러보기 닉네임"))
+            reply(event.reply_token, one_to_one_command_notice("설렘픽", "/설렘픽 닉네임"))
             return
-        keyword = text.replace("/찔러보기", "", 1).strip()
-        reply_many(event.reply_token, split_text_messages(anonymous_poke(user_id, user_name, keyword, announce_public=True)))
+        keyword = text.replace("/설렘픽", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(heart_pick(user_id, user_name, keyword, announce_public=True)))
         return
 
-    if text == "/찔러보기현황":
-        push_or_reply_private_info(event, user_id, anonymous_poke_status_text(user_id, user_name), "📩 찔러보기 현황을 개인 메시지로 보내드렸습니다.", "/찔러보기현황")
+    if text == "/설렘픽현황":
+        push_or_reply_private_info(event, user_id, heart_pick_status_text(user_id, user_name), "📩 설렘픽 현황을 개인 메시지로 보내드렸습니다.", "/설렘픽현황")
         return
 
-    if text == "/찔러보기랭킹":
-        reply_many(event.reply_token, split_text_messages(anonymous_poke_ranking_text()))
+    if text == "/설렘픽랭킹":
+        reply_many(event.reply_token, split_text_messages(heart_pick_ranking_text()))
+        return
+
+    if text == "/케미" or text.startswith("/케미 "):
+        if not is_private_chat(event):
+            reply(event.reply_token, one_to_one_command_notice("케미", "/케미 닉네임"))
+            return
+        keyword = text.replace("/케미", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(chemistry_signal(user_id, user_name, keyword, announce_public=True)))
+        return
+
+    if text == "/쌍방케미확인":
+        if not is_private_chat(event) or not is_admin(user_id):
+            reply(event.reply_token, "사용할 수 없는 명령어입니다.")
+            return
+        reply_many(event.reply_token, split_text_messages(mutual_chemistry_report_text()))
         return
 
     if text == "/진실게임" or text.startswith("/진실게임 ") or text == "/진실질문" or text.startswith("/진실질문 "):
