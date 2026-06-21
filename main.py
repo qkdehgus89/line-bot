@@ -118,10 +118,6 @@ def is_staff(user_id):
     return user_id in ADMIN_USER_IDS or user_id in OPERATOR_USER_IDS
 
 
-def is_admin_room(source_id):
-    return bool(source_id and source_id in ADMIN_SOURCE_IDS)
-
-
 def is_operator_command(text):
     """
     운영진 전용 명령어를 일반 유저가 입력했을 때
@@ -154,7 +150,7 @@ def is_operator_command(text):
 
 
 def operator_only_warning():
-    return "⛔ 운영진 전용 명령어입니다."
+    return "이 명령어는 운영진만 사용할 수 있어요."
 
 
 def count_source_ids():
@@ -218,52 +214,6 @@ def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-
-
-def seed_default_shop_items(cur):
-    default_items = [
-        (
-            "단벙주최권",
-            60,
-            "참가인원 전체 코인 차감없이 벙 / 주최권 단벙은 인원제한 12명"
-        ),
-        (
-            "봇등록권",
-            100,
-            "꽃봇이 봇에 자기소개 등록가능 / 두개 사면 두 칸 등록 가능"
-        ),
-        (
-            "미션클리어권",
-            200,
-            "노미클자🔰 > 미클 🔹가능"
-        ),
-        (
-            "닉변권",
-            200,
-            "닉네임 변경 가능 / 유사닉·혐오닉 등 제한 있음 / 재변경 시 다시 구입"
-        ),
-        (
-            "임티권",
-            500,
-            "닉네임 앞이나 나이를 지우고 임티 달 수 있음 / 임티 제한 있음 / 고유임티 / 재변경 시 다시 구입"
-        ),
-        (
-            "칭호권",
-            500,
-            "닉네임 뒤 [ ] 사이에 호칭 넣기 가능 / 띄어쓰기 가능 5글자 제한 / 워딩 제한 있음 / 재변경 시 다시 구입"
-        ),
-    ]
-
-    for name, price, description in default_items:
-        cur.execute("""
-        INSERT INTO shop_items (name, price, description, is_active, created_at)
-        VALUES (?, ?, ?, 1, ?)
-        ON CONFLICT(name)
-        DO UPDATE SET
-            price = excluded.price,
-            description = excluded.description,
-            is_active = 1
-        """, (name, price, description, now_str()))
 
 
 def init_db():
@@ -1097,10 +1047,10 @@ def one_to_one_command_notice(feature_name="해당 기능", command_hint=None):
     lines = [
         f"{feature_name} 안내",
         "",
-        "꽃봇 1:1 채팅에서 직접 이용해주세요.",
+        "이 기능은 꽃봇 1:1 채팅에서 이용해 주세요.",
     ]
     if command_hint:
-        lines += ["", f"1:1에서 입력: {command_hint}"]
+        lines += ["", f"1:1에서 이렇게 입력하면 돼요: {command_hint}"]
     return "\n".join(lines)
 
 
@@ -1231,10 +1181,6 @@ def shop_private_guide_text():
         "/내보유 사용\n"
         "/사용 구매번호"
     )
-
-
-def user_guide_text():
-    return beginner_guide_text()
 
 
 def user_commands_text():
@@ -1704,14 +1650,14 @@ def opposite_gender_check(sender_user_id, sender_user_name, target):
 
     if not sender_gender or not target_gender:
         return False, (
-            "성별을 확인할 수 없어 선택할 수 없습니다.\n"
-            "닉네임 인증 이모티콘 또는 족보 등록 상태를 확인해주세요.\n"
+            "성별을 확인하지 못해서 선택할 수 없어요.\n"
+            "닉네임 인증 이모티콘 또는 족보 등록 상태를 한 번 확인해 주세요.\n"
             "노미클은 남자로 간주합니다."
         )
 
     if sender_gender == target_gender:
         return False, (
-            "이성에게만 사용할 수 있습니다.\n\n"
+            "이성에게만 사용할 수 있어요.\n\n"
             f"내 성별: {gender_label(sender_gender)}\n"
             f"상대 성별: {gender_label(target_gender)}\n"
             "노미클은 남자로 간주합니다."
@@ -1794,7 +1740,7 @@ def resolve_active_user_by_nickname(keyword, exclude_user_id=None, purpose="대�
     if not candidates:
         return None, (
             f"{purpose}을 찾지 못했습니다.\n"
-            "닉네임을 조금 더 정확히 입력해주세요."
+            "닉네임을 조금만 더 정확히 입력해 주세요."
         )
 
     best_score = candidates[0]["_match_score"]
@@ -1804,7 +1750,7 @@ def resolve_active_user_by_nickname(keyword, exclude_user_id=None, purpose="대�
 
     lines = [
         f"{purpose}이 여러 명 검색되었습니다.",
-        "닉네임을 더 정확히 입력해주세요.",
+        "닉네임을 더 정확히 입력해 주세요.",
         "",
     ]
     for row in best[:5]:
@@ -2260,44 +2206,6 @@ def warning_list(date_str, source_id):
     return result
 
 
-def warning_text(date_str, source_id):
-    rows = warning_list(date_str, source_id)
-    rows = sorted(rows, key=lambda r: (int(r["count"] or 0), str(r["user_name"])))
-
-    lines = [
-        "⚠️ 오늘의 경고 대상",
-        "",
-        "기준",
-        f"📌 {WARNING_LIMIT}마디 미만",
-        "",
-        "━━━━━━━━━━",
-    ]
-
-    if not rows:
-        return (
-            "✅ 오늘의 경고 대상이 없습니다.\n\n"
-            "기준\n"
-            f"📌 {WARNING_LIMIT}마디 미만\n\n"
-            "현재 모든 인원이 기준을 충족했습니다."
-        )
-
-    for row in rows:
-        lines.append(f"{row['user_name']} - {row['count']}마디")
-
-    lines += [
-        "━━━━━━━━━━",
-        "",
-        f"총 {len(rows)}명",
-        "",
-        "🚨 위험구간",
-        f"{WARNING_LIMIT}마디 미만 인원입니다.",
-        "운영진 확인 대상입니다.",
-    ]
-
-    return "\n".join(lines)
-
-
-
 def warning_text_for_staff(date_str, source_id):
     rows = warning_list(date_str, source_id)
     rows = sorted(rows, key=lambda r: (int(r["count"] or 0), str(r["user_name"])))
@@ -2440,9 +2348,8 @@ def get_balance(user_id):
     return row["balance"] if row else 0
 
 
-def change_money(user_id, user_name, amount, reason, staff_user_id=None, staff_user_name=None):
-    conn = db()
-    cur = conn.cursor()
+def apply_money_change(cur, user_id, user_name, amount, reason, staff_user_id=None, staff_user_name=None):
+    created_at = now_str()
     cur.execute("""
     INSERT INTO currency (user_id, balance, updated_at)
     VALUES (?, ?, ?)
@@ -2450,7 +2357,7 @@ def change_money(user_id, user_name, amount, reason, staff_user_id=None, staff_u
     DO UPDATE SET
         balance = balance + excluded.balance,
         updated_at = excluded.updated_at
-    """, (user_id, amount, now_str()))
+    """, (user_id, amount, created_at))
 
     cur.execute("""
     INSERT INTO currency_logs (
@@ -2458,10 +2365,16 @@ def change_money(user_id, user_name, amount, reason, staff_user_id=None, staff_u
         staff_user_id, staff_user_name, created_at
     )
     VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (user_id, user_name, amount, reason, staff_user_id, staff_user_name, now_str()))
+    """, (user_id, user_name, amount, reason, staff_user_id, staff_user_name, created_at))
 
     cur.execute("SELECT balance FROM currency WHERE user_id = ?", (user_id,))
-    balance = cur.fetchone()["balance"]
+    return cur.fetchone()["balance"]
+
+
+def change_money(user_id, user_name, amount, reason, staff_user_id=None, staff_user_name=None):
+    conn = db()
+    cur = conn.cursor()
+    balance = apply_money_change(cur, user_id, user_name, amount, reason, staff_user_id, staff_user_name)
     conn.commit()
     conn.close()
     return balance
@@ -2824,24 +2737,6 @@ def list_user_purchases(user_id, status=None, limit=None):
     rows = cur.fetchall()
     conn.close()
     return rows
-
-
-def purchase_status_counts(user_id):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT status, COUNT(*) AS cnt
-    FROM purchases
-    WHERE user_id = ?
-    GROUP BY status
-    """, (user_id,))
-    rows = cur.fetchall()
-    conn.close()
-
-    result = {"owned": 0, "used": 0, "cancel": 0, "pending": 0, "done": 0}
-    for row in rows:
-        result[row["status"]] = int(row["cnt"] or 0)
-    return result
 
 
 def user_purchases_text(user_id, filter_mode="all"):
@@ -5450,21 +5345,21 @@ def heart_pick_reward_amount(rank):
 def heart_pick(sender_user_id, sender_user_name, target_keyword, announce_public=False):
     try:
         if not sender_user_id:
-            return "💘 설렘픽 실패\n\n사용자 정보를 확인할 수 없습니다."
+            return "💘 설렘픽 안내\n\n사용자 정보를 확인하지 못했어요. 잠시 후 다시 시도해 주세요."
 
         target_keyword = str(target_keyword or "").strip()
         if not target_keyword:
-            return "💘 설렘픽 실패\n\n사용법: /설렘픽 닉네임"
+            return "💘 설렘픽 안내\n\n사용법: /설렘픽 닉네임"
 
         target, err = resolve_active_user_by_nickname(target_keyword, purpose="대상")
         if err:
-            return "💘 설렘픽 실패\n\n" + err
+            return "💘 설렘픽 안내\n\n" + err
         if target["user_id"] == sender_user_id:
-            return "💘 설렘픽 실패\n\n자기 자신에게는 투표할 수 없습니다."
+            return "💘 설렘픽 안내\n\n자기 자신에게는 투표할 수 없어요."
 
         ok_gender, gender_err = opposite_gender_check(sender_user_id, sender_user_name, target)
         if not ok_gender:
-            return "💘 설렘픽 실패\n\n" + gender_err
+            return "💘 설렘픽 안내\n\n" + gender_err
 
         date_str = today()
         week_start, _ = event_week_key()
@@ -5480,7 +5375,7 @@ def heart_pick(sender_user_id, sender_user_name, target_keyword, announce_public
         """, (date_str, sender_user_id))
         if cur.fetchone():
             conn.close()
-            return "💘 설렘픽 실패\n\n설렘픽은 하루 1회만 가능합니다."
+            return "💘 설렘픽 안내\n\n설렘픽은 하루에 한 번만 가능해요."
 
         cur.execute("""
         INSERT INTO heart_picks (
@@ -5512,18 +5407,18 @@ def heart_pick(sender_user_id, sender_user_name, target_keyword, announce_public
 
         return (
             "💘 설렘픽 완료\n\n"
-            "투표는 기록되었습니다.\n"
-            "공창 알림 예약 실패"
+            "투표는 기록되었어요.\n"
+            "다만 공창 알림 예약은 잠시 실패했어요."
         )
     except Exception as e:
         print("HEART_PICK_ERROR:", repr(e))
-        return "💘 설렘픽 처리 중 오류가 발생했습니다."
+        return "💘 설렘픽 처리 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요."
 
 
 def heart_pick_status_text(user_id, user_name):
     try:
         if not user_id:
-            return "💘 설렘픽 현황 조회 실패\n\n사용자 정보를 확인할 수 없습니다."
+            return "💘 설렘픽 현황 안내\n\n사용자 정보를 확인하지 못했어요. 잠시 후 다시 시도해 주세요."
 
         date_str = today()
         week_start, week_end = event_week_key()
@@ -5560,7 +5455,7 @@ def heart_pick_status_text(user_id, user_name):
         return "\n".join(lines)
     except Exception as e:
         print("HEART_PICK_STATUS_ERROR:", repr(e))
-        return "💘 설렘픽 현황 조회 중 오류가 발생했습니다."
+        return "💘 설렘픽 현황을 불러오는 중 문제가 생겼어요."
 
 
 def heart_pick_ranking_rows(week_start=None, limit=10):
@@ -5773,6 +5668,15 @@ def grant_chemistry_match_rewards(date_str, week_start, sender, target):
                 reward, now_str()
             ))
             if cur.rowcount > 0:
+                apply_money_change(
+                    cur,
+                    user_id,
+                    user_name,
+                    reward,
+                    f"케미 매칭 보상 {date_str}",
+                    None,
+                    "케미"
+                )
                 paid.append({
                     "user_id": user_id,
                     "user_name": user_name,
@@ -5782,23 +5686,15 @@ def grant_chemistry_match_rewards(date_str, week_start, sender, target):
         conn.commit()
     except Exception as e:
         print("CHEMISTRY_REWARD_RECORD_ERROR:", repr(e))
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         paid = []
     finally:
         if conn:
             conn.close()
-
-    for item in paid:
-        try:
-            change_money(
-                item["user_id"],
-                item["user_name"],
-                item["reward"],
-                f"케미 매칭 보상 {date_str}",
-                None,
-                "케미"
-            )
-        except Exception as e:
-            print("CHEMISTRY_REWARD_PAY_ERROR:", item.get("user_id"), repr(e))
 
     return paid
 
@@ -5813,21 +5709,21 @@ def chemistry_reward_line_for_user(paid, user_id):
 def chemistry_signal(sender_user_id, sender_user_name, target_keyword, announce_public=False):
     try:
         if not sender_user_id:
-            return "💞 케미 실패\n\n사용자 정보를 확인할 수 없습니다."
+            return "💞 케미 안내\n\n사용자 정보를 확인하지 못했어요. 잠시 후 다시 시도해 주세요."
 
         target_keyword = str(target_keyword or "").strip()
         if not target_keyword:
-            return "💞 케미 실패\n\n사용법: /케미 닉네임"
+            return "💞 케미 안내\n\n사용법: /케미 닉네임"
 
         target, err = resolve_active_user_by_nickname(target_keyword, purpose="대상")
         if err:
-            return "💞 케미 실패\n\n" + err
+            return "💞 케미 안내\n\n" + err
         if target["user_id"] == sender_user_id:
-            return "💞 케미 실패\n\n자기 자신에게는 케미를 보낼 수 없습니다."
+            return "💞 케미 안내\n\n자기 자신에게는 케미를 보낼 수 없어요."
 
         ok_gender, gender_err = opposite_gender_check(sender_user_id, sender_user_name, target)
         if not ok_gender:
-            return "💞 케미 실패\n\n" + gender_err
+            return "💞 케미 안내\n\n" + gender_err
 
         date_str = today()
         week_start, _ = event_week_key()
@@ -5842,7 +5738,7 @@ def chemistry_signal(sender_user_id, sender_user_name, target_keyword, announce_
         """, (date_str, sender_user_id))
         if cur.fetchone():
             conn.close()
-            return "💞 케미 실패\n\n케미는 하루 1회만 가능합니다."
+            return "💞 케미 안내\n\n케미는 하루에 한 번만 가능해요."
 
         cur.execute("""
         INSERT INTO chemistry_signals (
@@ -5903,12 +5799,12 @@ def chemistry_signal(sender_user_id, sender_user_name, target_keyword, announce_
         return (
             "💞 케미 매칭 성공\n\n"
             "당신이 원하는 케미가 이루어졌습니다.\n"
-            "공개창 알림 예약 실패"
+            "다만 공개창 알림 예약은 잠시 실패했어요."
             f"{reward_line}"
         )
     except Exception as e:
         print("CHEMISTRY_SIGNAL_ERROR:", repr(e))
-        return "💞 케미 처리 중 오류가 발생했습니다."
+        return "💞 케미 처리 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요."
 
 
 def mutual_chemistry_report_text():
@@ -5968,7 +5864,7 @@ def mutual_chemistry_report_text():
 def personal_chemistry_check_text(user_id):
     try:
         if not user_id:
-            return "💞 케미확인 실패\n\n사용자 정보를 확인할 수 없습니다."
+            return "💞 케미확인 안내\n\n사용자 정보를 확인하지 못했어요. 잠시 후 다시 시도해 주세요."
 
         date_str = today()
         conn = db()
@@ -6046,7 +5942,7 @@ def personal_chemistry_check_text(user_id):
         )
     except Exception as e:
         print("PERSONAL_CHEMISTRY_CHECK_ERROR:", repr(e))
-        return "💞 케미확인 중 오류가 발생했습니다."
+        return "💞 케미확인을 불러오는 중 문제가 생겼어요."
 
 
 def get_pending_truth_game(user_id):
@@ -6233,7 +6129,7 @@ def add_truth_game_question(raw_args, staff_user_id, staff_user_name):
         raw_args = str(raw_args or "").strip()
         if not raw_args:
             return (
-                "🎭 진실질문 추가 실패\n\n"
+                "🎭 진실질문 추가 안내\n\n"
                 "사용법: /진실질문추가 난이도 질문내용\n"
                 f"난이도: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
             )
@@ -6241,22 +6137,22 @@ def add_truth_game_question(raw_args, staff_user_id, staff_user_name):
         parts = raw_args.split(maxsplit=1)
         if len(parts) < 2:
             return (
-                "🎭 진실질문 추가 실패\n\n"
-                "난이도와 질문내용을 함께 입력해주세요.\n"
+                "🎭 진실질문 추가 안내\n\n"
+                "난이도와 질문내용을 함께 입력해 주세요.\n"
                 "예: /진실질문추가 썸맛 요즘 가장 눈이 가는 사람은?"
             )
 
         category, question = parts[0].strip(), parts[1].strip()
         if category not in TRUTH_GAME_DIFFICULTIES:
             return (
-                "🎭 진실질문 추가 실패\n\n"
-                "난이도를 확인해주세요.\n"
+                "🎭 진실질문 추가 안내\n\n"
+                "난이도를 확인해 주세요.\n"
                 f"사용 가능: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
             )
         if len(question) < 5:
-            return "🎭 진실질문 추가 실패\n\n질문은 5글자 이상으로 입력해주세요."
+            return "🎭 진실질문 추가 안내\n\n질문은 5글자 이상으로 입력해 주세요."
         if len(question) > 120:
-            return "🎭 진실질문 추가 실패\n\n질문은 120글자 이하로 입력해주세요."
+            return "🎭 진실질문 추가 안내\n\n질문은 120글자 이하로 입력해 주세요."
 
         conn = db()
         cur = conn.cursor()
@@ -6271,7 +6167,7 @@ def add_truth_game_question(raw_args, staff_user_id, staff_user_name):
 
         if not inserted:
             return (
-                "🎭 진실질문 추가 실패\n\n"
+                "🎭 진실질문 추가 안내\n\n"
                 "이미 등록된 질문입니다."
             )
 
@@ -6282,13 +6178,13 @@ def add_truth_game_question(raw_args, staff_user_id, staff_user_name):
         )
     except Exception as e:
         print("TRUTH_GAME_QUESTION_ADD_ERROR:", repr(e))
-        return "🎭 진실질문 추가 중 오류가 발생했습니다."
+        return "🎭 진실질문을 추가하는 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요."
 
 
 def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
     try:
         if not user_id:
-            return "🎭 진실게임 실패\n\n사용자 정보를 확인할 수 없습니다."
+            return "🎭 진실게임 안내\n\n사용자 정보를 확인하지 못했어요. 잠시 후 다시 시도해 주세요."
 
         target_keyword = str(target_keyword or "").strip()
         if not target_keyword:
@@ -6297,16 +6193,16 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
         difficulty = str(difficulty or "").strip()
         if difficulty and difficulty not in TRUTH_GAME_DIFFICULTIES:
             return (
-                "🎭 진실게임 실패\n\n"
-                "난이도를 확인해주세요.\n"
+                "🎭 진실게임 안내\n\n"
+                "난이도를 확인해 주세요.\n"
                 f"사용 가능: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
             )
 
         target, err = resolve_active_user_by_nickname(target_keyword, purpose="대상")
         if err:
-            return "🎭 진실게임 실패\n\n" + err
+            return "🎭 진실게임 안내\n\n" + err
         if target["user_id"] == user_id:
-            return "🎭 진실게임 실패\n\n자기 자신은 지목할 수 없습니다."
+            return "🎭 진실게임 안내\n\n자기 자신은 지목할 수 없어요."
 
         pending = get_pending_truth_game(target["user_id"])
         if pending:
@@ -6320,31 +6216,36 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
 
         if get_balance(user_id) < TRUTH_GAME_COST:
             return (
-                "🎭 진실게임 실패\n\n"
+                "🎭 진실게임 안내\n\n"
                 f"필요 코인: {coin_text(TRUTH_GAME_COST)}\n"
                 f"현재 보유: {coin_text(get_balance(user_id))}"
             )
 
         question_pool = truth_game_question_pool(difficulty)
         if not question_pool:
-            return "🎭 진실게임 실패\n\n사용 가능한 질문이 없습니다."
+            return "🎭 진실게임 안내\n\n지금 사용할 수 있는 질문이 없어요."
         category, question = random.choice(question_pool)
-        change_money(user_id, user_name, -TRUTH_GAME_COST, "진실게임 질문 뽑기", None, "진실게임")
 
         conn = db()
         cur = conn.cursor()
-        cur.execute("""
-        INSERT INTO truth_game_sessions (
-            user_id, user_name, requester_user_id, requester_user_name,
-            question, category, status, cost, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-        """, (
-            target["user_id"], target["user_name"],
-            user_id, user_name,
-            question, category, TRUTH_GAME_COST, now_str()
-        ))
-        conn.commit()
-        conn.close()
+        try:
+            apply_money_change(cur, user_id, user_name, -TRUTH_GAME_COST, "진실게임 질문 뽑기", None, "진실게임")
+            cur.execute("""
+            INSERT INTO truth_game_sessions (
+                user_id, user_name, requester_user_id, requester_user_name,
+                question, category, status, cost, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            """, (
+                target["user_id"], target["user_name"],
+                user_id, user_name,
+                question, category, TRUTH_GAME_COST, now_str()
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
         target_name = display_nickname(target["user_name"])
         achievement_notice = grant_truth_question_achievement_if_ready(user_id, user_name)
@@ -6360,39 +6261,45 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
         return result_text
     except Exception as e:
         print("TRUTH_GAME_START_ERROR:", repr(e))
-        return "🎭 진실게임 시작 중 오류가 발생했습니다."
+        return "🎭 진실게임을 시작하는 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요."
 
 
 def truth_game_answer(user_id, user_name, answer_text):
     try:
         if not user_id:
-            return "🎭 진실게임 답변 실패\n\n사용자 정보를 확인할 수 없습니다."
+            return "🎭 진실게임 답변 안내\n\n사용자 정보를 확인하지 못했어요. 잠시 후 다시 시도해 주세요."
 
         answer_text = str(answer_text or "").strip()
         if not answer_text:
-            return "🎭 진실게임 답변 실패\n\n사용법: /진실답변 내용"
+            return "🎭 진실게임 답변 안내\n\n사용법: /진실답변 내용"
 
         pending = get_pending_truth_game(user_id)
         if not pending:
-            return "🎭 진실게임 답변 실패\n\n진행 중인 질문이 없습니다.\n질문 뽑기: /진실게임"
+            return "🎭 진실게임 답변 안내\n\n지금 진행 중인 질문이 없어요.\n질문 뽑기: /진실게임"
 
         conn = db()
         cur = conn.cursor()
-        cur.execute("""
-        UPDATE truth_game_sessions
-        SET status = 'answered',
-            answered_at = ?,
-            answer_text = ?,
-            user_name = ?
-        WHERE id = ? AND status = 'pending'
-        """, (now_str(), answer_text, user_name, pending["id"]))
-        changed = cur.rowcount
-        conn.commit()
-        conn.close()
+        try:
+            cur.execute("""
+            UPDATE truth_game_sessions
+            SET status = 'answered',
+                answered_at = ?,
+                answer_text = ?,
+                user_name = ?
+            WHERE id = ? AND status = 'pending'
+            """, (now_str(), answer_text, user_name, pending["id"]))
+            changed = cur.rowcount
+            if changed:
+                apply_money_change(cur, user_id, user_name, TRUTH_GAME_COST, "진실게임 답변 보상", None, "진실게임")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
         if not changed:
-            return "🎭 진실게임 답변 실패\n\n진행 중인 질문이 없습니다."
+            return "🎭 진실게임 답변 안내\n\n지금 진행 중인 질문이 없어요."
 
-        change_money(user_id, user_name, TRUTH_GAME_COST, "진실게임 답변 보상", None, "진실게임")
         achievement_notice = grant_truth_answer_achievement_if_ready(user_id, user_name)
         requester = pending["requester_user_name"] if "requester_user_name" in pending.keys() else None
         request_line = f"지목자: {requester}\n" if requester else ""
@@ -6409,46 +6316,53 @@ def truth_game_answer(user_id, user_name, answer_text):
         return result_text
     except Exception as e:
         print("TRUTH_GAME_ANSWER_ERROR:", repr(e))
-        return "🎭 진실게임 답변 처리 중 오류가 발생했습니다."
+        return "🎭 진실게임 답변 처리 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요."
 
 
 def truth_game_pass(user_id, user_name):
     try:
         if not user_id:
-            return "🎭 진실게임 패스 실패\n\n사용자 정보를 확인할 수 없습니다."
+            return "🎭 진실게임 패스 안내\n\n사용자 정보를 확인하지 못했어요. 잠시 후 다시 시도해 주세요."
 
         pending = get_pending_truth_game(user_id)
         if not pending:
-            return "🎭 진실게임 패스 실패\n\n진행 중인 질문이 없습니다.\n질문 뽑기: /진실게임"
-
-        conn = db()
-        cur = conn.cursor()
-        cur.execute("""
-        UPDATE truth_game_sessions
-        SET status = 'passed',
-            answered_at = ?,
-            user_name = ?
-        WHERE id = ? AND status = 'pending'
-        """, (now_str(), user_name, pending["id"]))
-        changed = cur.rowcount
-        conn.commit()
-        conn.close()
-        if not changed:
-            return "🎭 진실게임 패스 실패\n\n진행 중인 질문이 없습니다."
+            return "🎭 진실게임 패스 안내\n\n지금 진행 중인 질문이 없어요.\n질문 뽑기: /진실게임"
 
         requester = pending["requester_user_name"] if "requester_user_name" in pending.keys() else None
         requester_user_id = pending["requester_user_id"] if "requester_user_id" in pending.keys() else None
         refund = int(pending["cost"] or TRUTH_GAME_COST)
+        conn = db()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+            UPDATE truth_game_sessions
+            SET status = 'passed',
+                answered_at = ?,
+                user_name = ?
+            WHERE id = ? AND status = 'pending'
+            """, (now_str(), user_name, pending["id"]))
+            changed = cur.rowcount
+            if changed and requester_user_id and requester:
+                apply_money_change(
+                    cur,
+                    requester_user_id,
+                    requester,
+                    refund,
+                    f"진실게임 패스 환급: {user_name}",
+                    None,
+                    "진실게임"
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        if not changed:
+            return "🎭 진실게임 패스 안내\n\n지금 진행 중인 질문이 없어요."
+
         refund_line = ""
         if requester_user_id and requester:
-            change_money(
-                requester_user_id,
-                requester,
-                refund,
-                f"진실게임 패스 환급: {user_name}",
-                None,
-                "진실게임"
-            )
             refund_line = f"\n지목자 환급: {coin_text(refund)}"
         request_line = f"지목자: {requester}\n" if requester else ""
         return (
@@ -6459,7 +6373,7 @@ def truth_game_pass(user_id, user_name):
         )
     except Exception as e:
         print("TRUTH_GAME_PASS_ERROR:", repr(e))
-        return "🎭 진실게임 패스 처리 중 오류가 발생했습니다."
+        return "🎭 진실게임 패스 처리 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요."
 
 
 def truth_game_list_text(limit=10):
@@ -6503,7 +6417,7 @@ def truth_game_list_text(limit=10):
         return "\n".join(lines).strip()
     except Exception as e:
         print("TRUTH_GAME_LIST_ERROR:", repr(e))
-        return "🎭 진실게임 목록 조회 중 오류가 발생했습니다."
+        return "🎭 진실게임 목록을 불러오는 중 문제가 생겼어요."
 
 
 def truth_game_user_history_text(keyword, limit=20):
@@ -6584,7 +6498,7 @@ def truth_game_user_history_text(keyword, limit=20):
         return "\n".join(lines).strip()
     except Exception as e:
         print("TRUTH_GAME_USER_HISTORY_ERROR:", repr(e))
-        return "🎭 진실기록 조회 중 오류가 발생했습니다."
+        return "🎭 진실기록을 불러오는 중 문제가 생겼어요."
 
 
 def grant_blacksmith_if_first(user_id, user_name, piece_key):
@@ -6599,54 +6513,6 @@ def grant_blacksmith_if_first(user_id, user_name, piece_key):
         20,
         f"piece_key={piece_key}"
     )
-
-
-# =========================
-# 초기화 / 삭제
-# =========================
-def reset_date(date_str, source_id):
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM counts WHERE date = ? AND source_id = ?", (date_str, source_id))
-    deleted = cur.rowcount
-    conn.commit()
-    conn.close()
-    return deleted
-
-
-def reset_all_counts():
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM counts")
-    deleted = cur.rowcount
-    conn.commit()
-    conn.close()
-    return deleted
-
-
-def reset_all_users():
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM users")
-    deleted = cur.rowcount
-    conn.commit()
-    conn.close()
-    return deleted
-
-
-def reset_everything():
-    conn = db()
-    cur = conn.cursor()
-
-    tables = ["counts", "users", "currency", "currency_logs", "purchases"]
-    deleted = {}
-    for table in tables:
-        cur.execute(f"DELETE FROM {table}")
-        deleted[table] = cur.rowcount
-
-    conn.commit()
-    conn.close()
-    return deleted
 
 
 def find_delete_candidates(keyword, limit=20):
@@ -6815,61 +6681,6 @@ def delete_user_by_name(keyword):
     candidates = find_delete_candidates(keyword)
     targets = {row["user_id"]: row["user_name"] for row in candidates}
     return delete_users_by_ids(targets)
-
-
-def format_delete_done(keyword, deleted_users, deleted_counts, deleted_names, deleted_detail):
-    names_text = "\n".join([f"- {name}" for name in deleted_names])
-    return (
-        f"❌ 닉네임 삭제 완료\n\n"
-        f"검색어: {keyword}\n"
-        f"삭제 유저DB: {deleted_users}명\n"
-        f"삭제 마디수 데이터: {deleted_counts}개\n"
-        f"삭제 전체 기록: {sum(deleted_detail.values())}개\n\n"
-        f"삭제된 닉네임:\n{names_text}"
-    )
-
-
-
-def format_hard_delete_warning(target):
-    return (
-        "⚠️ 완전삭제 경고\n\n"
-        f"대상\n{target['user_name']}\n\n"
-        "아래 기록이 DB에서 영구 삭제됩니다.\n"
-        "- 유저 정보\n"
-        "- 코인 / 코인 내역\n"
-        "- 구매 내역\n"
-        "- 마디수 / 채팅 로그\n"
-        "- 출석 / 미션 / 업적\n"
-        "- 가챠 / 조각 / 행운포인트\n"
-        "- 주간랭킹 / 이벤트 / 마니또 / 친밀도 기록\n\n"
-        "현재 최종 삭제 흐름은 /닉삭제 → /닉삭제번호 → /완전삭제 입니다.\n"
-        "완전삭제 시 삭제유저 DB로 이동하며 /삭제복구 로 복구할 수 있습니다."
-    )
-
-
-def format_hard_delete_done(target_name, deleted_users, deleted_counts, deleted_names, deleted_detail):
-    names_text = "\n".join([f"- {name}" for name in deleted_names]) or f"- {target_name}"
-    detail_lines = []
-    for table, count in sorted(deleted_detail.items()):
-        if count:
-            detail_lines.append(f"- {table}: {count}개")
-
-    detail_text = "\n".join(detail_lines) if detail_lines else "- 삭제된 세부 기록 없음"
-
-    return (
-        "🗑️ 완전삭제 완료\n\n"
-        f"대상: {target_name}\n"
-        f"삭제 유저DB: {deleted_users}명\n"
-        f"삭제 마디수 데이터: {deleted_counts}개\n"
-        f"삭제 전체 기록: {sum(deleted_detail.values())}개\n\n"
-        f"삭제된 닉네임:\n{names_text}\n\n"
-        f"삭제 상세:\n{detail_text}\n\n"
-        "DB에서 완전히 제거되었습니다."
-    )
-
-
-
-
 
 
 
@@ -8090,32 +7901,6 @@ def genealogy_text_with_coins():
 
     return "\n".join(lines).strip()
 
-def format_rows(title, date_str, rows):
-    lines = [title, f"날짜: {date_str}", ""]
-    if not rows:
-        lines.append("데이터가 없습니다.")
-        return "\n".join(lines)
-
-    for i, row in enumerate(rows, 1):
-        lines.append(
-            f"{i}. {row['user_name']} - {row['count']}"
-        )
-    return "\n".join(lines)
-
-
-def format_total_rows(title, rows):
-    lines = [title, ""]
-    if not rows:
-        lines.append("데이터가 없습니다.")
-        return "\n".join(lines)
-
-    for i, row in enumerate(rows, 1):
-        lines.append(
-            f"{i}. {row['user_name']} - {row['count']}"
-        )
-    return "\n".join(lines)
-
-
 # =========================
 # 프로필 / 칭호
 # =========================
@@ -8914,19 +8699,19 @@ def handle(event):
             return
         rows = find_users(keyword, limit=10)
         if not rows:
-            reply(event.reply_token, "대상 유저를 찾을 수 없습니다.")
+            reply(event.reply_token, "대상 유저를 찾지 못했어요. 닉네임을 조금만 더 정확히 입력해 주세요.")
             return
         DELETE_PENDING[user_id] = {"mode": "soft_delete", "candidates": rows}
         if len(rows) > 1:
             lines = ["검색 결과가 여러 명입니다.", ""]
             for i, row in enumerate(rows, 1):
                 lines.append(f"{i}. {row['user_name']}")
-            lines += ["", "삭제할 번호를 /닉삭제번호 번호 로 입력해주세요."]
+            lines += ["", "삭제할 번호를 /닉삭제번호 번호 로 입력해 주세요."]
             reply(event.reply_token, "\n".join(lines))
             return
         changed, name = set_user_active_by_id_with_name(rows[0]["user_id"], 0)
         DELETE_PENDING[user_id] = {"mode": "deleted_selected", "target": rows[0]}
-        reply(event.reply_token, f"✅ 닉삭제 완료\n\n대상: {name}\n\n완전삭제를 원하면 /완전삭제 를 입력해주세요.")
+        reply(event.reply_token, f"✅ 닉삭제 완료\n\n대상: {name}\n\n완전삭제가 필요하면 /완전삭제 를 입력해 주세요.")
         return
 
     if text.startswith("/닉삭제번호"):
@@ -8941,11 +8726,11 @@ def handle(event):
             idx = int(text.split()[1]) - 1
             target = pending["candidates"][idx]
         except Exception:
-            reply(event.reply_token, "번호를 확인해주세요.")
+            reply(event.reply_token, "번호를 한 번 확인해 주세요.")
             return
         changed, name = set_user_active_by_id_with_name(target["user_id"], 0)
         DELETE_PENDING[user_id] = {"mode": "deleted_selected", "target": target}
-        reply(event.reply_token, f"✅ 닉삭제 완료\n\n대상: {name}\n\n완전삭제를 원하면 /완전삭제 를 입력해주세요.")
+        reply(event.reply_token, f"✅ 닉삭제 완료\n\n대상: {name}\n\n완전삭제가 필요하면 /완전삭제 를 입력해 주세요.")
         return
 
     if text == "/완전삭제":
@@ -9488,7 +9273,7 @@ def handle(event):
 
     if text == "/쌍방케미확인":
         if not is_private_chat(event) or not is_admin(user_id):
-            reply(event.reply_token, "사용할 수 없는 명령어입니다.")
+            reply(event.reply_token, "이 명령어는 지금 사용할 수 없어요.")
             return
         reply_many(event.reply_token, split_text_messages(mutual_chemistry_report_text()))
         return
