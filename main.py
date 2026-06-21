@@ -1290,6 +1290,7 @@ def user_commands_text():
 💞 케미
 ━━━━━━━━━━
 /케미 닉네임 (1:1)
+/케미확인 (1:1)
 
 ━━━━━━━━━━
 🎭 진실게임
@@ -1397,6 +1398,9 @@ def beginner_guide_text():
 - 하루 1회 이성에게 케미를 보낼 수 있습니다.
 - 서로 케미를 보낸 경우에만 공창에 익명 알림이 표시됩니다.
 - 매칭에 성공하면 본인 1:1창에만 성공 안내가 표시됩니다.
+
+/케미확인
+- 오늘 내가 보낸 케미의 매칭 성공 여부와 나에게 온 요청 수를 확인할 수 있습니다.
 
 ※ 노미클은 남자로 간주합니다.
 ※ 성별은 닉네임 인증 이모티콘과 저장된 족보를 기준으로 확인합니다.
@@ -5790,6 +5794,76 @@ def mutual_chemistry_report_text():
         return "💞 쌍방 케미 확인 중 오류가 발생했습니다."
 
 
+def personal_chemistry_check_text(user_id):
+    try:
+        if not user_id:
+            return "💞 케미확인 실패\n\n사용자 정보를 확인할 수 없습니다."
+
+        date_str = today()
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT target_user_id, created_at
+        FROM chemistry_signals
+        WHERE date = ?
+          AND sender_user_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """, (date_str, user_id))
+        sent = cur.fetchone()
+
+        cur.execute("""
+        SELECT COUNT(DISTINCT sender_user_id) AS cnt
+        FROM chemistry_signals
+        WHERE date = ?
+          AND target_user_id = ?
+          AND sender_user_id != ?
+        """, (date_str, user_id, user_id))
+        received = cur.fetchone()
+        received_count = int(received["cnt"] or 0) if received else 0
+
+        if not sent:
+            conn.close()
+            return (
+                "💞 케미확인\n\n"
+                f"기준일: {date_str}\n"
+                "내가 보낸 케미: 아직 참여하지 않음\n"
+                f"나에게 온 케미 요청: {received_count}명\n\n"
+                "꽃봇 1:1에서 /케미 닉네임 을 입력해 참여할 수 있습니다."
+            )
+
+        cur.execute("""
+        SELECT id
+        FROM chemistry_signals
+        WHERE date = ?
+          AND sender_user_id = ?
+          AND target_user_id = ?
+        LIMIT 1
+        """, (date_str, sent["target_user_id"], user_id))
+        matched = cur.fetchone() is not None
+        conn.close()
+
+        if matched:
+            return (
+                "💞 케미확인\n\n"
+                f"기준일: {date_str}\n"
+                "내가 보낸 케미: 매칭 성공\n"
+                f"나에게 온 케미 요청: {received_count}명\n\n"
+                "당신이 원하는 케미가 이루어졌습니다."
+            )
+
+        return (
+            "💞 케미확인\n\n"
+            f"기준일: {date_str}\n"
+            "내가 보낸 케미: 아직 미성공\n"
+            f"나에게 온 케미 요청: {received_count}명\n\n"
+            "상대도 오늘 같은 케미를 보내면 매칭됩니다."
+        )
+    except Exception as e:
+        print("PERSONAL_CHEMISTRY_CHECK_ERROR:", repr(e))
+        return "💞 케미확인 중 오류가 발생했습니다."
+
+
 def get_pending_truth_game(user_id):
     conn = db()
     cur = conn.cursor()
@@ -8929,6 +9003,13 @@ def handle(event):
             return
         keyword = text.replace("/케미", "", 1).strip()
         reply_many(event.reply_token, split_text_messages(chemistry_signal(user_id, user_name, keyword, announce_public=True)))
+        return
+
+    if text == "/케미확인":
+        if not is_private_chat(event):
+            reply(event.reply_token, one_to_one_command_notice("케미확인", "/케미확인"))
+            return
+        reply_many(event.reply_token, split_text_messages(personal_chemistry_check_text(user_id)))
         return
 
     if text == "/쌍방케미확인":
