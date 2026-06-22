@@ -1255,14 +1255,13 @@ def gacha_private_guide_text():
         "운영시간: 매주 토요일 00:00 ~ 21:00\n"
         "주간 제한: 상/중/하/조각 합산 15회\n\n"
         "명령어\n"
-        "/상가챠\n"
-        "/중가챠\n"
-        "/하가챠\n"
-        "/조각가챠\n"
-        "/조각\n"
-        "/대장장이\n"
-        "/가챠횟수\n"
-        "/가챠시스템"
+        "/가챠 상\n"
+        "/가챠 중\n"
+        "/가챠 하\n"
+        "/가챠 조각\n"
+        "/가챠 횟수\n"
+        "/가챠 시스템\n"
+        "/가챠 대장장이"
     )
 
 
@@ -1273,11 +1272,205 @@ def shop_private_guide_text():
         "명령어\n"
         "/상점\n"
         "/구매 상품명\n"
-        "/내보유\n"
-        "/내보유 미사용\n"
-        "/내보유 사용\n"
+        "/내정보 보유\n"
+        "/내정보 미사용\n"
+        "/내정보 사용\n"
         "/사용 구매번호"
     )
+
+
+def simplified_command_text(text):
+    """
+    짧은 별칭을 기존 명령어로 연결합니다.
+    기존 긴 명령어는 그대로 유지하고, 입력만 가볍게 받기 위한 변환입니다.
+    """
+    text = (text or "").strip()
+    if not text.startswith("/"):
+        return text
+
+    parts = text.split()
+    command = parts[0]
+    args = parts[1:]
+    rest = " ".join(args).strip()
+
+    if command == "/내정보":
+        if not args:
+            return "/내정보"
+        sub = args[0]
+        tail = " ".join(args[1:]).strip()
+        if sub in ("보유", "아이템", "상품"):
+            if tail in ("미사용", "사용"):
+                return f"/내보유 {tail}"
+            return "/내보유"
+        if sub in ("미사용", "사용"):
+            return f"/내보유 {sub}"
+        if sub in ("업적", "칭호"):
+            return "/업적"
+        if sub in ("코인", "잔액"):
+            return "/잔액"
+        if sub in ("내역", "코인내역"):
+            return "/코인내역"
+        return "/내정보"
+
+    if command == "/랭킹":
+        if not args or args[0] in ("오늘", "마디수", "일간"):
+            return "/마디수"
+        sub = args[0]
+        if sub in ("주간", "이번주"):
+            return "/주간랭킹"
+        if sub in ("전체", "누적"):
+            return "/전체순위"
+        if sub in ("코인", "잔액"):
+            return "/코인랭킹"
+        if sub in ("친밀도",):
+            return "/친밀도랭킹"
+        if sub in ("인기", "인기인"):
+            return "/인기인"
+        if sub in ("설렘", "설렘픽"):
+            return "/설렘픽랭킹"
+        return "/마디수"
+
+    if command == "/가챠":
+        if not args:
+            return text
+        sub = args[0]
+        if sub in ("상", "상급"):
+            return "/상가챠"
+        if sub in ("중", "중급"):
+            return "/중가챠"
+        if sub in ("하", "하급"):
+            return "/하가챠"
+        if sub in ("조각", "조각가챠"):
+            return "/조각가챠"
+        if sub in ("횟수", "사용횟수"):
+            return "/가챠횟수"
+        if sub in ("시스템", "안내", "설명"):
+            return "/가챠시스템"
+        if sub in ("조각확인", "조각보유", "조각보기"):
+            return "/조각"
+        if sub in ("대장장이", "교환"):
+            return "/대장장이"
+        return text
+
+    if command == "/설렘":
+        if not args:
+            return "/설렘픽"
+        sub = args[0]
+        if sub in ("랭킹", "순위"):
+            return "/설렘픽랭킹"
+        if sub in ("현황", "확인"):
+            return "/설렘픽현황"
+        return "/설렘픽 " + rest
+
+    if command == "/케미":
+        if args and args[0] in ("확인", "현황"):
+            return "/케미확인"
+        return text
+
+    if command == "/진실":
+        if not args:
+            return "/진실게임"
+        sub = args[0]
+        tail = " ".join(args[1:]).strip()
+        if sub in ("취소", "취소하기"):
+            return ("/진실취소 " + tail).strip()
+        if sub in ("초기화", "리셋"):
+            return "/진실게임초기화"
+        if sub in ("답변",):
+            return ("/진실답변 " + tail).strip()
+        if sub in ("패스", "넘기기"):
+            return "/진실패스"
+        if sub in ("목록",):
+            return "/진실목록"
+        if sub in ("기록",):
+            return ("/진실기록 " + tail).strip()
+        if sub in ("질문추가",):
+            return ("/진실질문추가 " + tail).strip()
+        return "/진실게임 " + rest
+
+    if command == "/답변":
+        return ("/진실답변 " + rest).strip()
+
+    if command == "/패스":
+        return "/진실패스"
+
+    if command == "/운영":
+        if not args:
+            return "/운영명령어"
+        sub = args[0]
+        tail = " ".join(args[1:]).strip()
+        operator_aliases = {
+            "명령어": "/운영명령어",
+            "도움말": "/운영명령어",
+            "지급": "/지급",
+            "차감": "/차감",
+            "코인내역": "/코인내역",
+            "코인검증": "/코인검증",
+            "경제현황": "/경제현황",
+            "유저검색": "/유저검색",
+            "유저상세": "/유저상세",
+            "아이템지급": "/아이템지급",
+            "아이템보유": "/유저아이템보유",
+            "유저아이템보유": "/유저아이템보유",
+            "아이템삭제": "/유저아이템삭제",
+            "유저아이템삭제": "/유저아이템삭제",
+            "정산검증": "/정산검증",
+            "정산": "/정산검증",
+            "오류": "/최근오류",
+            "최근오류": "/최근오류",
+            "DB상태": "/DB상태",
+            "디비상태": "/DB상태",
+            "수집상태": "/수집상태",
+            "최근로그": "/최근로그",
+            "수집누락": "/수집누락",
+            "경고": "/경고",
+            "경고누적일": "/경고누적일",
+            "마디수": "/마디수",
+            "단벙참여확인": "/단벙참여확인",
+            "설렘픽정산": "/설렘픽정산",
+            "설렘픽초기화": "/설렘픽초기화",
+            "럭키정산": "/럭키정산",
+            "럭키초기화": "/럭키초기화",
+            "럭키현황": "/럭키현황전체",
+            "전체유저": "/전체유저",
+            "방정보": "/방정보",
+            "버전": "/버전",
+        }
+        mapped = operator_aliases.get(sub)
+        if not mapped:
+            return text
+        return (mapped + (" " + tail if tail else "")).strip()
+
+    return text
+
+
+def user_summary_text(user_id, user_name):
+    try:
+        rows = list_user_purchases(user_id, limit=None)
+        owned = len([row for row in rows if row["status"] in ("owned", "pending")])
+        used = len([row for row in rows if row["status"] in ("used", "done")])
+        best_name, best_score = get_best_affinity(user_id)
+        best_line = f"{best_name} ({best_score})" if best_name else "기록 없음"
+
+        return "\n".join([
+            "👤 내정보",
+            "",
+            f"대상: {user_name}",
+            f"💰 보유 코인: {coin_text(get_balance(user_id))}",
+            f"🎁 미사용 아이템: {owned}개",
+            f"📦 사용완료 아이템: {used}개",
+            f"📅 출석: {get_attendance_count(user_id)}일",
+            f"🏆 업적: {get_achievement_count(user_id)}개",
+            f"💕 최고 친밀도: {best_line}",
+            "",
+            "자세히 보기",
+            "/내정보 보유",
+            "/내정보 업적",
+            "/내정보 코인",
+        ])
+    except Exception as e:
+        log_error("USER_SUMMARY_ERROR", e)
+        return "👤 내정보를 불러오는 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요."
 
 
 def user_commands_text():
@@ -1288,6 +1481,7 @@ def user_commands_text():
 ━━━━━━━━━━
 /명령어
 /가이드
+/내정보
 
 ━━━━━━━━━━
 🎯 활동
@@ -1297,19 +1491,19 @@ def user_commands_text():
 /수령
 /단벙
 /단벙참여 단벙제목
-/마디수
-/전체순위
-/주간랭킹
+/랭킹
+/랭킹 주간
+/랭킹 전체
 /주사위
 
 ━━━━━━━━━━
 💰 재화
 ━━━━━━━━━━
-/내보유
-/내보유 미사용
-/내보유 사용
-/잔액
-/코인랭킹
+/내정보
+/내정보 보유
+/내정보 업적
+/내정보 코인
+/랭킹 코인
 /코인내역
 
 ━━━━━━━━━━
@@ -1322,14 +1516,12 @@ def user_commands_text():
 🎰 가챠
 ━━━━━━━━━━
 /가챠
-/가챠시스템
-/가챠횟수
-/상가챠
-/중가챠
-/하가챠
-/조각가챠
-/조각
-/대장장이
+/가챠 상
+/가챠 중
+/가챠 하
+/가챠 조각
+/가챠 횟수
+/가챠 대장장이
 
 ━━━━━━━━━━
 🎭 마니또
@@ -1355,25 +1547,25 @@ def user_commands_text():
 ━━━━━━━━━━
 💘 설렘픽
 ━━━━━━━━━━
-/설렘픽 닉네임 (1:1)
-/설렘픽현황
-/설렘픽랭킹
+/설렘 닉네임 (1:1)
+/설렘 현황
+/설렘 랭킹
 
 ━━━━━━━━━━
 💞 케미
 ━━━━━━━━━━
 /케미 닉네임 (1:1)
-/케미확인 (1:1)
+/케미 확인 (1:1)
 
 ━━━━━━━━━━
 🎭 진실게임
 ━━━━━━━━━━
-/진실게임
-/진실게임 순한맛 닉네임
-/진실답변 내용
-/진실패스
-/진실취소
-/진실게임초기화
+/진실
+/진실 순한맛 닉네임
+/답변 내용
+/패스
+/진실 취소
+/진실 초기화
 
 ━━━━━━━━━━
 🏆 업적
@@ -1386,7 +1578,9 @@ def user_commands_text():
 /럭키드로우
 /럭키드로우구매
 /럭키드로우현황
-/럭키드로우결과"""
+/럭키드로우결과
+
+※ 기존 긴 명령어도 그대로 사용할 수 있습니다."""
 
 def beginner_guide_text():
     return """📖 S.N.S 가이드
@@ -1406,7 +1600,7 @@ def beginner_guide_text():
 
 6️⃣ /미션 을 확인하고 /수령 으로 코인을 획득할 수 있습니다.
 
-7️⃣ /내보유 로 보유 코인과 아이템을 확인할 수 있습니다.
+7️⃣ /내정보 로 보유 코인과 아이템을 확인할 수 있습니다.
 
 8️⃣ /상점 에서 다양한 아이템을 구매할 수 있습니다.
 
@@ -1455,7 +1649,7 @@ def beginner_guide_text():
 /명령어
 /미션
 /수령
-/내보유
+/내정보
 /상점
 /마니또
 
@@ -1463,7 +1657,7 @@ def beginner_guide_text():
 
 💘 설렘픽 / 케미
 
-/설렘픽 닉네임
+/설렘 닉네임
 - 하루 1회 이성에게 익명 투표할 수 있습니다.
 - 설렘픽 랭킹 1~3등은 주간 정산 보상을 받습니다.
 
@@ -1473,7 +1667,7 @@ def beginner_guide_text():
 - 매칭에 성공하면 본인 1:1창에만 성공 안내가 표시됩니다.
 - 최초 케미 성공 보상은 1코인, 이후 성공 보상은 0.2코인입니다.
 
-/케미확인
+/케미 확인
 - 오늘 내가 보낸 케미의 매칭 성공 여부와 나에게 온 요청 수를 확인할 수 있습니다.
 
 ※ 노미클은 남자로 간주합니다.
@@ -1483,6 +1677,18 @@ def beginner_guide_text():
 
 def operator_commands_text():
     return """🔒 운영진 전용 명령어
+
+━━━━━━━━━━
+⚡ 간단 명령어
+━━━━━━━━━━
+/운영 지급 닉네임 금액
+/운영 차감 닉네임 금액
+/운영 코인검증 닉네임
+/운영 정산검증
+/운영 오류
+/운영 아이템보유
+
+※ 기존 운영 명령어도 그대로 사용할 수 있습니다.
 
 ━━━━━━━━━━
 💰 재화
@@ -3928,7 +4134,7 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
             "🎰 이번 주 가챠 횟수를 모두 사용했습니다.\n\n"
             f"사용: {used_count} / {WEEKLY_GACHA_LIMIT}회\n"
             "초기화: 매주 토요일 00:00(KST)\n\n"
-            "확인: /가챠횟수"
+            "확인: /가챠 횟수"
         )
 
     log_label = log_command or f"{tier} 가챠"
@@ -4033,20 +4239,20 @@ def gacha_system_text():
         "매주 토요일 00:00 ~ 21:00\n\n"
         "※ 가챠는 봇 1:1 개인채팅 전용입니다.\n"
         "※ 주간 최대 15회입니다.\n"
-        "※ 상/중/하/조각가챠 횟수는 합산됩니다.\n\n"
+        "※ 상/중/하/조각 가챠 횟수는 합산됩니다.\n\n"
         "━━━━━━━━━━\n"
         "💰 코인 가챠\n"
         "━━━━━━━━━━\n\n"
-        "/하가챠 : 1코인\n"
-        "/중가챠 : 3코인\n"
-        "/상가챠 : 5코인\n\n"
+        "/가챠 하 : 1코인\n"
+        "/가챠 중 : 3코인\n"
+        "/가챠 상 : 5코인\n\n"
         "결과 범위: 0배 ~ 2배\n"
         "결과에 따라 코인이 줄거나 늘어날 수 있습니다.\n\n"
         f"{gacha_probability_text()}\n\n"
         "━━━━━━━━━━\n"
         "🧩 조각 가챠\n"
         "━━━━━━━━━━\n\n"
-        "/조각가챠 : 1코인\n"
+        "/가챠 조각 : 1코인\n"
         "획득: 철 / 은 / 금 조각 또는 꽝\n\n"
         "━━━━━━━━━━\n"
         "🔨 대장장이\n"
@@ -4054,9 +4260,9 @@ def gacha_system_text():
         "철 조각 10개 → 0.5코인\n"
         "은 조각 10개 → 1코인\n"
         "금 조각 10개 → 2코인\n\n"
-        "확인: /조각\n"
-        "교환: /대장장이\n"
-        "횟수: /가챠횟수"
+        "확인: /가챠 조각확인\n"
+        "교환: /가챠 대장장이\n"
+        "횟수: /가챠 횟수"
     )
 
 
@@ -5518,7 +5724,7 @@ def heart_pick(sender_user_id, sender_user_name, target_keyword, announce_public
 
         target_keyword = str(target_keyword or "").strip()
         if not target_keyword:
-            return "💘 설렘픽 안내\n\n사용법: /설렘픽 닉네임"
+            return "💘 설렘픽 안내\n\n사용법: /설렘 닉네임"
 
         target, err = resolve_active_user_by_nickname(target_keyword, purpose="대상")
         if err:
@@ -6243,20 +6449,20 @@ def truth_game_setup_text():
         "🎭 진실게임 가이드\n\n"
         "난이도와 상대를 지목하면 질문이 하나 뽑혀요.\n\n"
         "사용법\n"
-        "/진실게임 난이도 닉네임\n"
-        "예: /진실게임 썸맛 미트\n\n"
+        "/진실 난이도 닉네임\n"
+        "예: /진실 썸맛 미트\n\n"
         "진행\n"
         f"- 질문 비용: {coin_text(TRUTH_GAME_COST)}\n"
         f"- 답변 완료: 답변자에게 {coin_text(TRUTH_GAME_COST)} 지급\n"
         f"- 패스: 질문자 {coin_text(TRUTH_GAME_COST)} 환급 / 패스한 사람 {coin_text(TRUTH_GAME_COST)} 차감\n"
-        "- 취소: 질문자는 /진실취소 로 취소 가능\n\n"
+        "- 취소: 질문자는 /진실 취소 로 취소 가능\n\n"
         "참고\n"
         "- 자기 자신은 지목할 수 없어요.\n"
         "- 이미 받았던 질문은 같은 난이도에서 다시 나오지 않아요.\n"
-        "- 다시 처음부터 받고 싶으면 /진실게임초기화\n\n"
+        "- 다시 처음부터 받고 싶으면 /진실 초기화\n\n"
         "답변 명령어\n"
-        "/진실답변 내용\n"
-        "/진실패스\n\n"
+        "/답변 내용\n"
+        "/패스\n\n"
         f"난이도: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
     )
 
@@ -6279,7 +6485,7 @@ def parse_truth_game_args(raw_args):
             "🎭 진실게임 설정\n\n"
             "난이도를 먼저 선택해주세요.\n\n"
             "사용법\n"
-            "/진실게임 난이도 닉네임\n\n"
+            "/진실 난이도 닉네임\n\n"
             f"난이도: {', '.join(TRUTH_GAME_DIFFICULTIES)}"
         )
 
@@ -6288,7 +6494,7 @@ def parse_truth_game_args(raw_args):
         return None, None, (
             "🎭 진실게임 설정\n\n"
             "상대를 지목해주세요.\n\n"
-            f"예시: /진실게임 {difficulty} 미트"
+            f"예시: /진실 {difficulty} 미트"
         )
 
     return target_keyword, difficulty, None
@@ -6544,7 +6750,7 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
         if pending:
             cancel_line = ""
             if pending["requester_user_id"] == user_id:
-                cancel_line = "\n취소: /진실취소"
+                cancel_line = "\n취소: /진실 취소"
             return (
                 "🎭 진행 중인 진실게임이 있습니다.\n\n"
                 f"대상: {pending['user_name']}\n"
@@ -6574,7 +6780,7 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
                 f"{difficulty} 질문은 전부 받아봤어요.\n"
                 "새 질문은 향후 추가될 예정입니다.\n"
                 f"코인은 바로 환급 처리했어요. 현재 보유: {coin_text(get_balance(user_id))}\n\n"
-                "다시 처음부터 받고 싶다면 /진실게임초기화 를 입력해 주세요."
+                "다시 처음부터 받고 싶다면 /진실 초기화 를 입력해 주세요."
             )
         category, question = random.choice(question_pool)
 
@@ -6608,8 +6814,8 @@ def truth_game_start(user_id, user_name, target_keyword, difficulty=None):
             f"질문: {question}\n"
             f"질문 비용: -{coin_text(TRUTH_GAME_COST)}\n"
             f"현재 보유: {coin_text(get_balance(user_id))}\n\n"
-            f"{target_name}님은 /진실답변 내용 으로 답변하거나 /진실패스 로 넘길 수 있습니다.\n"
-            "질문자는 /진실취소 로 취소할 수 있습니다."
+            f"{target_name}님은 /답변 내용 으로 답변하거나 /패스 로 넘길 수 있습니다.\n"
+            "질문자는 /진실 취소 로 취소할 수 있습니다."
         )
         if achievement_notice:
             result_text += "\n\n" + achievement_notice
@@ -6626,11 +6832,11 @@ def truth_game_answer(user_id, user_name, answer_text):
 
         answer_text = str(answer_text or "").strip()
         if not answer_text:
-            return "🎭 진실게임 답변 안내\n\n사용법: /진실답변 내용"
+            return "🎭 진실게임 답변 안내\n\n사용법: /답변 내용"
 
         pending = get_pending_truth_game(user_id)
         if not pending:
-            return "🎭 진실게임 답변 안내\n\n지금 진행 중인 질문이 없어요.\n질문 뽑기: /진실게임"
+            return "🎭 진실게임 답변 안내\n\n지금 진행 중인 질문이 없어요.\n질문 뽑기: /진실"
 
         conn = db()
         cur = conn.cursor()
@@ -6694,12 +6900,12 @@ def truth_game_cancel(requester_user_id, requester_user_name, target_keyword="")
                 return (
                     "🎭 진실게임 취소 안내\n\n"
                     "이 질문은 내가 건 질문이 아니라 취소할 수 없어요.\n"
-                    "답변하려면 /진실답변 내용, 넘기려면 /진실패스 를 사용해 주세요."
+                    "답변하려면 /답변 내용, 넘기려면 /패스 를 사용해 주세요."
                 )
             return (
                 "🎭 진실게임 취소 안내\n\n"
                 "내가 걸어둔 진행 중 질문이 없어요.\n"
-                "특정 대상 질문을 취소하려면 /진실취소 닉네임 으로 입력해 주세요."
+                "특정 대상 질문을 취소하려면 /진실 취소 닉네임 으로 입력해 주세요."
             )
 
         refund = int(pending["cost"] or TRUTH_GAME_COST)
@@ -6760,7 +6966,7 @@ def truth_game_pass(user_id, user_name):
 
         pending = get_pending_truth_game(user_id)
         if not pending:
-            return "🎭 진실게임 패스 안내\n\n지금 진행 중인 질문이 없어요.\n질문 뽑기: /진실게임"
+            return "🎭 진실게임 패스 안내\n\n지금 진행 중인 질문이 없어요.\n질문 뽑기: /진실"
 
         requester = pending["requester_user_name"] if "requester_user_name" in pending.keys() else None
         requester_user_id = pending["requester_user_id"] if "requester_user_id" in pending.keys() else None
@@ -9047,7 +9253,7 @@ def handle(event):
             reply_many(event.reply_token, split_text_messages("\n\n".join(dict.fromkeys(public_notices))))
         return
 
-    text = (event.message.text or "").strip()
+    text = simplified_command_text((event.message.text or "").strip())
 
     if public_notices and text.startswith("/"):
         reply_many(event.reply_token, split_text_messages("\n\n".join(dict.fromkeys(public_notices))))
@@ -9827,6 +10033,16 @@ def handle(event):
         reply(event.reply_token, f"💰 {user_name}님의 보유 코인\n\n{coin_text(get_balance(user_id))}")
         return
 
+    if text == "/내정보":
+        push_or_reply_private_info(
+            event,
+            user_id,
+            user_summary_text(user_id, user_name),
+            "📩 내정보를 개인 메시지로 보내드렸습니다.",
+            "/내정보"
+        )
+        return
+
     if text == "/내보유":
         msg = (
             f"💰 {user_name}님의 보유 코인\n\n"
@@ -9899,14 +10115,14 @@ def handle(event):
 
     if text == "/설렘픽" or text.startswith("/설렘픽 "):
         if not is_private_chat(event):
-            reply(event.reply_token, one_to_one_command_notice("설렘픽", "/설렘픽 닉네임"))
+            reply(event.reply_token, one_to_one_command_notice("설렘픽", "/설렘 닉네임"))
             return
         keyword = text.replace("/설렘픽", "", 1).strip()
         reply_many(event.reply_token, split_text_messages(heart_pick(user_id, user_name, keyword, announce_public=True)))
         return
 
     if text == "/설렘픽현황":
-        push_or_reply_private_info(event, user_id, heart_pick_status_text(user_id, user_name), "📩 설렘픽 현황을 개인 메시지로 보내드렸습니다.", "/설렘픽현황")
+        push_or_reply_private_info(event, user_id, heart_pick_status_text(user_id, user_name), "📩 설렘픽 현황을 개인 메시지로 보내드렸습니다.", "/설렘 현황")
         return
 
     if text == "/설렘픽랭킹":
@@ -9923,7 +10139,7 @@ def handle(event):
 
     if text == "/케미확인":
         if not is_private_chat(event):
-            reply(event.reply_token, one_to_one_command_notice("케미확인", "/케미확인"))
+            reply(event.reply_token, one_to_one_command_notice("케미확인", "/케미 확인"))
             return
         reply_many(event.reply_token, split_text_messages(personal_chemistry_check_text(user_id)))
         return
