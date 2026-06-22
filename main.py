@@ -7890,12 +7890,15 @@ def manitto_status_text(user_id, user_name):
         extra = ""
 
     if completed:
+        paid_reward = manitto_completed_reward_amount(row, user_id)
+        reward_text = coin_text(paid_reward) if paid_reward > 0 else "기록 확인 필요"
         return (
             f"{title}\n\n"
             "✅ 미션 성공\n\n"
             f"대상\n{row['target_user_name']}\n\n"
             f"달성 친밀도\n{int(row['required_score'] or MANITTO_REQUIRED_SCORE)} / {int(row['required_score'] or MANITTO_REQUIRED_SCORE)}\n\n"
-            "🎁 보상은 이미 지급 완료되었습니다.\n\n"
+            f"🎁 받은 보상\n{reward_text}\n\n"
+            "보상은 이미 지급 완료되었습니다.\n\n"
             "축하합니다 😊"
         )
 
@@ -7916,6 +7919,33 @@ def manitto_status_text(user_id, user_name):
         f"남은 변경횟수\n{max(0, MANITTO_REROLL_LIMIT - reroll_count)} / {MANITTO_REROLL_LIMIT}"
         f"{near}"
     )
+
+
+def manitto_completed_reward_amount(row, user_id):
+    reward = int(row["reward"] or 0) if "reward" in row.keys() else 0
+    if reward > 0:
+        return reward
+
+    try:
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT amount
+        FROM currency_logs
+        WHERE user_id = ?
+          AND staff_user_name = '마니또'
+          AND reason LIKE ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """, (user_id, f"마니또 성공: {row['target_user_name']}%"))
+        log_row = cur.fetchone()
+        conn.close()
+        if log_row and int(log_row["amount"] or 0) > 0:
+            return int(log_row["amount"] or 0)
+    except Exception as e:
+        log_error("MANITTO_REWARD_LOOKUP_ERROR", e)
+
+    return 0
 
 
 def reroll_manitto(user_id, user_name):
@@ -8029,12 +8059,13 @@ def complete_manitto_if_ready(hunter_user_id, hunter_user_name, partner_user_id)
         cur.execute("""
         UPDATE manitto_assignments
         SET completed = 1,
+            reward = ?,
             completed_at = ?,
             updated_at = ?
         WHERE week_start = ?
           AND hunter_user_id = ?
           AND completed = 0
-        """, (now_str(), now_str(), week_start, hunter_user_id))
+        """, (reward, now_str(), now_str(), week_start, hunter_user_id))
         changed = cur.rowcount
 
         if changed:
