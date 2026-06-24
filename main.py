@@ -4744,28 +4744,30 @@ def check_hidden_2000_reward(date_str, source_id, user_id, user_name):
 
 def attendance_streak_days(user_id, date_str):
     """
-    date_str 기준으로 오늘 포함 연속 출석일 계산.
+    date_str 기준 출석일차 계산.
+    중간에 /출석을 놓쳐도 첫 출석일 기준으로 일차는 계속 진행됩니다.
     """
     base = datetime.strptime(date_str, "%Y-%m-%d").date()
 
     conn = db()
     cur = conn.cursor()
     cur.execute("""
-    SELECT date
+    SELECT MIN(date) AS first_date
     FROM attendance
     WHERE user_id = ?
-    """, (user_id,))
-    dates = {row["date"] for row in cur.fetchall()}
+      AND date <= ?
+    """, (user_id, date_str))
+    row = cur.fetchone()
     conn.close()
 
-    streak = 0
-    day = base
+    if not row or not row["first_date"]:
+        return 0
 
-    while day.strftime("%Y-%m-%d") in dates:
-        streak += 1
-        day -= timedelta(days=1)
+    first_date = datetime.strptime(row["first_date"], "%Y-%m-%d").date()
+    if first_date > base:
+        return 0
 
-    return streak
+    return (base - first_date).days + 1
 
 
 def mark_legacy_attendance_streak_reward_claimed(user_id, user_name, streak_days, reward):
@@ -4815,7 +4817,7 @@ def mark_legacy_attendance_streak_reward_claimed(user_id, user_name, streak_days
 
 def grant_attendance_streak_reward_once(date_str, user_id, user_name, streak_days, reward, current_streak):
     """
-    연속출석 보상은 유저별/단계별로 한 번만 지급합니다.
+    출석일수 보상은 유저별/단계별로 한 번만 지급합니다.
     """
     if mark_legacy_attendance_streak_reward_claimed(user_id, user_name, streak_days, reward):
         return False
@@ -4843,7 +4845,7 @@ def grant_attendance_streak_reward_once(date_str, user_id, user_name, streak_day
                 user_id,
                 user_name,
                 reward,
-                f"연속출석 보상: {streak_days}일 연속 출석",
+                f"출석일수 보상: {streak_days}일차 출석",
                 None,
                 "출석시스템"
             )
@@ -4871,7 +4873,7 @@ def grant_attendance_streak_reward_once(date_str, user_id, user_name, streak_day
 
 def check_attendance_streak_reward(date_str, user_id, user_name):
     """
-    연속출석 보상:
+    출석일수 보상:
     7일차 2코인, 14일차 3코인, 21일차 4코인처럼
     7일 단위마다 1코인씩 증가하며 각 구간별 1회 지급.
     """
@@ -10097,8 +10099,8 @@ def handle(event):
                 streak, streak_paid = 1, []
             extra = ""
             if streak_paid:
-                paid_lines = [f"{days}일 연속 출석 보상 {coin_text(reward)}" for days, reward in streak_paid]
-                extra = "\n\n🎁 연속출석 보상\n" + "\n".join(paid_lines)
+                paid_lines = [f"{days}일차 출석일수 보상 {coin_text(reward)}" for days, reward in streak_paid]
+                extra = "\n\n🎁 출석일수 보상\n" + "\n".join(paid_lines)
                 balance = get_balance(user_id)
             reply(event.reply_token, f"✅ 출석 완료\n\n{user_name}님\n보상: {coin_text(ATTENDANCE_REWARD)}\n현재 보유: {coin_text(balance)}{extra}\n\n{streak}일차 출석완료")
         else:
