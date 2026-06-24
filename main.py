@@ -130,6 +130,9 @@ def is_operator_command(text):
         "/운영명령어", "/방정보", "/DB상태", "/수집상태", "/최근로그", "/수집누락", "/전체유저",
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
+        "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과",
+        "/가챠", "/가챠시스템", "/가챠횟수", "/상가챠", "/중가챠", "/하가챠",
+        "/조각가챠", "/조각", "/대장장이", "/김미트상가챠", "/상점",
         "/설렘픽초기화", "/설렘픽정산", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
         "/유저아이템보유", "/유저아이템삭제", "/운영진친밀도", "/운영진친밀도확인",
         "/진실질문", "/진실목록", "/진실기록", "/진실질문추가",
@@ -139,6 +142,7 @@ def is_operator_command(text):
     prefix_commands = [
         "/유저검색 ", "/유저상세 ", "/닉삭제", "/닉삭제번호",
         "/지급 ", "/차감 ", "/코인내역 ", "/삭제복구",
+        "/구매 ", "/가챠 ",
         "/상품추가 ", "/상품등록 ", "/상품삭제 ",
         "/사용처리 ", "/구매취소 ", "/아이템지급 ",
         "/유저아이템삭제 ",
@@ -1238,63 +1242,6 @@ def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 �
     reply(event.reply_token, one_to_one_command_notice("개인 정보 기능", command_hint))
 
 
-def private_only_notice(*args):
-    """
-    공개방에서 1:1 전용 기능을 눌렀을 때 안내.
-    호환:
-      private_only_notice("가챠")
-      private_only_notice(event, user_id, text_value, "가챠")
-    """
-    if len(args) >= 4:
-        event, user_id, text_value, feature_name = args[0], args[1], args[2], args[3]
-        command_hint = {
-            "가챠": "/가챠",
-            "상점": "/상점",
-            "개인 기능": "/명령어",
-        }.get(str(feature_name), None)
-        reply(event.reply_token, one_to_one_command_notice(feature_name, command_hint))
-        return None
-
-    feature_name = args[0] if args else "해당 기능"
-    command_hint = {
-        "가챠": "/가챠",
-        "상점": "/상점",
-        "개인 기능": "/명령어",
-    }.get(str(feature_name), None)
-    return one_to_one_command_notice(feature_name, command_hint)
-
-
-def gacha_operation_room_guide_text():
-    return (
-        "🎰 가챠 안내\n\n"
-        "가챠는 운영방에서만 이용할 수 있습니다.\n\n"
-        "운영시간 제한: 없음\n"
-        "주간 이용 제한: 없음\n\n"
-        "명령어\n"
-        "/가챠 상\n"
-        "/가챠 중\n"
-        "/가챠 하\n"
-        "/가챠 조각\n"
-        "/가챠 횟수\n"
-        "/가챠 시스템\n"
-        "/가챠 대장장이"
-    )
-
-
-def shop_private_guide_text():
-    return (
-        "🛒 상점 안내\n\n"
-        "상점과 구매/사용 기능은 꽃봇 1:1 채팅에서 이용해주세요.\n\n"
-        "명령어\n"
-        "/상점\n"
-        "/구매 상품명\n"
-        "/내정보 보유\n"
-        "/내정보 미사용\n"
-        "/내정보 사용\n"
-        "/사용 구매번호"
-    )
-
-
 def simplified_command_text(text):
     """
     짧은 별칭을 기존 명령어로 연결합니다.
@@ -1524,23 +1471,6 @@ def user_commands_text():
 /코인내역
 
 ━━━━━━━━━━
-🛒 상점
-━━━━━━━━━━
-/상점
-/구매 상품명
-
-━━━━━━━━━━
-🎰 가챠(운영방 전용)
-━━━━━━━━━━
-/가챠
-/가챠 상
-/가챠 중
-/가챠 하
-/가챠 조각
-/가챠 횟수
-/가챠 대장장이
-
-━━━━━━━━━━
 🎭 마니또
 ━━━━━━━━━━
 /마니또
@@ -1589,14 +1519,6 @@ def user_commands_text():
 ━━━━━━━━━━
 /업적
 
-━━━━━━━━━━
-🎟 럭키드로우
-━━━━━━━━━━
-/럭키드로우
-/럭키드로우구매
-/럭키드로우현황
-/럭키드로우결과
-
 ※ 기존 긴 명령어도 그대로 사용할 수 있습니다."""
 
 def beginner_guide_text():
@@ -1621,7 +1543,7 @@ def beginner_guide_text():
 
 8️⃣ 코인이 부족할 때는 /회생 으로 하루 5회까지 10코인씩 복구할 수 있습니다.
 
-9️⃣ /상점 에서 다양한 아이템을 구매할 수 있습니다.
+9️⃣ /내정보 보유 로 보유 아이템을 확인할 수 있습니다.
 
 🔟 /마니또 와 친밀도 시스템을 통해 추가 보상을 획득할 수 있습니다.
 
@@ -1670,7 +1592,6 @@ def beginner_guide_text():
 /수령
 /회생
 /내정보
-/상점
 /마니또
 
 ━━━━━━━━━━
@@ -1740,6 +1661,8 @@ def operator_commands_text():
 ━━━━━━━━━━
 🛒 상점/아이템 관리
 ━━━━━━━━━━
+/상점
+/구매 상품명
 /상품등록 상품명 가격 설명
 /상품추가 상품명 가격 설명
 /상품삭제 상품명
@@ -1751,8 +1674,23 @@ def operator_commands_text():
 /구매취소 구매번호
 
 ━━━━━━━━━━
+🎰 가챠
+━━━━━━━━━━
+/가챠
+/가챠 상
+/가챠 중
+/가챠 하
+/가챠 조각
+/가챠 횟수
+/가챠 대장장이
+
+━━━━━━━━━━
 🎟 럭키드로우
 ━━━━━━━━━━
+/럭키드로우
+/럭키드로우구매
+/럭키드로우현황
+/럭키드로우결과
 /럭키정산
 /럭키초기화
 /럭키현황전체
@@ -2780,7 +2718,7 @@ def danbung_info_text():
         "- 예: /단벙참여 @@1번단벙\n\n"
         "2. 단벙주최권 사용 단벙\n"
         "- 주최자가 단벙주최권을 구매해 사용하면 참여자는 코인이 차감되지 않습니다.\n"
-        "- 단벙주최권은 /상점 에서 구매할 수 있습니다."
+        "- 단벙주최권은 운영진에게 문의해 주세요."
     )
 
 
@@ -4280,7 +4218,7 @@ def gacha_system_text():
         "🎰 가챠 시스템 🎰\n\n"
         "운영시간\n"
         "제한 없음\n\n"
-        "※ 가챠는 운영방 전용입니다.\n"
+        "※ 가챠는 운영방에서 운영진만 이용할 수 있습니다.\n"
         "※ 주간 이용 제한은 없습니다.\n"
         "※ 상/중/하/조각 가챠 횟수는 기록만 표시됩니다.\n\n"
         "━━━━━━━━━━\n"
@@ -10270,12 +10208,8 @@ def handle(event):
         reply(event.reply_token, "\n".join(lines))
         return
 
-    if text == "/럭키드로우결과":
-        push_or_reply_private_info(event, user_id, lucky_draw_result_text(), "📩 럭키드로우 결과를 개인 메시지로 보내드렸습니다.", "/럭키드로우결과")
-        return
-
     # =========================
-    # 운영방 전용 가챠 명령어
+    # 운영방/운영진 전용 묶음 명령어
     # =========================
     gacha_commands = {
         "/가챠", "/가챠시스템", "/가챠횟수",
@@ -10283,67 +10217,65 @@ def handle(event):
         "/조각가챠", "/조각", "/대장장이",
         "/김미트상가챠",
     }
+    shop_lucky_commands = {
+        "/상점",
+        "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과",
+    }
 
-    if text in gacha_commands:
+    if text in gacha_commands or text in shop_lucky_commands or text.startswith("/구매 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+
         if source_id not in ADMIN_SOURCE_IDS:
-            reply_many(event.reply_token, split_text_messages(gacha_operation_room_guide_text()))
+            reply(event.reply_token, "⛔ 운영방에서만 사용 가능합니다.")
             return
 
-        if text == "/가챠":
-            reply_many(event.reply_token, split_text_messages(gacha_system_text()))
-            return
-
-        if text in ["/상가챠", "/중가챠", "/하가챠"]:
-            tier = text.replace("/", "", 1).replace("가챠", "", 1)
-            success, message = run_gacha(user_id, user_name, tier)
-            if success:
-                grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, tier)
-            reply_many(event.reply_token, split_text_messages(message))
-            return
-
-        if text == "/김미트상가챠":
-            if not is_admin(user_id):
-                reply(event.reply_token, "⛔ 방장 전용 명령어입니다.")
+        if text in gacha_commands:
+            if text == "/가챠":
+                reply_many(event.reply_token, split_text_messages(gacha_system_text()))
                 return
-            success, message = run_kimmeat_sang_gacha(user_id, user_name)
-            if success:
-                grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, "kimmeat_sang")
-            reply_many(event.reply_token, split_text_messages(message))
-            return
 
-        if text == "/조각가챠":
-            success, message = run_piece_gacha(user_id, user_name)
-            if success:
-                grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, "piece")
-            reply_many(event.reply_token, split_text_messages(message))
-            return
+            if text in ["/상가챠", "/중가챠", "/하가챠"]:
+                tier = text.replace("/", "", 1).replace("가챠", "", 1)
+                success, message = run_gacha(user_id, user_name, tier)
+                if success:
+                    grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, tier)
+                reply_many(event.reply_token, split_text_messages(message))
+                return
 
-        if text == "/조각":
-            reply_many(event.reply_token, split_text_messages(gacha_piece_text(user_id)))
-            return
+            if text == "/김미트상가챠":
+                if not is_admin(user_id):
+                    reply(event.reply_token, "⛔ 방장 전용 명령어입니다.")
+                    return
+                success, message = run_kimmeat_sang_gacha(user_id, user_name)
+                if success:
+                    grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, "kimmeat_sang")
+                reply_many(event.reply_token, split_text_messages(message))
+                return
 
-        if text == "/대장장이":
-            reply_many(event.reply_token, split_text_messages(blacksmith_exchange(user_id, user_name)))
-            return
+            if text == "/조각가챠":
+                success, message = run_piece_gacha(user_id, user_name)
+                if success:
+                    grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, "piece")
+                reply_many(event.reply_token, split_text_messages(message))
+                return
 
-        if text == "/가챠시스템":
-            reply_many(event.reply_token, split_text_messages(gacha_system_text()))
-            return
+            if text == "/조각":
+                reply_many(event.reply_token, split_text_messages(gacha_piece_text(user_id)))
+                return
 
-        if text == "/가챠횟수":
-            reply(event.reply_token, weekly_gacha_count_text(user_id))
-            return
+            if text == "/대장장이":
+                reply_many(event.reply_token, split_text_messages(blacksmith_exchange(user_id, user_name)))
+                return
 
-    # =========================
-    # 1:1 전용 명령어
-    # =========================
-    if text in ["/상점", "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과"] or text.startswith("/구매 "):
-        if not is_private_chat(event):
-            if text in ["/상점"] or text.startswith("/구매 "):
-                private_only_notice(event, user_id, shop_private_guide_text(), "상점")
-            else:
-                private_only_notice(event, user_id, "꽃봇 1:1 채팅에서 이용해주세요.", "개인 기능")
-            return
+            if text == "/가챠시스템":
+                reply_many(event.reply_token, split_text_messages(gacha_system_text()))
+                return
+
+            if text == "/가챠횟수":
+                reply(event.reply_token, weekly_gacha_count_text(user_id))
+                return
 
         if text == "/상점":
             reply_many(event.reply_token, split_text_messages(shop_text()))
