@@ -920,6 +920,40 @@ def init_db():
             (now_str(),)
         )
 
+    cur.execute("SELECT value FROM system_flags WHERE key = 'attendance_day3_reset_v1'")
+    attendance_reset_done = cur.fetchone()
+    if not attendance_reset_done:
+        base_date = datetime.strptime(today(), "%Y-%m-%d").date()
+        seed_dates = [
+            (base_date - timedelta(days=2)).strftime("%Y-%m-%d"),
+            (base_date - timedelta(days=1)).strftime("%Y-%m-%d"),
+        ]
+        created_at = now_str()
+
+        cur.execute("DELETE FROM attendance")
+        cur.execute("DELETE FROM attendance_streak_rewards")
+        cur.execute("DELETE FROM hidden_rewards WHERE mission_key LIKE 'attendance_streak_%'")
+        cur.execute("""
+        SELECT user_id, user_name
+        FROM users
+        WHERE COALESCE(is_active, 1) = 1
+          AND user_id IS NOT NULL
+          AND TRIM(user_id) != ''
+        """)
+        active_users = cur.fetchall()
+        for row in active_users:
+            for seed_date in seed_dates:
+                cur.execute("""
+                INSERT OR IGNORE INTO attendance (
+                    date, user_id, user_name, reward, created_at
+                ) VALUES (?, ?, ?, 0, ?)
+                """, (seed_date, row["user_id"], row["user_name"], created_at))
+
+        cur.execute(
+            "INSERT INTO system_flags (key, value) VALUES ('attendance_day3_reset_v1', ?)",
+            (created_at,)
+        )
+
     conn.commit()
     conn.close()
 
@@ -3594,6 +3628,10 @@ def status_text(status):
 # =========================
 # 출석 / 미션 / 주간정산
 # =========================
+ATTENDANCE_REWARD = 20  # 2코인
+ATTENDANCE_STREAK_INTERVAL = 7
+ATTENDANCE_STREAK_BASE_REWARD = 20  # 7일차 2코인, 이후 7일마다 +1코인
+
 MISSION_REWARDS = [
     ("daily_100", 100, 1),  # 100마디 = 0.1코인
     ("daily_200", 200, 1),  # 200마디 = 0.1코인
@@ -3618,7 +3656,7 @@ def get_user_count(date_str, source_id, user_id):
 
 
 def attendance_check(date_str, user_id, user_name):
-    reward = 5  # 0.5코인
+    reward = ATTENDANCE_REWARD
 
     conn = db()
     cur = conn.cursor()
@@ -3767,18 +3805,18 @@ GACHA_TYPE_LABELS = {
 }
 
 COIN_GACHA_WEIGHTS = {
-    "하": [(52, "F"), (34, "D"), (10, "C"), (4, "B")],
-    "중": [(52, "F"), (31, "D"), (11, "C"), (5, "B"), (1, "A")],
-    "상": [(52, "F"), (29, "D"), (10, "C"), (6, "B"), (2.5, "A"), (0.5, "S")],
+    "하": [(50, "F"), (36, "D"), (10, "C"), (4, "B")],
+    "중": [(50, "F"), (33, "D"), (11, "C"), (5, "B"), (1, "A")],
+    "상": [(50, "F"), (31, "D"), (10, "C"), (6, "B"), (2.5, "A"), (0.5, "S")],
 }
 
 PIECE_GACHA_WEIGHTS = {
-    "하": [(52, "F"), (24, "E"), (16, "D"), (6, "C"), (2, "B")],
-    "중": [(52, "F"), (20, "E"), (16, "D"), (8, "C"), (3, "B"), (1, "A")],
-    "상": [(52, "F"), (16, "E"), (16, "D"), (10, "C"), (4, "B"), (1.8, "A"), (0.2, "S")],
+    "하": [(50, "F"), (26, "E"), (16, "D"), (6, "C"), (2, "B")],
+    "중": [(50, "F"), (22, "E"), (16, "D"), (8, "C"), (3, "B"), (1, "A")],
+    "상": [(50, "F"), (18, "E"), (16, "D"), (10, "C"), (4, "B"), (1.8, "A"), (0.2, "S")],
 }
 
-PIECE_STANDALONE_GACHA_WEIGHTS = [(52, "F"), (48, "piece")]
+PIECE_STANDALONE_GACHA_WEIGHTS = [(50, "F"), (50, "piece")]
 
 KIMMEAT_SANG_GACHA_WEIGHTS = [
     (10, "F"),
@@ -3836,7 +3874,7 @@ def gacha_probability_text():
         gacha_weight_line("상", COIN_GACHA_WEIGHTS["상"]),
         "",
         "조각 가챠",
-        "조각가챠: F 52% / 조각 48%",
+        "조각가챠: F 50% / 조각 50%",
         "",
         "조각형 등급 분포",
         gacha_weight_line("하", PIECE_GACHA_WEIGHTS["하"]),
@@ -4833,32 +4871,26 @@ def grant_attendance_streak_reward_once(date_str, user_id, user_name, streak_day
 
 def check_attendance_streak_reward(date_str, user_id, user_name):
     """
-    연속출석:
-    7일 1코인, 14일 2코인, 28일 5코인.
-    각 구간별 1회 지급.
+    연속출석 보상:
+    7일차 2코인, 14일차 3코인, 21일차 4코인처럼
+    7일 단위마다 1코인씩 증가하며 각 구간별 1회 지급.
     """
     streak = attendance_streak_days(user_id, date_str)
 
-    rewards = [
-        (7, 10),
-        (14, 20),
-        (28, 50),
-    ]
-
     paid = []
 
-    for required_days, reward in rewards:
-        if streak >= required_days:
-            ok = grant_attendance_streak_reward_once(
-                date_str,
-                user_id,
-                user_name,
-                required_days,
-                reward,
-                streak
-            )
-            if ok:
-                paid.append((required_days, reward))
+    for required_days in range(ATTENDANCE_STREAK_INTERVAL, streak + 1, ATTENDANCE_STREAK_INTERVAL):
+        reward = ATTENDANCE_STREAK_BASE_REWARD + ((required_days // ATTENDANCE_STREAK_INTERVAL) - 1) * 10
+        ok = grant_attendance_streak_reward_once(
+            date_str,
+            user_id,
+            user_name,
+            required_days,
+            reward,
+            streak
+        )
+        if ok:
+            paid.append((required_days, reward))
 
     return streak, paid
 
@@ -10067,7 +10099,8 @@ def handle(event):
             if streak_paid:
                 paid_lines = [f"{days}일 연속 출석 보상 {coin_text(reward)}" for days, reward in streak_paid]
                 extra = "\n\n🎁 연속출석 보상\n" + "\n".join(paid_lines)
-            reply(event.reply_token, f"✅ 출석 완료\n\n{user_name}님\n보상: {coin_text(5)}\n현재 보유: {coin_text(balance)}{extra}\n\n{streak}일차 출석완료")
+                balance = get_balance(user_id)
+            reply(event.reply_token, f"✅ 출석 완료\n\n{user_name}님\n보상: {coin_text(ATTENDANCE_REWARD)}\n현재 보유: {coin_text(balance)}{extra}\n\n{streak}일차 출석완료")
         else:
             try:
                 streak = attendance_streak_days(user_id, date_str)
