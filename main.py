@@ -468,6 +468,17 @@ def init_db():
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS revival_claims (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        reward INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS bot_errors (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         context TEXT NOT NULL,
@@ -875,6 +886,11 @@ def init_db():
     ON danbung_attendance (date, COALESCE(event_name, ''), user_id)
     """)
 
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_revival_claims_daily_user
+    ON revival_claims (date, user_id)
+    """)
+
 
     # 기존 정수 코인 DB를 0.1 단위 포인트 시스템으로 1회 변환
     cur.execute("SELECT value FROM system_flags WHERE key = 'currency_scaled_v1'")
@@ -1252,7 +1268,7 @@ def gacha_private_guide_text():
     return (
         "🎰 가챠 안내\n\n"
         "가챠는 꽃봇 1:1 채팅에서 이용해주세요.\n\n"
-        "운영시간: 매주 토요일 00:00 ~ 21:00\n"
+        "운영시간 제한: 없음\n"
         "주간 이용 제한: 없음\n\n"
         "명령어\n"
         "/가챠 상\n"
@@ -1489,6 +1505,7 @@ def user_commands_text():
 /출석
 /미션
 /수령
+/회생
 /단벙
 /단벙참여 단벙제목
 /랭킹
@@ -1602,9 +1619,11 @@ def beginner_guide_text():
 
 7️⃣ /내정보 로 보유 코인과 아이템을 확인할 수 있습니다.
 
-8️⃣ /상점 에서 다양한 아이템을 구매할 수 있습니다.
+8️⃣ 코인이 부족할 때는 /회생 으로 하루 5회까지 10코인씩 복구할 수 있습니다.
 
-9️⃣ /마니또 와 친밀도 시스템을 통해 추가 보상을 획득할 수 있습니다.
+9️⃣ /상점 에서 다양한 아이템을 구매할 수 있습니다.
+
+🔟 /마니또 와 친밀도 시스템을 통해 추가 보상을 획득할 수 있습니다.
 
 ━━━━━━━━━━
 
@@ -1649,6 +1668,7 @@ def beginner_guide_text():
 /명령어
 /미션
 /수령
+/회생
 /내정보
 /상점
 /마니또
@@ -2686,6 +2706,68 @@ def change_money(user_id, user_name, amount, reason, staff_user_id=None, staff_u
     conn.commit()
     conn.close()
     return balance
+
+
+REVIVAL_DAILY_LIMIT = 5
+REVIVAL_REWARD = 100  # 10코인
+
+
+def revival_claim(date_str, user_id, user_name):
+    if not user_id:
+        return False, "💊 회생 안내\n\n사용자 정보를 확인하지 못했어요. 잠시 후 다시 시도해 주세요."
+
+    conn = db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+        SELECT COUNT(*) AS cnt
+        FROM revival_claims
+        WHERE date = ?
+          AND user_id = ?
+        """, (date_str, user_id))
+        row = cur.fetchone()
+        used = int(row["cnt"] or 0) if row else 0
+
+        if used >= REVIVAL_DAILY_LIMIT:
+            conn.close()
+            return False, (
+                "💊 회생 안내\n\n"
+                "오늘 회생 가능 횟수를 모두 사용했습니다.\n\n"
+                f"사용: {used} / {REVIVAL_DAILY_LIMIT}회\n"
+                "초기화: 매일 00:00(KST)"
+            )
+
+        cur.execute("""
+        INSERT INTO revival_claims (
+            date, user_id, user_name, reward, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+        """, (date_str, user_id, user_name, REVIVAL_REWARD, now_str()))
+
+        balance = apply_money_change(
+            cur,
+            user_id,
+            user_name,
+            REVIVAL_REWARD,
+            "회생 지원",
+            None,
+            "회생"
+        )
+        conn.commit()
+        conn.close()
+
+        used_after = used + 1
+        return True, (
+            "💊 회생 완료\n\n"
+            f"지급: {coin_text(REVIVAL_REWARD)}\n"
+            f"오늘 사용: {used_after} / {REVIVAL_DAILY_LIMIT}회\n"
+            f"남은 횟수: {REVIVAL_DAILY_LIMIT - used_after}회\n\n"
+            f"현재 보유: {coin_text(balance)}"
+        )
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        log_error("REVIVAL_CLAIM_ERROR", e)
+        return False, "💊 회생 처리 중 문제가 생겼어요. 최근오류를 확인해 주세요."
 
 
 def danbung_info_text():
@@ -4019,26 +4101,6 @@ def random_prize_kind(tier, grade):
     return weighted_pick([(50, "coin"), (50, "piece")])
 
 
-def is_gacha_open_now():
-    """
-    가챠 운영시간 체크.
-    KST 기준 매주 토요일 00:00 이상 21:00 미만만 이용 가능.
-    Python weekday(): 월=0, 토=5
-    """
-    now = datetime.now(KST)
-    return now.weekday() == 5 and 0 <= now.hour < 21
-
-
-def gacha_closed_text():
-    return (
-        "🎰 가챠 운영시간이 아닙니다.\n\n"
-        "운영시간\n"
-        "매주 토요일 00:00 ~ 21:00\n\n"
-        "21시 이후에는 다음 주 토요일에 이용 가능합니다.\n\n"
-        "※ 가챠는 봇 1:1 개인채팅에서만 이용 가능합니다."
-    )
-
-
 def get_weekly_gacha_count(user_id):
     """
     이번 주 가챠 사용 횟수 조회.
@@ -4118,9 +4180,6 @@ def gacha_count_status_text(user_id):
 def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, bypass_weekly_limit=False):
     if tier not in GACHA_COSTS:
         return False, "사용법\n\n/가챠 하\n/가챠 중\n/가챠 상"
-
-    if not is_gacha_open_now():
-        return False, gacha_closed_text()
 
     gacha_type = "coin"
     cost = GACHA_COSTS[tier]
@@ -4220,7 +4279,7 @@ def gacha_system_text():
     return (
         "🎰 가챠 시스템 🎰\n\n"
         "운영시간\n"
-        "매주 토요일 00:00 ~ 21:00\n\n"
+        "제한 없음\n\n"
         "※ 가챠는 봇 1:1 개인채팅 전용입니다.\n"
         "※ 주간 이용 제한은 없습니다.\n"
         "※ 상/중/하/조각 가챠 횟수는 기록만 표시됩니다.\n\n"
@@ -7253,6 +7312,7 @@ def delete_users_by_ids(targets):
         "counts",
         "currency",
         "currency_logs",
+        "revival_claims",
         "purchases",
         "attendance",
         "attendance_streak_rewards",
@@ -7549,8 +7609,6 @@ def add_simple_piece(user_id, user_name, piece_key, amount):
 
 
 def run_piece_gacha(user_id, user_name):
-    if not is_gacha_open_now():
-        return False, gacha_closed_text()
     cost = 10
     result_kind = weighted_pick(PIECE_STANDALONE_GACHA_WEIGHTS)
     piece_key = random_piece_by_group() if result_kind == "piece" else None
@@ -9053,7 +9111,7 @@ def snapshot_user_data(user_id):
     conn = db()
     cur = conn.cursor()
     tables = [
-        "users", "currency", "currency_logs", "purchases", "attendance", "attendance_streak_rewards", "danbung_attendance", "mission_claims",
+        "users", "currency", "currency_logs", "revival_claims", "purchases", "attendance", "attendance_streak_rewards", "danbung_attendance", "mission_claims",
         "hidden_rewards", "gacha_settings", "gacha_pity", "gacha_pieces", "gacha_weekly_counts",
         "weekly_rewards", "sns_lucky_draw_entries", "achievements", "chat_logs", "counts",
         "heart_pick_rewards", "chemistry_rewards", "truth_game_sessions", "truth_game_resets",
@@ -9372,7 +9430,7 @@ def handle(event):
         conn = db()
         cur = conn.cursor()
         counts = []
-        for table in ["users", "counts", "currency", "currency_logs", "purchases", "attendance", "danbung_attendance", "mission_claims", "weekly_rewards", "settlement_runs", "bot_errors", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "sns_lucky_draw_entries", "sns_lucky_draw_results", "sns_lucky_draw_prizes", "chemistry_signals", "chemistry_rewards", "public_announcements", "truth_game_sessions", "truth_game_questions", "truth_game_resets"]:
+        for table in ["users", "counts", "currency", "currency_logs", "revival_claims", "purchases", "attendance", "danbung_attendance", "mission_claims", "weekly_rewards", "settlement_runs", "bot_errors", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "sns_lucky_draw_entries", "sns_lucky_draw_results", "sns_lucky_draw_prizes", "chemistry_signals", "chemistry_rewards", "public_announcements", "truth_game_sessions", "truth_game_questions", "truth_game_resets"]:
             try:
                 cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                 counts.append(f"{table}: {cur.fetchone()['cnt']}")
@@ -10039,6 +10097,11 @@ def handle(event):
             reply(event.reply_token, f"수령 가능한 미션 보상이 없습니다.\n\n현재 마디수: {count}\n확인: /미션")
         else:
             reply(event.reply_token, f"🎉 미션 보상 수령 완료\n\n달성 미션: {', '.join(claimed_names)}\n지급: {coin_text(total_reward)}\n현재 보유: {coin_text(get_balance(user_id))}")
+        return
+
+    if text == "/회생":
+        ok, msg = revival_claim(date_str, user_id, user_name)
+        reply(event.reply_token, msg)
         return
 
     if text == "/잔액":
