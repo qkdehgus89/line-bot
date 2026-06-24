@@ -1264,10 +1264,10 @@ def private_only_notice(*args):
     return one_to_one_command_notice(feature_name, command_hint)
 
 
-def gacha_private_guide_text():
+def gacha_operation_room_guide_text():
     return (
         "🎰 가챠 안내\n\n"
-        "가챠는 꽃봇 1:1 채팅에서 이용해주세요.\n\n"
+        "가챠는 운영방에서만 이용할 수 있습니다.\n\n"
         "운영시간 제한: 없음\n"
         "주간 이용 제한: 없음\n\n"
         "명령어\n"
@@ -1530,7 +1530,7 @@ def user_commands_text():
 /구매 상품명
 
 ━━━━━━━━━━
-🎰 가챠
+🎰 가챠(운영방 전용)
 ━━━━━━━━━━
 /가챠
 /가챠 상
@@ -4280,7 +4280,7 @@ def gacha_system_text():
         "🎰 가챠 시스템 🎰\n\n"
         "운영시간\n"
         "제한 없음\n\n"
-        "※ 가챠는 봇 1:1 개인채팅 전용입니다.\n"
+        "※ 가챠는 운영방 전용입니다.\n"
         "※ 주간 이용 제한은 없습니다.\n"
         "※ 상/중/하/조각 가챠 횟수는 기록만 표시됩니다.\n\n"
         "━━━━━━━━━━\n"
@@ -10275,16 +10275,18 @@ def handle(event):
         return
 
     # =========================
-    # 1:1 전용 명령어
+    # 운영방 전용 가챠 명령어
     # =========================
-    if text in ["/가챠", "/가챠시스템", "/가챠횟수", "/상가챠", "/중가챠", "/하가챠", "/조각가챠", "/조각", "/대장장이", "/김미트상가챠", "/상점", "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과"] or text.startswith("/구매 "):
-        if not is_private_chat(event):
-            if text.startswith("/가챠") or text in ["/상가챠", "/중가챠", "/하가챠", "/조각가챠", "/조각", "/대장장이", "/김미트상가챠", "/가챠시스템", "/가챠횟수"]:
-                private_only_notice(event, user_id, gacha_private_guide_text(), "가챠")
-            elif text in ["/상점"] or text.startswith("/구매 "):
-                private_only_notice(event, user_id, shop_private_guide_text(), "상점")
-            else:
-                private_only_notice(event, user_id, "꽃봇 1:1 채팅에서 이용해주세요.", "개인 기능")
+    gacha_commands = {
+        "/가챠", "/가챠시스템", "/가챠횟수",
+        "/상가챠", "/중가챠", "/하가챠",
+        "/조각가챠", "/조각", "/대장장이",
+        "/김미트상가챠",
+    }
+
+    if text in gacha_commands:
+        if source_id not in ADMIN_SOURCE_IDS:
+            reply_many(event.reply_token, split_text_messages(gacha_operation_room_guide_text()))
             return
 
         if text == "/가챠":
@@ -10330,6 +10332,17 @@ def handle(event):
 
         if text == "/가챠횟수":
             reply(event.reply_token, weekly_gacha_count_text(user_id))
+            return
+
+    # =========================
+    # 1:1 전용 명령어
+    # =========================
+    if text in ["/상점", "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과"] or text.startswith("/구매 "):
+        if not is_private_chat(event):
+            if text in ["/상점"] or text.startswith("/구매 "):
+                private_only_notice(event, user_id, shop_private_guide_text(), "상점")
+            else:
+                private_only_notice(event, user_id, "꽃봇 1:1 채팅에서 이용해주세요.", "개인 기능")
             return
 
         if text == "/상점":
