@@ -1253,7 +1253,7 @@ def gacha_private_guide_text():
         "🎰 가챠 안내\n\n"
         "가챠는 꽃봇 1:1 채팅에서 이용해주세요.\n\n"
         "운영시간: 매주 토요일 00:00 ~ 21:00\n"
-        "주간 제한: 상/중/하/조각 합산 15회\n\n"
+        "주간 이용 제한: 없음\n\n"
         "명령어\n"
         "/가챠 상\n"
         "/가챠 중\n"
@@ -3676,10 +3676,7 @@ GACHA_COSTS = {
     "상": 50,  # 5코인
 }
 
-# 주간 가챠 횟수 제한
-# KST 기준 매주 토요일 00:00에 새 가챠 주차로 자동 초기화됩니다.
-# 이용 가능 시간: 토요일 00:00 ~ 21:00 이전
-WEEKLY_GACHA_LIMIT = 15
+# 가챠 횟수는 제한하지 않고, KST 기준 매주 토요일 00:00에 기록만 새 주차로 전환합니다.
 
 GACHA_TYPE_LABELS = {
     "coin": "코인형",
@@ -4109,12 +4106,11 @@ def apply_weekly_gacha_count(cur, user_id, user_name):
 def gacha_count_status_text(user_id):
     week_start, week_end = gacha_week_range_for_today()
     used = get_weekly_gacha_count(user_id)
-    remain = max(0, WEEKLY_GACHA_LIMIT - used)
     return (
         "🎰 주간 가챠 사용 현황\n\n"
         f"기간: {week_start} ~ {week_end}\n"
-        f"사용: {used} / {WEEKLY_GACHA_LIMIT}회\n"
-        f"남은 횟수: {remain}회\n\n"
+        f"사용: {used}회\n"
+        "남은 횟수: 제한 없음\n\n"
         "※ 매주 토요일 00:00(KST)에 자동 초기화됩니다."
     )
 
@@ -4129,13 +4125,6 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
     gacha_type = "coin"
     cost = GACHA_COSTS[tier]
     used_count = get_weekly_gacha_count(user_id)
-    if used_count >= WEEKLY_GACHA_LIMIT and not bypass_weekly_limit:
-        return False, (
-            "🎰 이번 주 가챠 횟수를 모두 사용했습니다.\n\n"
-            f"사용: {used_count} / {WEEKLY_GACHA_LIMIT}회\n"
-            "초기화: 매주 토요일 00:00(KST)\n\n"
-            "확인: /가챠 횟수"
-        )
 
     log_label = log_command or f"{tier} 가챠"
     grade = gacha_grade(gacha_type, tier, coin_weights=coin_weights)
@@ -4160,12 +4149,7 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
 
         final_balance = apply_money_change(cur, user_id, user_name, -cost, f"{log_label} 이용", None, "가챠시스템")
 
-        if bypass_weekly_limit and used_count >= WEEKLY_GACHA_LIMIT:
-            weekly_used_after = WEEKLY_GACHA_LIMIT
-        else:
-            weekly_used_after = apply_weekly_gacha_count(cur, user_id, user_name)
-            if bypass_weekly_limit:
-                weekly_used_after = min(weekly_used_after, WEEKLY_GACHA_LIMIT)
+        weekly_used_after = apply_weekly_gacha_count(cur, user_id, user_name)
 
         if prize > 0:
             final_balance = apply_money_change(
@@ -4215,7 +4199,7 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
             lines.append(f"🎉 행운포인트 보상 +{coin_text(bonus_paid * 10)}")
 
     lines.append("")
-    lines.append(f"이번 주 가챠: {weekly_used_after} / {WEEKLY_GACHA_LIMIT}회")
+    lines.append(f"이번 주 가챠: {weekly_used_after}회")
     lines.append(f"현재 잔액: {coin_text(final_balance)}")
 
     return True, "\n".join(lines)
@@ -4238,8 +4222,8 @@ def gacha_system_text():
         "운영시간\n"
         "매주 토요일 00:00 ~ 21:00\n\n"
         "※ 가챠는 봇 1:1 개인채팅 전용입니다.\n"
-        "※ 주간 최대 15회입니다.\n"
-        "※ 상/중/하/조각 가챠 횟수는 합산됩니다.\n\n"
+        "※ 주간 이용 제한은 없습니다.\n"
+        "※ 상/중/하/조각 가챠 횟수는 기록만 표시됩니다.\n\n"
         "━━━━━━━━━━\n"
         "💰 코인 가챠\n"
         "━━━━━━━━━━\n\n"
@@ -7567,9 +7551,6 @@ def add_simple_piece(user_id, user_name, piece_key, amount):
 def run_piece_gacha(user_id, user_name):
     if not is_gacha_open_now():
         return False, gacha_closed_text()
-    used_count = get_weekly_gacha_count(user_id)
-    if used_count >= WEEKLY_GACHA_LIMIT:
-        return False, f"🎰 이번 주 가챠 횟수를 모두 사용했습니다.\n\n사용: {used_count} / {WEEKLY_GACHA_LIMIT}회"
     cost = 10
     result_kind = weighted_pick(PIECE_STANDALONE_GACHA_WEIGHTS)
     piece_key = random_piece_by_group() if result_kind == "piece" else None
@@ -7607,7 +7588,7 @@ def run_piece_gacha(user_id, user_name):
     finally:
         conn.close()
 
-    return True, f"🧩 조각가챠 결과\n\n{result}\n\n이번 주 가챠: {used_after} / {WEEKLY_GACHA_LIMIT}회\n현재 잔액: {coin_text(final_balance)}"
+    return True, f"🧩 조각가챠 결과\n\n{result}\n\n이번 주 가챠: {used_after}회\n현재 잔액: {coin_text(final_balance)}"
 
 
 def blacksmith_exchange(user_id, user_name):
