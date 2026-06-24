@@ -133,6 +133,7 @@ def is_operator_command(text):
         "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과",
         "/가챠", "/가챠시스템", "/가챠횟수", "/상가챠", "/중가챠", "/하가챠",
         "/조각가챠", "/조각", "/대장장이", "/김미트상가챠", "/상점",
+        "/회생초기화",
         "/설렘픽초기화", "/설렘픽정산", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
         "/유저아이템보유", "/유저아이템삭제", "/운영진친밀도", "/운영진친밀도확인",
         "/진실질문", "/진실목록", "/진실기록", "/진실질문추가",
@@ -143,6 +144,7 @@ def is_operator_command(text):
         "/유저검색 ", "/유저상세 ", "/닉삭제", "/닉삭제번호",
         "/지급 ", "/차감 ", "/코인내역 ", "/삭제복구",
         "/구매 ", "/가챠 ",
+        "/회생초기화 ",
         "/상품추가 ", "/상품등록 ", "/상품삭제 ",
         "/사용처리 ", "/구매취소 ", "/아이템지급 ",
         "/유저아이템삭제 ",
@@ -909,6 +911,15 @@ def init_db():
             "INSERT INTO system_flags (key, value) VALUES ('currency_scaled_v1', 'done')"
         )
 
+    cur.execute("SELECT value FROM system_flags WHERE key = 'revival_balance_limit_reset_v1'")
+    revival_reset_done = cur.fetchone()
+    if not revival_reset_done:
+        cur.execute("DELETE FROM revival_claims WHERE date = ?", (today(),))
+        cur.execute(
+            "INSERT INTO system_flags (key, value) VALUES ('revival_balance_limit_reset_v1', ?)",
+            (now_str(),)
+        )
+
     conn.commit()
     conn.close()
 
@@ -1395,6 +1406,7 @@ def simplified_command_text(text):
             "럭키정산": "/럭키정산",
             "럭키초기화": "/럭키초기화",
             "럭키현황": "/럭키현황전체",
+            "회생초기화": "/회생초기화",
             "전체유저": "/전체유저",
             "방정보": "/방정보",
             "버전": "/버전",
@@ -1541,7 +1553,7 @@ def beginner_guide_text():
 
 7️⃣ /내정보 로 보유 코인과 아이템을 확인할 수 있습니다.
 
-8️⃣ 코인이 부족할 때는 /회생 으로 하루 5회까지 10코인씩 복구할 수 있습니다.
+8️⃣ 보유 코인이 10코인 미만일 때는 /회생 으로 하루 5회까지 10코인씩 복구할 수 있습니다.
 
 9️⃣ /내정보 보유 로 보유 아이템을 확인할 수 있습니다.
 
@@ -1639,6 +1651,9 @@ def operator_commands_text():
 /코인내역 닉네임
 /코인검증 닉네임
 /경제현황
+/회생초기화
+/회생초기화 YYYY-MM-DD
+/회생초기화 전체
 
 ━━━━━━━━━━
 👤 유저 관리
@@ -2648,6 +2663,7 @@ def change_money(user_id, user_name, amount, reason, staff_user_id=None, staff_u
 
 REVIVAL_DAILY_LIMIT = 5
 REVIVAL_REWARD = 100  # 10코인
+REVIVAL_BALANCE_LIMIT = 100  # 10코인 미만일 때만 사용 가능
 
 
 def revival_claim(date_str, user_id, user_name):
@@ -2657,6 +2673,18 @@ def revival_claim(date_str, user_id, user_name):
     conn = db()
     cur = conn.cursor()
     try:
+        cur.execute("SELECT balance FROM currency WHERE user_id = ?", (user_id,))
+        balance_row = cur.fetchone()
+        current_balance = int(balance_row["balance"] or 0) if balance_row else 0
+
+        if current_balance >= REVIVAL_BALANCE_LIMIT:
+            conn.close()
+            return False, (
+                "💊 회생 안내\n\n"
+                "회생은 보유 코인이 10코인 미만일 때만 사용할 수 있어요.\n\n"
+                f"현재 보유: {coin_text(current_balance)}"
+            )
+
         cur.execute("""
         SELECT COUNT(*) AS cnt
         FROM revival_claims
@@ -2706,6 +2734,40 @@ def revival_claim(date_str, user_id, user_name):
         conn.close()
         log_error("REVIVAL_CLAIM_ERROR", e)
         return False, "💊 회생 처리 중 문제가 생겼어요. 최근오류를 확인해 주세요."
+
+
+def reset_revival_claims(target_date=None):
+    raw_target = str(target_date or "").strip()
+    reset_all = raw_target in ("전체", "all", "ALL", "All")
+
+    if raw_target and not reset_all and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_target):
+        return False, "사용법: /회생초기화 또는 /회생초기화 YYYY-MM-DD"
+
+    date_filter = None if reset_all else (raw_target or today())
+
+    conn = db()
+    cur = conn.cursor()
+    try:
+        if date_filter:
+            cur.execute("DELETE FROM revival_claims WHERE date = ?", (date_filter,))
+            target_text = date_filter
+        else:
+            cur.execute("DELETE FROM revival_claims")
+            target_text = "전체"
+
+        deleted = cur.rowcount or 0
+        conn.commit()
+        conn.close()
+        return True, (
+            "💊 회생 횟수 초기화 완료\n\n"
+            f"대상: {target_text}\n"
+            f"초기화 기록: {deleted}건"
+        )
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        log_error("REVIVAL_RESET_ERROR", e)
+        return False, "💊 회생 초기화 중 문제가 생겼어요. 최근오류를 확인해 주세요."
 
 
 def danbung_info_text():
@@ -9619,6 +9681,15 @@ def handle(event):
             reply(event.reply_token, operator_only_warning())
             return
         reply(event.reply_token, economy_status_text())
+        return
+
+    if text == "/회생초기화" or text.startswith("/회생초기화 "):
+        if not is_staff(user_id):
+            reply(event.reply_token, operator_only_warning())
+            return
+        target = text.replace("/회생초기화", "", 1).strip()
+        ok, msg = reset_revival_claims(target)
+        reply(event.reply_token, msg)
         return
 
     if text == "/코인검증" or text.startswith("/코인검증 "):
