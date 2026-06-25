@@ -1275,12 +1275,20 @@ def pop_public_announcements(source_id, current_log_id=None, limit=5):
         return []
 
 
-def push_or_reply_private_info(event, user_id, text_value, public_notice="📩 개인 메시지로 전송했습니다.", command_hint=None):
+def push_or_reply_private_info(
+    event,
+    user_id,
+    text_value,
+    public_notice="📩 개인 메시지로 전송했습니다.",
+    command_hint=None,
+    allow_admin_room=False
+):
     """
     1:1 채팅에서는 현재 대화에 바로 reply.
     공개방/그룹/룸에서는 Push를 쓰지 않고 1:1 직접 입력을 안내.
+    allow_admin_room=True이면 운영방에서는 현재 대화에 바로 reply.
     """
-    if is_private_chat(event):
+    if is_private_chat(event) or (allow_admin_room and get_source_id(event) in ADMIN_SOURCE_IDS):
         reply_many(event.reply_token, split_text_messages(text_value))
         return
 
@@ -10174,7 +10182,8 @@ def handle(event):
             user_id,
             msg,
             "📩 보유 정보를 개인 메시지로 보내드렸습니다.",
-            "/내보유"
+            "/내보유",
+            allow_admin_room=True
         )
         return
 
@@ -10184,7 +10193,8 @@ def handle(event):
             user_id,
             user_purchases_text(user_id, "owned"),
             "📩 미사용 아이템 목록을 개인 메시지로 보내드렸습니다.",
-            "/내보유 미사용"
+            "/내보유 미사용",
+            allow_admin_room=True
         )
         return
 
@@ -10194,7 +10204,8 @@ def handle(event):
             user_id,
             user_purchases_text(user_id, "used"),
             "📩 사용완료 아이템 목록을 개인 메시지로 보내드렸습니다.",
-            "/내보유 사용"
+            "/내보유 사용",
+            allow_admin_room=True
         )
         return
 
