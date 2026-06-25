@@ -3834,6 +3834,7 @@ PIECE_INFO = {
     "gold": {"label": "금 조각", "need": 10, "reward": 20},
 }
 OLD_PIECE_KEYS = {"선갠라", "단벙", "봇등록", "미션", "임티", "칭호"}
+GACHA_PITY_REWARD = 50  # 행운포인트 10점 달성 보상: 5코인
 
 
 def piece_item_name(info):
@@ -4009,7 +4010,7 @@ def apply_gacha_pity_point(cur, user_id, user_name):
             cur,
             user_id,
             user_name,
-            bonus_paid * 10,
+            bonus_paid * GACHA_PITY_REWARD,
             f"코인형 가챠 행운포인트 {bonus_paid * 10}점 보상",
             None,
             "가챠시스템"
@@ -4022,7 +4023,7 @@ def add_gacha_pity_point(user_id, user_name):
     """
     코인형 가챠 F등급 보정:
     F등급 1회 = 행운포인트 1
-    10포인트 달성 시 1코인 자동 지급 후 10포인트 차감.
+    10포인트 달성 시 5코인 자동 지급 후 10포인트 차감.
     """
     conn = db()
     cur = conn.cursor()
@@ -4262,7 +4263,7 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
         if grade == "F":
             pity_points, bonus_paid = apply_gacha_pity_point(cur, user_id, user_name)
             if bonus_paid > 0:
-                final_balance += bonus_paid * 10
+                final_balance += bonus_paid * GACHA_PITY_REWARD
 
         conn.commit()
     except Exception as e:
@@ -4293,7 +4294,7 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
 
         if bonus_paid > 0:
             lines.append("")
-            lines.append(f"🎉 행운포인트 보상 +{coin_text(bonus_paid * 10)}")
+            lines.append(f"🎉 행운포인트 보상 +{coin_text(bonus_paid * GACHA_PITY_REWARD)}")
 
     lines.append("")
     lines.append(f"이번 주 가챠: {weekly_used_after}회")
@@ -7609,7 +7610,7 @@ def gacha_pity_text(user_id, user_name):
         f"{user_name}님\n"
         f"현재 포인트: {point} / 10\n\n"
         "코인가챠 F등급 획득 시 +1\n"
-        "10포인트 달성 시 1코인 자동 지급"
+        f"10포인트 달성 시 {coin_text(GACHA_PITY_REWARD)} 자동 지급"
     )
 
 
