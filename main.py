@@ -132,7 +132,7 @@ def is_operator_command(text):
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
         "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과",
         "/가챠", "/가챠시스템", "/가챠횟수", "/상가챠", "/중가챠", "/하가챠",
-        "/조각가챠", "/조각", "/대장장이", "/김미트상가챠", "/상점",
+        "/조각", "/대장장이", "/김미트상가챠", "/상점",
         "/회생초기화",
         "/설렘픽초기화", "/설렘픽정산", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
         "/유저아이템보유", "/유저아이템삭제", "/운영진친밀도", "/운영진친밀도확인",
@@ -1356,14 +1356,14 @@ def simplified_command_text(text):
             return "/중가챠"
         if sub in ("하", "하급"):
             return "/하가챠"
-        if sub in ("조각", "조각가챠"):
-            return "/조각가챠"
+        if sub in ("조각", "조각확인", "조각보유", "조각보기"):
+            return "/조각"
         if sub in ("횟수", "사용횟수"):
             return "/가챠횟수"
         if sub in ("시스템", "안내", "설명"):
             return "/가챠시스템"
-        if sub in ("조각확인", "조각보유", "조각보기"):
-            return "/조각"
+        if sub in ("조각가챠",):
+            return "/조각가챠"
         if sub in ("대장장이", "교환"):
             return "/대장장이"
         return text
@@ -1737,7 +1737,7 @@ def operator_commands_text():
 /가챠 상
 /가챠 중
 /가챠 하
-/가챠 조각
+/가챠 조각확인
 /가챠 횟수
 /가챠 대장장이
 
@@ -3808,23 +3808,13 @@ GACHA_COSTS = {
 
 GACHA_TYPE_LABELS = {
     "coin": "코인형",
-    "piece": "조각형",
-    "random": "랜덤형",
 }
 
 COIN_GACHA_WEIGHTS = {
-    "하": [(50, "F"), (36, "D"), (10, "C"), (4, "B")],
-    "중": [(50, "F"), (33, "D"), (11, "C"), (5, "B"), (1, "A")],
-    "상": [(50, "F"), (31, "D"), (10, "C"), (6, "B"), (2.5, "A"), (0.5, "S")],
+    "하": [(40, "손해"), (20, "본전"), (40, "이득")],
+    "중": [(40, "손해"), (20, "본전"), (40, "이득")],
+    "상": [(40, "손해"), (20, "본전"), (40, "이득")],
 }
-
-PIECE_GACHA_WEIGHTS = {
-    "하": [(50, "F"), (26, "E"), (16, "D"), (6, "C"), (2, "B")],
-    "중": [(50, "F"), (22, "E"), (16, "D"), (8, "C"), (3, "B"), (1, "A")],
-    "상": [(50, "F"), (18, "E"), (16, "D"), (10, "C"), (4, "B"), (1.8, "A"), (0.2, "S")],
-}
-
-PIECE_STANDALONE_GACHA_WEIGHTS = [(50, "F"), (50, "piece")]
 
 KIMMEAT_SANG_GACHA_WEIGHTS = [
     (10, "F"),
@@ -3875,20 +3865,12 @@ def gacha_weight_line(label, weights):
 
 def gacha_probability_text():
     lines = [
-        "등급 분포",
+        "기대치",
         "",
         "코인 가챠",
         gacha_weight_line("하", COIN_GACHA_WEIGHTS["하"]),
         gacha_weight_line("중", COIN_GACHA_WEIGHTS["중"]),
         gacha_weight_line("상", COIN_GACHA_WEIGHTS["상"]),
-        "",
-        "조각 가챠",
-        "조각가챠: F 50% / 조각 50%",
-        "",
-        "조각형 등급 분포",
-        gacha_weight_line("하", PIECE_GACHA_WEIGHTS["하"]),
-        gacha_weight_line("중", PIECE_GACHA_WEIGHTS["중"]),
-        gacha_weight_line("상", PIECE_GACHA_WEIGHTS["상"]),
     ]
     return "\n".join(lines)
 
@@ -4061,10 +4043,7 @@ def get_gacha_pity_point(user_id):
 
 
 def gacha_grade(gacha_type, tier, coin_weights=None):
-    if gacha_type == "coin":
-        return weighted_pick(coin_weights or COIN_GACHA_WEIGHTS[tier])
-
-    return weighted_pick(PIECE_GACHA_WEIGHTS[tier])
+    return weighted_pick(coin_weights or COIN_GACHA_WEIGHTS[tier])
 
 
 def random_piece_by_group(group=None):
@@ -4074,21 +4053,30 @@ def random_piece_by_group(group=None):
 def coin_prize_for(tier, grade):
     prize_table = {
         "하": {
-            "F": [0, 2, 5],
+            "손해": [0, 5],
+            "본전": [10],
+            "이득": [15, 20],
+            "F": [0, 5],
             "E": [10],
-            "D": [12, 15],
-            "C": [18],
+            "D": [15],
+            "C": [20],
             "B": [20],
         },
         "중": {
+            "손해": [0, 10, 20],
+            "본전": [30],
+            "이득": [40, 50, 60],
             "F": [0, 10, 20],
             "E": [30],
-            "D": [35, 40],
-            "C": [45, 50],
+            "D": [40],
+            "C": [50],
             "B": [60],
             "A": [60],
         },
         "상": {
+            "손해": [0, 20, 30],
+            "본전": [50],
+            "이득": [70, 80, 100],
             "F": [0, 20, 30, 40],
             "E": [50],
             "D": [60, 70],
@@ -4100,52 +4088,6 @@ def coin_prize_for(tier, grade):
     }
 
     return random.choice(prize_table[tier][grade])
-
-
-def piece_prize_for(tier, grade):
-    if tier == "하":
-        table = {
-            "F": None,
-            "E": ("low", 1),
-            "D": ("low", 2),
-            "C": ("mid", 1),
-            "B": ("high", 1),
-        }
-    elif tier == "중":
-        table = {
-            "F": None,
-            "E": ("low", 3),
-            "D": ("mid", 2),
-            "C": ("high", 2),
-            "B": ("high", 5),
-            "A": ("all", 10),
-        }
-    else:
-        table = {
-            "F": None,
-            "E": ("mid", 5),
-            "D": ("high", 5),
-            "C": ("high", 10),
-            "B": ("all", 15),
-            "A": ("all", 25),
-            "S": ("all", 50),
-        }
-
-    value = table[grade]
-    if value is None:
-        return None
-
-    group, amount = value
-    piece_key = random_piece_by_group(group)
-    return piece_key, amount
-
-
-def random_prize_kind(tier, grade):
-    # 랜덤형은 코인/조각 혼합.
-    # F는 낮은 등급이라 코인 소액 또는 꽝 위주.
-    if grade == "F":
-        return weighted_pick([(70, "coin"), (30, "piece")])
-    return weighted_pick([(50, "coin"), (50, "piece")])
 
 
 def get_weekly_gacha_count(user_id):
@@ -4258,17 +4200,22 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
         weekly_used_after = apply_weekly_gacha_count(cur, user_id, user_name)
 
         if prize > 0:
+            prize_reason = (
+                f"{log_label} {grade} 결과 코인 보상"
+                if grade in ("손해", "본전", "이득")
+                else f"{log_label} {grade}등급 코인 보상"
+            )
             final_balance = apply_money_change(
                 cur,
                 user_id,
                 user_name,
                 prize,
-                f"{log_label} {grade}등급 코인 보상",
+                prize_reason,
                 None,
                 "가챠시스템"
             )
 
-        if grade == "F":
+        if grade in ("F", "손해"):
             pity_points, bonus_paid = apply_gacha_pity_point(cur, user_id, user_name)
             if bonus_paid > 0:
                 final_balance += bonus_paid * GACHA_PITY_REWARD
@@ -4285,7 +4232,7 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
         f"🎰 {tier}급 가챠 결과",
         "",
         f"타입: {GACHA_TYPE_LABELS[gacha_type]}",
-        f"등급: {grade}",
+        f"{'결과' if grade in ('손해', '본전', '이득') else '등급'}: {grade}",
         "",
     ]
 
@@ -4295,7 +4242,7 @@ def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, byp
         lines.append("획득: 꽝")
         lines.append("다음 기회에...")
 
-    if grade == "F":
+    if grade in ("F", "손해"):
         lines.append("")
         lines.append("🎁 행운포인트 +1")
         lines.append(f"현재 행운포인트: {pity_points or 0} / 10")
@@ -4329,7 +4276,7 @@ def gacha_system_text():
         "제한 없음\n\n"
         "※ 가챠는 운영방에서 운영진만 이용할 수 있습니다.\n"
         "※ 주간 이용 제한은 없습니다.\n"
-        "※ 상/중/하/조각 가챠 횟수는 기록만 표시됩니다.\n\n"
+        "※ 상/중/하 가챠 횟수는 기록만 표시됩니다.\n\n"
         "━━━━━━━━━━\n"
         "💰 코인 가챠\n"
         "━━━━━━━━━━\n\n"
@@ -4337,15 +4284,11 @@ def gacha_system_text():
         "/가챠 중 : 3코인\n"
         "/가챠 상 : 5코인\n\n"
         "결과 범위: 0배 ~ 2배\n"
+        "기대치: 손해 40% / 본전 20% / 이득 40%\n"
         "결과에 따라 코인이 줄거나 늘어날 수 있습니다.\n\n"
         f"{gacha_probability_text()}\n\n"
         "━━━━━━━━━━\n"
-        "🧩 조각 가챠\n"
-        "━━━━━━━━━━\n\n"
-        "/가챠 조각 : 1코인\n"
-        "획득: 철 / 은 / 금 조각 또는 꽝\n\n"
-        "━━━━━━━━━━\n"
-        "🔨 대장장이\n"
+        "🔨 기존 조각 교환\n"
         "━━━━━━━━━━\n\n"
         "철 조각 10개 → 0.5코인\n"
         "은 조각 10개 → 1코인\n"
@@ -7651,47 +7594,6 @@ def add_simple_piece(user_id, user_name, piece_key, amount):
     conn.close()
 
 
-def run_piece_gacha(user_id, user_name):
-    cost = 10
-    result_kind = weighted_pick(PIECE_STANDALONE_GACHA_WEIGHTS)
-    piece_key = random_piece_by_group() if result_kind == "piece" else None
-    final_balance = 0
-
-    conn = db()
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT COALESCE(balance, 0) AS balance FROM currency WHERE user_id = ?", (user_id,))
-        row = cur.fetchone()
-        balance = int(row["balance"] or 0) if row else 0
-        if balance < cost:
-            return False, f"코인이 부족합니다.\n\n필요: {coin_text(cost)}\n보유: {coin_text(balance)}"
-
-        final_balance = apply_money_change(cur, user_id, user_name, -cost, "조각가챠 이용", None, "가챠시스템")
-        used_after = apply_weekly_gacha_count(cur, user_id, user_name)
-
-        if piece_key:
-            cur.execute("""
-            INSERT INTO gacha_pieces (user_id, piece_key, count, updated_at)
-            VALUES (?, ?, 1, ?)
-            ON CONFLICT(user_id, piece_key)
-            DO UPDATE SET count = count + 1, updated_at = excluded.updated_at
-            """, (user_id, piece_key, now_str()))
-            label = PIECE_INFO[piece_key]["label"]
-            result = f"획득: {label} x1"
-        else:
-            result = "획득: 꽝"
-
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        log_error("RUN_PIECE_GACHA_ERROR", e)
-        return False, "🧩 조각가챠 처리 중 문제가 생겼어요. 최근오류를 확인해 주세요."
-    finally:
-        conn.close()
-
-    return True, f"🧩 조각가챠 결과\n\n{result}\n\n이번 주 가챠: {used_after}회\n현재 잔액: {coin_text(final_balance)}"
-
-
 def blacksmith_exchange(user_id, user_name):
     conn = db()
     cur = conn.cursor()
@@ -10373,10 +10275,7 @@ def handle(event):
                 return
 
             if text == "/조각가챠":
-                success, message = run_piece_gacha(user_id, user_name)
-                if success:
-                    grant_achievement_once(user_id, user_name, "first_gacha", "🎰 첫 가챠", 2, "piece")
-                reply_many(event.reply_token, split_text_messages(message))
+                reply(event.reply_token, "🧩 조각가챠는 종료되었습니다.\n\n보유 조각 확인: /가챠 조각확인\n조각 교환: /가챠 대장장이")
                 return
 
             if text == "/조각":
