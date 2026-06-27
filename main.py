@@ -131,7 +131,7 @@ def is_operator_command(text):
         "/족보입력", "/족보", "/경고", "/완전삭제",
         "/삭제유저", "/경제현황", "/럭키정산", "/럭키초기화", "/럭키현황전체",
         "/럭키드로우", "/럭키드로우구매", "/럭키드로우현황", "/럭키드로우결과",
-        "/가챠", "/가챠시스템", "/가챠횟수", "/상가챠", "/중가챠", "/하가챠",
+        "/가챠", "/가챠시스템", "/가챠횟수", "/상", "/중", "/하", "/상가챠", "/중가챠", "/하가챠",
         "/조각", "/대장장이", "/김미트상가챠", "/상점",
         "/회생초기화",
         "/설렘픽초기화", "/설렘픽정산", "/조각정리", "/경고누적일", "/단벙참여확인", "/단벙참석확인",
@@ -1368,6 +1368,9 @@ def simplified_command_text(text):
             return "/대장장이"
         return text
 
+    if command in ("/상", "/중", "/하"):
+        return f"{command}가챠"
+
     if command == "/설렘":
         if not args:
             return "/설렘픽"
@@ -1734,9 +1737,9 @@ def operator_commands_text():
 🎰 가챠
 ━━━━━━━━━━
 /가챠
-/가챠 상
-/가챠 중
-/가챠 하
+/상
+/중
+/하
 /가챠 조각확인
 /가챠 횟수
 /가챠 대장장이
@@ -4168,7 +4171,7 @@ def gacha_count_status_text(user_id):
 
 def run_gacha(user_id, user_name, tier, coin_weights=None, log_command=None, bypass_weekly_limit=False):
     if tier not in GACHA_COSTS:
-        return False, "사용법\n\n/가챠 하\n/가챠 중\n/가챠 상"
+        return False, "사용법\n\n/하\n/중\n/상"
 
     gacha_type = "coin"
     cost = GACHA_COSTS[tier]
@@ -4280,9 +4283,9 @@ def gacha_system_text():
         "━━━━━━━━━━\n"
         "💰 코인 가챠\n"
         "━━━━━━━━━━\n\n"
-        "/가챠 하 : 1코인\n"
-        "/가챠 중 : 3코인\n"
-        "/가챠 상 : 5코인\n\n"
+        "/하 : 1코인\n"
+        "/중 : 3코인\n"
+        "/상 : 5코인\n\n"
         "결과 범위: 0배 ~ 2배\n"
         "기대치: 손해 40% / 본전 20% / 이득 40%\n"
         "결과에 따라 코인이 줄거나 늘어날 수 있습니다.\n\n"
