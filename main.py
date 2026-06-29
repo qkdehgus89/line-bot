@@ -211,6 +211,31 @@ def parse_date_arg(text_value):
         return None, "날짜는 YYYY-MM-DD 형식으로 입력해주세요.\n예: /마디수 2026-06-19"
 
 
+def parse_flexible_date(text_value):
+    value = str(text_value or "").strip()
+    if not value:
+        return None, "날짜를 입력해주세요.\n예: /디데이 2026-07-20 첫만남"
+
+    if value in ("오늘", "today"):
+        return datetime.now(KST).date(), None
+    if value in ("내일", "tomorrow"):
+        return datetime.now(KST).date() + timedelta(days=1), None
+    if value in ("어제", "yesterday"):
+        return datetime.now(KST).date() - timedelta(days=1), None
+
+    normalized = re.sub(r"[./]", "-", value)
+    for fmt in ("%Y-%m-%d", "%Y%m%d", "%y-%m-%d", "%y%m%d"):
+        try:
+            parsed = datetime.strptime(normalized, fmt).date()
+            if fmt.startswith("%y"):
+                parsed = parsed.replace(year=2000 + int(re.sub(r"\D", "", normalized)[:2]))
+            return parsed, None
+        except ValueError:
+            pass
+
+    return None, "날짜는 YYYY-MM-DD 형식으로 입력해주세요.\n예: /디데이 2026-07-20 첫만남"
+
+
 # =========================
 # DB
 # =========================
@@ -526,6 +551,19 @@ def init_db():
         achieved_date TEXT NOT NULL,
         created_at TEXT NOT NULL,
         PRIMARY KEY (user_id, streak_days)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS dday_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        target_date TEXT NOT NULL,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(user_id, title)
     )
     """)
 
@@ -1371,6 +1409,16 @@ def simplified_command_text(text):
     if command in ("/상", "/중", "/하"):
         return f"{command}가챠"
 
+    if command in ("/디데이", "/기념일"):
+        if args and args[0] in ("삭제", "지우기", "제거"):
+            return ("/디데이삭제 " + " ".join(args[1:]).strip()).strip()
+        if command == "/기념일":
+            return ("/디데이 " + rest).strip()
+        return text
+
+    if command in ("/디데이삭제", "/기념일삭제"):
+        return ("/디데이삭제 " + rest).strip()
+
     if command == "/설렘":
         if not args:
             return "/설렘픽"
@@ -1516,6 +1564,8 @@ def user_commands_text():
 /랭킹 주간
 /랭킹 전체
 /주사위
+/디데이
+/디데이 YYYY-MM-DD 주제
 
 ━━━━━━━━━━
 💰 재화
@@ -1650,6 +1700,11 @@ def beginner_guide_text():
 /회생
 /내정보
 /마니또
+/디데이
+
+디데이
+/디데이 YYYY-MM-DD 주제
+- D-Day, D-/D+와 100일, 다음 주년을 함께 확인할 수 있습니다.
 
 ━━━━━━━━━━
 
@@ -3704,6 +3759,174 @@ def attendance_check(date_str, user_id, user_name):
             return False, get_balance(user_id)
         except Exception:
             return False, 0
+
+
+def dday_usage_text():
+    return (
+        "💞 디데이 안내\n\n"
+        "저장\n"
+        "/디데이 YYYY-MM-DD 주제\n\n"
+        "조회\n"
+        "/디데이\n\n"
+        "삭제\n"
+        "/디데이삭제 주제\n"
+        "/디데이삭제 전체\n\n"
+        "예시\n"
+        "/디데이 2026-07-20 첫만남"
+    )
+
+
+def dday_status(target_date, base_date=None):
+    base_date = base_date or datetime.now(KST).date()
+    diff = (target_date - base_date).days
+    if diff > 0:
+        return f"D-{diff}"
+    if diff < 0:
+        return f"D+{abs(diff)}"
+    return "D-Day"
+
+
+def add_years_safe(date_value, years):
+    try:
+        return date_value.replace(year=date_value.year + years)
+    except ValueError:
+        return date_value.replace(year=date_value.year + years, day=28)
+
+
+def next_anniversary_info(start_date, base_date=None):
+    base_date = base_date or datetime.now(KST).date()
+    years = max(1, base_date.year - start_date.year)
+    anniversary_date = add_years_safe(start_date, years)
+    while anniversary_date < base_date:
+        years += 1
+        anniversary_date = add_years_safe(start_date, years)
+    return years, anniversary_date
+
+
+def dday_detail_lines(title, target_date, base_date=None):
+    base_date = base_date or datetime.now(KST).date()
+    hundred_date = target_date + timedelta(days=100)
+    anniv_years, anniv_date = next_anniversary_info(target_date, base_date)
+
+    return [
+        f"💞 {title}",
+        f"기준일: {target_date.strftime('%Y-%m-%d')}",
+        f"현재: {dday_status(target_date, base_date)}",
+        f"100일: {hundred_date.strftime('%Y-%m-%d')} / {dday_status(hundred_date, base_date)}",
+        f"{anniv_years}주년: {anniv_date.strftime('%Y-%m-%d')} / {dday_status(anniv_date, base_date)}",
+    ]
+
+
+def save_dday_event(user_id, user_name, raw_args):
+    raw_args = str(raw_args or "").strip()
+    if not raw_args:
+        return dday_list_text(user_id)
+
+    parts = raw_args.split(maxsplit=1)
+    if len(parts) < 2:
+        return dday_usage_text()
+
+    target_date, err = parse_flexible_date(parts[0])
+    if err:
+        return err
+
+    title = parts[1].strip()
+    if not title:
+        return dday_usage_text()
+
+    conn = db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+        INSERT INTO dday_events (
+            user_id, user_name, target_date, title, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, title)
+        DO UPDATE SET
+            user_name = excluded.user_name,
+            target_date = excluded.target_date,
+            updated_at = excluded.updated_at
+        """, (user_id, user_name, target_date.strftime("%Y-%m-%d"), title, now_str(), now_str()))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("SAVE_DDAY_ERROR", e)
+        return "💞 디데이를 저장하는 중 문제가 생겼어요. 최근오류를 확인해 주세요."
+    finally:
+        conn.close()
+
+    lines = ["💞 디데이 저장 완료", ""]
+    lines.extend(dday_detail_lines(title, target_date))
+    return "\n".join(lines)
+
+
+def dday_list_text(user_id):
+    conn = db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+        SELECT title, target_date, updated_at
+        FROM dday_events
+        WHERE user_id = ?
+        ORDER BY target_date ASC, title ASC
+        """, (user_id,))
+        rows = cur.fetchall()
+    except Exception as e:
+        log_error("DDAY_LIST_ERROR", e)
+        rows = []
+    finally:
+        conn.close()
+
+    if not rows:
+        return (
+            "💞 저장된 디데이가 없습니다.\n\n"
+            "예시\n"
+            "/디데이 2026-07-20 첫만남"
+        )
+
+    base_date = datetime.now(KST).date()
+    lines = ["💞 내 디데이", ""]
+    for idx, row in enumerate(rows, 1):
+        try:
+            target_date = datetime.strptime(row["target_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if idx > 1:
+            lines.append("")
+        lines.extend(dday_detail_lines(row["title"], target_date, base_date))
+
+    lines += ["", "수정: /디데이 YYYY-MM-DD 주제", "삭제: /디데이삭제 주제"]
+    return "\n".join(lines)
+
+
+def delete_dday_event(user_id, raw_title):
+    title = str(raw_title or "").strip()
+    if not title:
+        return "사용법: /디데이삭제 주제"
+
+    conn = db()
+    cur = conn.cursor()
+    try:
+        if title in ("전체", "모두", "all"):
+            cur.execute("DELETE FROM dday_events WHERE user_id = ?", (user_id,))
+            deleted = cur.rowcount
+            conn.commit()
+            return f"💞 디데이 전체 삭제 완료\n\n삭제된 디데이: {deleted}개"
+
+        cur.execute("DELETE FROM dday_events WHERE user_id = ? AND title = ?", (user_id, title))
+        deleted = cur.rowcount
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("DELETE_DDAY_ERROR", e)
+        return "💞 디데이를 삭제하는 중 문제가 생겼어요. 최근오류를 확인해 주세요."
+    finally:
+        conn.close()
+
+    if deleted:
+        return f"💞 디데이 삭제 완료\n\n주제: {title}"
+    return f"삭제할 디데이를 찾지 못했어요.\n\n주제: {title}"
 
 
 def claimed_missions(date_str, user_id):
@@ -7221,6 +7444,7 @@ def find_delete_candidates(keyword, limit=20):
         ("purchases", "user_id", "user_name"),
         ("attendance", "user_id", "user_name"),
         ("attendance_streak_rewards", "user_id", "user_name"),
+        ("dday_events", "user_id", "user_name"),
         ("danbung_attendance", "user_id", "user_name"),
         ("mission_claims", "user_id", "user_name"),
         ("hidden_rewards", "user_id", "user_name"),
@@ -7305,6 +7529,7 @@ def delete_users_by_ids(targets):
         "purchases",
         "attendance",
         "attendance_streak_rewards",
+        "dday_events",
         "danbung_attendance",
         "mission_claims",
         "hidden_rewards",
@@ -9059,7 +9284,7 @@ def snapshot_user_data(user_id):
     conn = db()
     cur = conn.cursor()
     tables = [
-        "users", "currency", "currency_logs", "revival_claims", "purchases", "attendance", "attendance_streak_rewards", "danbung_attendance", "mission_claims",
+        "users", "currency", "currency_logs", "revival_claims", "purchases", "attendance", "attendance_streak_rewards", "dday_events", "danbung_attendance", "mission_claims",
         "hidden_rewards", "gacha_settings", "gacha_pity", "gacha_pieces", "gacha_weekly_counts",
         "weekly_rewards", "sns_lucky_draw_entries", "achievements", "chat_logs", "counts",
         "heart_pick_rewards", "chemistry_rewards", "truth_game_sessions", "truth_game_resets",
@@ -9378,7 +9603,7 @@ def handle(event):
         conn = db()
         cur = conn.cursor()
         counts = []
-        for table in ["users", "counts", "currency", "currency_logs", "revival_claims", "purchases", "attendance", "danbung_attendance", "mission_claims", "weekly_rewards", "settlement_runs", "bot_errors", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "sns_lucky_draw_entries", "sns_lucky_draw_results", "sns_lucky_draw_prizes", "chemistry_signals", "chemistry_rewards", "public_announcements", "truth_game_sessions", "truth_game_questions", "truth_game_resets"]:
+        for table in ["users", "counts", "currency", "currency_logs", "revival_claims", "purchases", "attendance", "attendance_streak_rewards", "dday_events", "danbung_attendance", "mission_claims", "weekly_rewards", "settlement_runs", "bot_errors", "manitto_assignments", "affinity_scores", "mention_logs", "heart_picks", "heart_pick_rewards", "sns_lucky_draw_entries", "sns_lucky_draw_results", "sns_lucky_draw_prizes", "chemistry_signals", "chemistry_rewards", "public_announcements", "truth_game_sessions", "truth_game_questions", "truth_game_resets"]:
             try:
                 cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                 counts.append(f"{table}: {cur.fetchone()['cnt']}")
@@ -10024,6 +10249,16 @@ def handle(event):
                 streak = 0
             streak_text = f"\n\n{streak}일차 출석완료" if streak > 0 else ""
             reply(event.reply_token, f"이미 오늘 출석했습니다.\n\n현재 보유: {coin_text(balance)}{streak_text}")
+        return
+
+    if text == "/디데이" or text.startswith("/디데이 "):
+        raw_args = text.replace("/디데이", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(save_dday_event(user_id, user_name, raw_args)))
+        return
+
+    if text == "/디데이삭제" or text.startswith("/디데이삭제 "):
+        raw_title = text.replace("/디데이삭제", "", 1).strip()
+        reply_many(event.reply_token, split_text_messages(delete_dday_event(user_id, raw_title)))
         return
 
     if text == "/단벙":
